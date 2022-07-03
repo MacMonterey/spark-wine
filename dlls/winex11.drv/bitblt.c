@@ -1630,7 +1630,131 @@ static inline void add_row( HRGN rgn, RGNDATA *data, int x, int y, int len )
  */
 static void update_surface_region( struct x11drv_window_surface *surface )
 {
+#ifdef HAVE_LIBXSHAPE
+    char buffer[4096];
+    RGNDATA *data = (RGNDATA *)buffer;
+    BITMAPINFO *info = &surface->info;
+    UINT *masks = (UINT *)info->bmiColors;
+    int x, y, start, width;
+    HRGN rgn;
 
+    if (!shape_layered_windows) return;
+
+    if (!surface->is_argb && surface->color_key == CLR_INVALID)
+    {
+        XShapeCombineMask( gdi_display, surface->window, ShapeBounding, 0, 0, None, ShapeSet );
+        return;
+    }
+
+    data->rdh.dwSize = sizeof(data->rdh);
+    data->rdh.iType  = RDH_RECTANGLES;
+    data->rdh.nCount = 0;
+    data->rdh.nRgnSize = sizeof(buffer) - sizeof(data->rdh);
+
+    rgn = NtGdiCreateRectRgn( 0, 0, 0, 0 );
+    width = surface->header.rect.right - surface->header.rect.left;
+
+    switch (info->bmiHeader.biBitCount)
+    {
+    case 16:
+    {
+        WORD *bits = surface->bits;
+        int stride = (width + 1) & ~1;
+        UINT mask = masks[0] | masks[1] | masks[2];
+
+        for (y = surface->header.rect.top; y < surface->header.rect.bottom; y++, bits += stride)
+        {
+            x = 0;
+            while (x < width)
+            {
+                while (x < width && (bits[x] & mask) == surface->color_key) x++;
+                start = x;
+                while (x < width && (bits[x] & mask) != surface->color_key) x++;
+                add_row( rgn, data, surface->header.rect.left + start, y, x - start );
+            }
+        }
+        break;
+    }
+    case 24:
+    {
+        BYTE *bits = surface->bits;
+        int stride = (width * 3 + 3) & ~3;
+
+        for (y = surface->header.rect.top; y < surface->header.rect.bottom; y++, bits += stride)
+        {
+            x = 0;
+            while (x < width)
+            {
+                while (x < width &&
+                       (bits[x * 3] == GetBValue(surface->color_key)) &&
+                       (bits[x * 3 + 1] == GetGValue(surface->color_key)) &&
+                       (bits[x * 3 + 2] == GetRValue(surface->color_key)))
+                    x++;
+                start = x;
+                while (x < width &&
+                       ((bits[x * 3] != GetBValue(surface->color_key)) ||
+                        (bits[x * 3 + 1] != GetGValue(surface->color_key)) ||
+                        (bits[x * 3 + 2] != GetRValue(surface->color_key))))
+                    x++;
+                add_row( rgn, data, surface->header.rect.left + start, y, x - start );
+            }
+        }
+        break;
+    }
+    case 32:
+    {
+        DWORD *bits = surface->bits;
+
+        if (info->bmiHeader.biCompression == BI_RGB)
+        {
+            for (y = surface->header.rect.top; y < surface->header.rect.bottom; y++, bits += width)
+            {
+                x = 0;
+                while (x < width)
+                {
+                    while (x < width &&
+                           ((bits[x] & 0xffffff) == surface->color_key ||
+                            (surface->is_argb && !(bits[x] & 0xff000000)))) x++;
+                    start = x;
+                    while (x < width &&
+                           !((bits[x] & 0xffffff) == surface->color_key ||
+                             (surface->is_argb && !(bits[x] & 0xff000000)))) x++;
+                    add_row( rgn, data, surface->header.rect.left + start, y, x - start );
+                }
+            }
+        }
+        else
+        {
+            UINT mask = masks[0] | masks[1] | masks[2];
+            for (y = surface->header.rect.top; y < surface->header.rect.bottom; y++, bits += width)
+            {
+                x = 0;
+                while (x < width)
+                {
+                    while (x < width && (bits[x] & mask) == surface->color_key) x++;
+                    start = x;
+                    while (x < width && (bits[x] & mask) != surface->color_key) x++;
+                    add_row( rgn, data, surface->header.rect.left + start, y, x - start );
+                }
+            }
+        }
+        break;
+    }
+    default:
+        assert(0);
+    }
+
+    if (data->rdh.nCount) flush_rgn_data( rgn, data );
+
+    if ((data = X11DRV_GetRegionData( rgn, 0 )))
+    {
+        XShapeCombineRectangles( gdi_display, surface->window, ShapeBounding, 0, 0,
+                                 (XRectangle *)data->Buffer, data->rdh.nCount, ShapeSet, YXBanded );
+        free( data );
+    }
+
+    NtGdiDeleteObjectApp( rgn );
+#endif
 }
 
 /***********************************************************************

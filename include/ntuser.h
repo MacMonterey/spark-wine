@@ -37,6 +37,7 @@ enum
     NtUserFreeCachedClipboardData,
     NtUserLoadDriver,
     NtUserLoadImage,
+    NtUserLoadSysMenu,
     NtUserRegisterBuiltinClasses,
     NtUserRenderSynthesizedFormat,
     /* win16 hooks */
@@ -187,6 +188,12 @@ struct load_image_params
     UINT flags;
 };
 
+/* NtUserLoadSysMenu params */
+struct load_sys_menu_params
+{
+    BOOL mdi;
+};
+
 /* NtUserRenderSynthesizedFormat params */
 struct render_synthesized_format_params
 {
@@ -224,7 +231,13 @@ enum
     NtUserSetMenuItemInfo,
     NtUserInsertMenuItem,
     /* Wine extensions */
+    NtUserCheckMenuRadioItem,
+    NtUserGetMenuDefaultItem,
+    NtUserGetMenuItemID,
+    NtUserGetMenuItemInfoA,
+    NtUserGetMenuItemInfoW,
     NtUserGetMenuState,
+    NtUserGetSubMenu,
 };
 
 struct send_message_timeout_params
@@ -608,6 +621,9 @@ ULONG   WINAPI NtUserGetProcessDpiAwarenessContext( HANDLE process );
 DWORD   WINAPI NtUserGetQueueStatus( UINT flags );
 UINT    WINAPI NtUserGetRawInputBuffer( RAWINPUT *data, UINT *data_size, UINT header_size );
 UINT    WINAPI NtUserGetRawInputData( HRAWINPUT rawinput, UINT command, void *data, UINT *data_size, UINT header_size );
+UINT    WINAPI NtUserGetRawInputDeviceInfo( HANDLE handle, UINT command, void *data, UINT *data_size );
+UINT    WINAPI NtUserGetRawInputDeviceList( RAWINPUTDEVICELIST *devices, UINT *device_count, UINT size );
+UINT    WINAPI NtUserGetRegisteredRawInputDevices( RAWINPUTDEVICE *devices, UINT *device_count, UINT size );
 ULONG   WINAPI NtUserGetSystemDpiForProcess( HANDLE process );
 HMENU   WINAPI NtUserGetSystemMenu( HWND hwnd, BOOL revert );
 HDESK   WINAPI NtUserGetThreadDesktop( DWORD thread );
@@ -650,6 +666,7 @@ ATOM    WINAPI NtUserRegisterClassExWOW( const WNDCLASSEXW *wc, UNICODE_STRING *
                                          struct client_menu_name *client_menu_name, DWORD fnid, DWORD flags,
                                          DWORD *wow );
 BOOL    WINAPI NtUserRegisterHotKey( HWND hwnd, INT id, UINT modifiers, UINT vk );
+BOOL    WINAPI NtUserRegisterRawInputDevices( const RAWINPUTDEVICE *devices, UINT device_count, UINT size );
 INT     WINAPI NtUserReleaseDC( HWND hwnd, HDC hdc );
 BOOL    WINAPI NtUserRemoveClipboardFormatListener( HWND hwnd );
 BOOL    WINAPI NtUserRemoveMenu( HMENU menu, UINT id, UINT flags );
@@ -797,7 +814,6 @@ enum
     NtUserCallOneParam_SetCaretBlinkTime,
     NtUserCallOneParam_SetProcessDefaultLayout,
     /* temporary exports */
-    NtUserCallHooks,
     NtUserGetDeskPattern,
     NtUserGetWinProcPtr,
     NtUserLock,

@@ -159,17 +159,13 @@ static const struct user_callbacks user_funcs =
     NtWaitForMultipleObjects,
     SCROLL_DrawNCScrollBar,
     free_win_ptr,
-    MENU_GetSysMenu,
     notify_ime,
     post_dde_message,
-    process_rawinput_message,
-    rawinput_device_get_usages,
     SCROLL_SetStandardScrollPainted,
     unpack_dde_message,
     register_imm,
     unregister_imm,
     try_finally,
-    rawinput_thread_data,
 };
 
 static NTSTATUS WINAPI User32CopyImage( const struct copy_image_params *params, ULONG size )
@@ -188,6 +184,12 @@ static NTSTATUS WINAPI User32LoadImage( const struct load_image_params *params, 
 {
     HANDLE ret = LoadImageW( params->hinst, params->name, params->type,
                              params->dx, params->dy, params->flags );
+    return HandleToUlong( ret );
+}
+
+static NTSTATUS WINAPI User32LoadSysMenu( const struct load_sys_menu_params *params, ULONG size )
+{
+    HMENU ret = LoadMenuW( user32_module, params->mdi ? L"SYSMENUMDI" : L"SYSMENU" );
     return HandleToUlong( ret );
 }
 
@@ -222,6 +224,7 @@ static const void *kernel_callback_table[NtUserCallCount] =
     User32FreeCachedClipboardData,
     User32LoadDriver,
     User32LoadImage,
+    User32LoadSysMenu,
     User32RegisterBuiltinClasses,
     User32RenderSsynthesizedFormat,
 };
@@ -271,7 +274,6 @@ static void thread_detach(void)
 
     NtUserCallNoParam( NtUserThreadDetach );
     HeapFree( GetProcessHeap(), 0, thread_info->wmchar_data );
-    HeapFree( GetProcessHeap(), 0, thread_info->rawinput );
 
     exiting_thread_id = 0;
 }

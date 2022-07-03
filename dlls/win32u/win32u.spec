@@ -983,12 +983,12 @@
 @ stdcall -syscall NtUserGetProp(long wstr)
 @ stdcall NtUserGetQueueStatus(long)
 @ stub NtUserGetQueueStatusReadonly
-@ stdcall NtUserGetRawInputBuffer(ptr ptr long)
-@ stdcall NtUserGetRawInputData(ptr long ptr ptr long)
-@ stub NtUserGetRawInputDeviceInfo
-@ stub NtUserGetRawInputDeviceList
+@ stdcall -syscall NtUserGetRawInputBuffer(ptr ptr long)
+@ stdcall -syscall NtUserGetRawInputData(ptr long ptr ptr long)
+@ stdcall -syscall NtUserGetRawInputDeviceInfo(ptr long ptr ptr)
+@ stdcall -syscall NtUserGetRawInputDeviceList(ptr ptr long)
 @ stub NtUserGetRawPointerDeviceData
-@ stub NtUserGetRegisteredRawInputDevices
+@ stdcall -syscall NtUserGetRegisteredRawInputDevices(ptr ptr long)
 @ stub NtUserGetRequiredCursorSizes
 @ stub NtUserGetResizeDCompositionSynchronizationObject
 @ stub NtUserGetScrollBarInfo
@@ -1130,7 +1130,7 @@
 @ stub NtUserRegisterManipulationThread
 @ stub NtUserRegisterPointerDeviceNotifications
 @ stub NtUserRegisterPointerInputTarget
-@ stub NtUserRegisterRawInputDevices
+@ stdcall -syscall NtUserRegisterRawInputDevices(ptr long long)
 @ stub NtUserRegisterServicesProcess
 @ stub NtUserRegisterSessionPort
 @ stub NtUserRegisterShellPTPListener

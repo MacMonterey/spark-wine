@@ -132,6 +132,11 @@
     SYSCALL_ENTRY( NtUserGetProcessDpiAwarenessContext ) \
     SYSCALL_ENTRY( NtUserGetProcessWindowStation ) \
     SYSCALL_ENTRY( NtUserGetProp ) \
+    SYSCALL_ENTRY( NtUserGetRawInputBuffer ) \
+    SYSCALL_ENTRY( NtUserGetRawInputData ) \
+    SYSCALL_ENTRY( NtUserGetRawInputDeviceInfo ) \
+    SYSCALL_ENTRY( NtUserGetRawInputDeviceList ) \
+    SYSCALL_ENTRY( NtUserGetRegisteredRawInputDevices ) \
     SYSCALL_ENTRY( NtUserGetSystemDpiForProcess ) \
     SYSCALL_ENTRY( NtUserGetThreadDesktop ) \
     SYSCALL_ENTRY( NtUserGetTitleBarInfo ) \
@@ -145,6 +150,7 @@
     SYSCALL_ENTRY( NtUserOpenDesktop ) \
     SYSCALL_ENTRY( NtUserOpenInputDesktop ) \
     SYSCALL_ENTRY( NtUserOpenWindowStation ) \
+    SYSCALL_ENTRY( NtUserRegisterRawInputDevices ) \
     SYSCALL_ENTRY( NtUserRemoveClipboardFormatListener ) \
     SYSCALL_ENTRY( NtUserRemoveMenu ) \
     SYSCALL_ENTRY( NtUserRemoveProp ) \
