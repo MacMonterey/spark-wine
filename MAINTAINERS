@@ -22,6 +22,7 @@ Descriptions of section entries used here:
 	P: Other knowledgeable person. FullName <address@domain>
 	F: Files and directories with wildcard patterns.
 	   One pattern per line.  Multiple F: lines acceptable.
+	   A trailing / implies /*.
 	W: Link to additional information.
 
 Maintainers List
@@ -159,8 +160,8 @@ M:	Zebediah Figura <z.figura12@gmail.com>
 F:	dlls/winegstreamer/
 
 HID support
-M:	Aric Stewart <aric@codeweavers.com>
-P:	Rémi Bernon <rbernon@codeweavers.com>
+M:	Rémi Bernon <rbernon@codeweavers.com>
+P:	Aric Stewart <aric@codeweavers.com>
 F:	dlls/hid/
 F:	dlls/hidclass.sys/
 F:	dlls/hidparse.sys/
@@ -172,9 +173,10 @@ F:	dlls/httpapi/
 F:	dlls/http.sys/
 
 Input events
-P:	Rémi Bernon <rbernon@codeweavers.com>
+M:	Rémi Bernon <rbernon@codeweavers.com>
 F:	dlls/user32/input.c
-F:	dlls/user32/rawinput.c
+F:	dlls/win32u/input.c
+F:	dlls/win32u/rawinput.c
 F:	server/queue.c
 
 Input methods
@@ -192,6 +194,7 @@ F:	dlls/windows.gaming.input/
 F:	dlls/winebus.sys/
 F:	dlls/winexinput.sys/
 F:	dlls/xinput*/
+F:	dlls/winmm/joystick.c
 
 Media format conversion
 P:	Andrew Eikum <coldpie@fastmail.com>
@@ -272,12 +275,12 @@ F:	dlls/winspool.drv/
 
 Richedit
 M:	Huw Davies <huw@codeweavers.com>
-F:	dlls/riched20
+F:	dlls/riched20/
 
 RPC Runtime
 P:	Huw Davies <huw@codeweavers.com>
 P:	Zebediah Figura <z.figura12@gmail.com>
-F:	dlls/rpcrt4
+F:	dlls/rpcrt4/
 
 Theming
 M:	Zhiyi Zhang <zzhang@codeweavers.com>
@@ -316,7 +319,7 @@ WIDL
 P:	Huw Davies <huw@codeweavers.com>
 P:	Rémi Bernon <rbernon@codeweavers.com>
 P:	Zebediah Figura <z.figura12@gmail.com>
-F:	tools/widl
+F:	tools/widl/
 
 Windows Imaging Component
 M:	Esme Povirk <esme@codeweavers.com>

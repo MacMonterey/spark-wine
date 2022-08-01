@@ -47,9 +47,6 @@ struct wm_char_mapping_data
     MSG  get_msg;
 };
 
-extern BOOL (WINAPI *imm_register_window)(HWND) DECLSPEC_HIDDEN;
-extern void (WINAPI *imm_unregister_window)(HWND) DECLSPEC_HIDDEN;
-
 static inline struct user_thread_info *get_user_thread_info(void)
 {
     return (struct user_thread_info *)NtCurrentTeb()->Win32ClientInfo;
@@ -63,7 +60,7 @@ struct tagWND;
 extern BOOL post_dde_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, DWORD dest_tid,
                               DWORD type ) DECLSPEC_HIDDEN;
 extern BOOL unpack_dde_message( HWND hwnd, UINT message, WPARAM *wparam, LPARAM *lparam,
-                                void **buffer, size_t size ) DECLSPEC_HIDDEN;
+                                const void *buffer, size_t size ) DECLSPEC_HIDDEN;
 extern void free_cached_data( UINT format, HANDLE handle ) DECLSPEC_HIDDEN;
 extern HANDLE render_synthesized_format( UINT format, UINT from ) DECLSPEC_HIDDEN;
 
@@ -80,7 +77,6 @@ extern HPEN SYSCOLOR_GetPen( INT index ) DECLSPEC_HIDDEN;
 extern HBRUSH SYSCOLOR_Get55AABrush(void) DECLSPEC_HIDDEN;
 extern void SYSPARAMS_Init(void) DECLSPEC_HIDDEN;
 extern void USER_CheckNotLock(void) DECLSPEC_HIDDEN;
-extern BOOL USER_IsExitingThread( DWORD tid ) DECLSPEC_HIDDEN;
 
 typedef LRESULT (*winproc_callback_t)( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                        LRESULT *result, void *arg );
@@ -89,10 +85,10 @@ extern LRESULT WINPROC_CallProcAtoW( winproc_callback_t callback, HWND hwnd, UIN
                                      WPARAM wParam, LPARAM lParam, LRESULT *result, void *arg,
                                      enum wm_char_mapping mapping ) DECLSPEC_HIDDEN;
 
-extern INT_PTR WINPROC_CallDlgProcA( DLGPROC func, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam ) DECLSPEC_HIDDEN;
-extern INT_PTR WINPROC_CallDlgProcW( DLGPROC func, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam ) DECLSPEC_HIDDEN;
+extern INT_PTR WINPROC_CallDlgProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam ) DECLSPEC_HIDDEN;
+extern INT_PTR WINPROC_CallDlgProcW( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam ) DECLSPEC_HIDDEN;
 extern void winproc_init(void) DECLSPEC_HIDDEN;
-extern void get_winproc_params( struct win_proc_params *params ) DECLSPEC_HIDDEN;
+extern void dispatch_win_proc_params( struct win_proc_params *params ) DECLSPEC_HIDDEN;
 
 extern ATOM get_class_info( HINSTANCE instance, const WCHAR *name, WNDCLASSEXW *info,
                             UNICODE_STRING *name_str, BOOL ansi ) DECLSPEC_HIDDEN;
@@ -109,7 +105,6 @@ BOOL WINAPI User32RegisterBuiltinClasses( const struct win_hook_params *params, 
 /* message spy definitions */
 
 extern const char *SPY_GetMsgName( UINT msg, HWND hWnd ) DECLSPEC_HIDDEN;
-extern const char *SPY_GetVKeyName(WPARAM wParam) DECLSPEC_HIDDEN;
 extern void SPY_EnterMessage( INT iFlag, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam ) DECLSPEC_HIDDEN;
 extern void SPY_ExitMessage( INT iFlag, HWND hwnd, UINT msg,
                              LRESULT lReturn, WPARAM wParam, LPARAM lParam ) DECLSPEC_HIDDEN;
@@ -177,8 +172,8 @@ extern struct user_api_hook *user_api DECLSPEC_HIDDEN;
 LRESULT WINAPI USER_DefDlgProc(HWND, UINT, WPARAM, LPARAM, BOOL) DECLSPEC_HIDDEN;
 LRESULT WINAPI USER_ScrollBarProc(HWND, UINT, WPARAM, LPARAM, BOOL) DECLSPEC_HIDDEN;
 void WINAPI USER_ScrollBarDraw(HWND, HDC, INT, enum SCROLL_HITTEST,
-                               const struct SCROLL_TRACKING_INFO *, BOOL, BOOL, RECT *, INT, INT,
-                               INT, BOOL) DECLSPEC_HIDDEN;
-void WINAPI SCROLL_SetStandardScrollPainted(HWND hwnd, INT bar, BOOL visible);
+                               const struct SCROLL_TRACKING_INFO *, BOOL, BOOL, RECT *, UINT,
+                               INT, INT, INT, BOOL) DECLSPEC_HIDDEN;
+struct scroll_info *SCROLL_GetInternalInfo( HWND hwnd, INT nBar, BOOL alloc );
 
 #endif /* __WINE_USER_PRIVATE_H */

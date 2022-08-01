@@ -64,7 +64,7 @@ from enum import Enum
 LOGGER = logging.Logger("vulkan")
 LOGGER.addHandler(logging.StreamHandler())
 
-VK_XML_VERSION = "1.3.219"
+VK_XML_VERSION = "1.3.221"
 WINE_VK_VERSION = (1, 3)
 
 # Filenames to create.
@@ -147,12 +147,8 @@ ALLOWED_X_EXTENSIONS = [
     "VK_NVX_image_view_handle",
 ]
 
-# We can't use syscall interface for functions that may call display drivers
-# until drivers are converted to pure Unix libraries. Also some frequently
-# called functions use direct calls for performance reasons.
+# Some frequently called functions use direct calls for performance reasons.
 DIRECT_CALL_FUNCTIONS = [
-    "vkCreateDevice",
-    "vkEnumerateInstanceVersion",
     "vkUpdateDescriptorSets",
     "vkUpdateDescriptorSetWithTemplate",
 ]
@@ -160,7 +156,7 @@ DIRECT_CALL_FUNCTIONS = [
 # Functions part of our winevulkan graphics driver interface.
 # DRIVER_VERSION should be bumped on any change to driver interface
 # in FUNCTION_OVERRIDES
-DRIVER_VERSION = 10
+DRIVER_VERSION = 11
 
 class ThunkType(Enum):
     NONE = 1
@@ -691,7 +687,7 @@ class VkFunction(object):
         # vkCmd* functions are frequently called, use direct calls for performance
         if self.name.startswith("vkCmd"):
             return True
-        return self.is_driver_func() or self.name in DIRECT_CALL_FUNCTIONS
+        return self.name in DIRECT_CALL_FUNCTIONS
 
     def pfn(self, prefix="p", call_conv=None, conv=False):
         """ Create function pointer. """
@@ -3206,7 +3202,7 @@ class VkGenerator(object):
         f.write("    VkSurfaceKHR (*p_wine_get_native_surface)(VkSurfaceKHR);\n")
         f.write("};\n\n")
 
-        f.write("extern const struct vulkan_funcs * CDECL __wine_get_vulkan_driver(UINT version);\n\n")
+        f.write("extern const struct vulkan_funcs * __wine_get_vulkan_driver(UINT version);\n\n")
 
         f.write("static inline void *get_vulkan_driver_device_proc_addr(\n")
         f.write("        const struct vulkan_funcs *vulkan_funcs, const char *name)\n{\n")

@@ -18,7 +18,6 @@
 /opengl.o
 /palette.o
 /pen.o
-/settings.o
 /vulkan.o
 /window.o
 /wintab.o

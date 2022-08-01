@@ -66,13 +66,6 @@ static inline void free_buffer( void *static_buffer, void *buffer )
     if (buffer != static_buffer) HeapFree( GetProcessHeap(), 0, buffer );
 }
 
-/* return the window proc for a given handle, or NULL for an invalid handle,
- * or WINPROC_PROC16 for a handle to a 16-bit proc. */
-static inline WINDOWPROC *handle_to_proc( WNDPROC handle )
-{
-    return (WINDOWPROC *)NtUserCallOneParam( HandleToUlong(handle), NtUserGetWinProcPtr );
-}
-
 #ifdef __i386__
 /* Some window procedures modify registers they shouldn't, or are not
  * properly declared stdcall; so we need a small assembly wrapper to
@@ -719,7 +712,7 @@ static LRESULT WINPROC_CallProcWtoA( winproc_callback_t callback, HWND hwnd, UIN
 }
 
 
-static void dispatch_win_proc_params( struct win_proc_params *params )
+void dispatch_win_proc_params( struct win_proc_params *params )
 {
     DPI_AWARENESS_CONTEXT context = SetThreadDpiAwarenessContext( params->dpi_awareness );
 
@@ -1276,25 +1269,6 @@ BOOL WINAPI User32CallWindowProc( struct win_proc_params *params, ULONG size )
     return TRUE;
 }
 
-void get_winproc_params( struct win_proc_params *params )
-{
-    WINDOWPROC *proc = handle_to_proc( params->func );
-
-    if (!proc)
-    {
-        params->procW = params->procA = NULL;
-    }
-    else if (proc == WINPROC_PROC16)
-    {
-        params->procW = params->procA = WINPROC_PROC16;
-    }
-    else
-    {
-        params->procA = proc->procA;
-        params->procW = proc->procW;
-    }
-}
-
 BOOL WINAPI User32CallSendAsyncCallback( const struct send_async_params *params, ULONG size )
 {
     params->callback( params->hwnd, params->msg, params->data, params->result );
@@ -1361,50 +1335,46 @@ LRESULT WINAPI CallWindowProcW( WNDPROC func, HWND hwnd, UINT msg, WPARAM wParam
 /**********************************************************************
  *		WINPROC_CallDlgProcA
  */
-INT_PTR WINPROC_CallDlgProcA( DLGPROC func, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
+INT_PTR WINPROC_CallDlgProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
 {
-    WINDOWPROC *proc;
     LRESULT result;
-    INT_PTR ret;
+    DLGPROC func;
 
-    if (!func) return 0;
+    if (!(func = NtUserGetDialogProc( hwnd, DLGPROC_ANSI ))) return 0;
 
-    if (!(proc = handle_to_proc( (WNDPROC)func )))
-        ret = call_dialog_proc( hwnd, msg, wParam, lParam, &result, func );
-    else if (proc == WINPROC_PROC16)
+    if (func == WINPROC_PROC16)
     {
+        INT_PTR ret;
+        if (!(func = NtUserGetDialogProc( hwnd, DLGPROC_WIN16 ))) return 0;
         ret = wow_handlers.call_dialog_proc( hwnd, msg, wParam, lParam, &result, func );
         SetWindowLongPtrW( hwnd, DWLP_MSGRESULT, result );
+        return ret;
     }
-    else
-        ret = call_dialog_proc( hwnd, msg, wParam, lParam, &result, proc->procW ? proc->procW : proc->procA );
 
-    return ret;
+    return call_dialog_proc( hwnd, msg, wParam, lParam, &result, func );
 }
 
 
 /**********************************************************************
  *		WINPROC_CallDlgProcW
  */
-INT_PTR WINPROC_CallDlgProcW( DLGPROC func, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
+INT_PTR WINPROC_CallDlgProcW( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
 {
-    WINDOWPROC *proc;
     LRESULT result;
-    INT_PTR ret;
+    DLGPROC func;
 
-    if (!func) return 0;
+    if (!(func = NtUserGetDialogProc( hwnd, DLGPROC_UNICODE ))) return 0;
 
-    if (!(proc = handle_to_proc( (WNDPROC)func )))
-        ret = call_dialog_proc( hwnd, msg, wParam, lParam, &result, func );
-    else if (proc == WINPROC_PROC16)
+    if (func == WINPROC_PROC16)
     {
+        INT_PTR ret;
+        if (!(func = NtUserGetDialogProc( hwnd, DLGPROC_WIN16 ))) return 0;
         ret = WINPROC_CallProcWtoA( wow_handlers.call_dialog_proc, hwnd, msg, wParam, lParam, &result, func );
         SetWindowLongPtrW( hwnd, DWLP_MSGRESULT, result );
+        return ret;
     }
-    else
-        ret = call_dialog_proc( hwnd, msg, wParam, lParam, &result, proc->procW ? proc->procW : proc->procA );
 
-    return ret;
+    return call_dialog_proc( hwnd, msg, wParam, lParam, &result, func );
 }
 
 

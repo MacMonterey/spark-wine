@@ -2502,6 +2502,10 @@ typedef struct tagDROPSTRUCT
 #define SPI_SETPENVISUALIZATION        0x201F
 #define SPI_GETPENARBITRATIONTYPE      0x2020
 #define SPI_SETPENARBITRATIONTYPE      0x2021
+#define SPI_GETCARETTIMEOUT            0x2022
+#define SPI_SETCARETTIMEOUT            0x2023
+#define SPI_GETHANDEDNESS              0x2024
+#define SPI_SETHANDEDNESS              0x2025
 
 #define FE_FONTSMOOTHINGSTANDARD       0x0001
 #define FE_FONTSMOOTHINGCLEARTYPE      0x0002
@@ -4789,8 +4793,8 @@ struct user_api_hook
 {
     LRESULT (WINAPI *pDefDlgProc)(HWND, UINT, WPARAM, LPARAM, BOOL);
     void (WINAPI *pScrollBarDraw)(HWND, HDC, INT, enum SCROLL_HITTEST,
-                                  const struct SCROLL_TRACKING_INFO *, BOOL, BOOL, RECT *, INT, INT,
-                                  INT, BOOL);
+                                  const struct SCROLL_TRACKING_INFO *, BOOL, BOOL, RECT *, UINT,
+                                  INT, INT, INT, BOOL);
     LRESULT (WINAPI *pScrollBarWndProc)(HWND, UINT, WPARAM, LPARAM, BOOL);
 };
 

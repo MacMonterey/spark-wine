@@ -32,6 +32,7 @@ C_SRCS = \
 	freetype.c \
 	gdiobj.c \
 	hook.c \
+	imm.c \
 	input.c \
 	main.c \
 	mapping.c \
@@ -45,6 +46,7 @@ C_SRCS = \
 	printdrv.c \
 	rawinput.c \
 	region.c \
+	scroll.c \
 	spy.c \
 	syscall.c \
 	sysparams.c \

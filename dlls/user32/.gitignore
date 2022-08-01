@@ -30,7 +30,6 @@
 /nonclient.o
 /painting.o
 /property.o
-/rawinput.o
 /resource.o
 /scroll.o
 /static.o

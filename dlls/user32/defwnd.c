@@ -34,42 +34,6 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(win);
 
-/***********************************************************************
- *           DEFWND_ControlColor
- *
- * Default colors for control painting.
- */
-HBRUSH DEFWND_ControlColor( HDC hDC, UINT ctlType )
-{
-    if( ctlType == CTLCOLOR_SCROLLBAR)
-    {
-        HBRUSH hb = GetSysColorBrush(COLOR_SCROLLBAR);
-        COLORREF bk = GetSysColor(COLOR_3DHILIGHT);
-        SetTextColor( hDC, GetSysColor(COLOR_3DFACE));
-        SetBkColor( hDC, bk);
-
-        /* if COLOR_WINDOW happens to be the same as COLOR_3DHILIGHT
-         * we better use 0x55aa bitmap brush to make scrollbar's background
-         * look different from the window background.
-         */
-        if (bk == GetSysColor(COLOR_WINDOW))
-            return SYSCOLOR_Get55AABrush();
-
-        UnrealizeObject( hb );
-        return hb;
-    }
-
-    SetTextColor( hDC, GetSysColor(COLOR_WINDOWTEXT));
-
-    if ((ctlType == CTLCOLOR_EDIT) || (ctlType == CTLCOLOR_LISTBOX))
-        SetBkColor( hDC, GetSysColor(COLOR_WINDOW) );
-    else {
-        SetBkColor( hDC, GetSysColor(COLOR_3DFACE) );
-        return GetSysColorBrush(COLOR_3DFACE);
-    }
-    return GetSysColorBrush(COLOR_WINDOW);
-}
-
 
 /***********************************************************************
  *              DefWindowProcA (USER32.@)
@@ -93,30 +57,6 @@ LRESULT WINAPI DefWindowProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
 
     switch(msg)
     {
-    case WM_NCCREATE:
-        if (lParam)
-        {
-            CREATESTRUCTA *cs = (CREATESTRUCTA *)lParam;
-
-            result = NtUserMessageCall( hwnd, msg, wParam, lParam, 0, NtUserDefWindowProc, TRUE );
-
-            if(cs->style & (WS_HSCROLL | WS_VSCROLL))
-            {
-                SCROLLINFO si = {sizeof si, SIF_ALL, 0, 100, 0, 0, 0};
-                SetScrollInfo( hwnd, SB_HORZ, &si, FALSE );
-                SetScrollInfo( hwnd, SB_VERT, &si, FALSE );
-            }
-        }
-        break;
-
-    case WM_NCMOUSEMOVE:
-        result = NC_HandleNCMouseMove( hwnd, wParam, lParam );
-        break;
-
-    case WM_NCMOUSELEAVE:
-        result = NC_HandleNCMouseLeave( hwnd );
-        break;
-
     case WM_SYSCOMMAND:
         result = NC_HandleSysCommand( hwnd, wParam, lParam );
         break;
@@ -171,23 +111,6 @@ LRESULT WINAPI DefWindowProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
             }
         }
         /* fall through */
-    case WM_IME_STARTCOMPOSITION:
-    case WM_IME_ENDCOMPOSITION:
-    case WM_IME_SELECT:
-    case WM_IME_NOTIFY:
-    case WM_IME_CONTROL:
-        {
-            HWND hwndIME = ImmGetDefaultIMEWnd( hwnd );
-            if (hwndIME)
-                result = SendMessageA( hwndIME, msg, wParam, lParam );
-        }
-        break;
-    case WM_IME_SETCONTEXT:
-        {
-            HWND hwndIME = ImmGetDefaultIMEWnd( hwnd );
-            if (hwndIME) result = ImmIsUIMessageA( hwndIME, msg, wParam, lParam );
-        }
-        break;
 
     default:
         result = NtUserMessageCall( hwnd, msg, wParam, lParam, 0, NtUserDefWindowProc, TRUE );
@@ -228,30 +151,6 @@ LRESULT WINAPI DefWindowProcW(
 
     switch(msg)
     {
-    case WM_NCCREATE:
-        if (lParam)
-        {
-            CREATESTRUCTW *cs = (CREATESTRUCTW *)lParam;
-
-            result = NtUserMessageCall( hwnd, msg, wParam, lParam, 0, NtUserDefWindowProc, FALSE );
-
-            if(cs->style & (WS_HSCROLL | WS_VSCROLL))
-            {
-                SCROLLINFO si = {sizeof si, SIF_ALL, 0, 100, 0, 0, 0};
-                SetScrollInfo( hwnd, SB_HORZ, &si, FALSE );
-                SetScrollInfo( hwnd, SB_VERT, &si, FALSE );
-            }
-        }
-        break;
-
-    case WM_NCMOUSEMOVE:
-        result = NC_HandleNCMouseMove( hwnd, wParam, lParam );
-        break;
-
-    case WM_NCMOUSELEAVE:
-        result = NC_HandleNCMouseLeave( hwnd );
-        break;
-
     case WM_SYSCOMMAND:
         result = NC_HandleSysCommand( hwnd, wParam, lParam );
         break;
@@ -266,13 +165,6 @@ LRESULT WINAPI DefWindowProcW(
 
     case WM_IME_KEYUP:
         result = PostMessageW( hwnd, WM_KEYUP, wParam, lParam );
-        break;
-
-    case WM_IME_SETCONTEXT:
-        {
-            HWND hwndIME = ImmGetDefaultIMEWnd( hwnd );
-            if (hwndIME) result = ImmIsUIMessageW( hwndIME, msg, wParam, lParam );
-        }
         break;
 
     case WM_IME_COMPOSITION:
@@ -297,17 +189,6 @@ LRESULT WINAPI DefWindowProcW(
             }
         }
         /* fall through */
-    case WM_IME_STARTCOMPOSITION:
-    case WM_IME_ENDCOMPOSITION:
-    case WM_IME_SELECT:
-    case WM_IME_NOTIFY:
-    case WM_IME_CONTROL:
-        {
-            HWND hwndIME = ImmGetDefaultIMEWnd( hwnd );
-            if (hwndIME)
-                result = SendMessageW( hwndIME, msg, wParam, lParam );
-        }
-        break;
 
     default:
         result = NtUserMessageCall( hwnd, msg, wParam, lParam, 0, NtUserDefWindowProc, FALSE );

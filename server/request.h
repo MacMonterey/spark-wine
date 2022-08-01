@@ -175,6 +175,8 @@ DECL_HANDLER(lock_file);
 DECL_HANDLER(unlock_file);
 DECL_HANDLER(recv_socket);
 DECL_HANDLER(send_socket);
+DECL_HANDLER(socket_send_icmp_id);
+DECL_HANDLER(socket_get_icmp_id);
 DECL_HANDLER(get_next_console_request);
 DECL_HANDLER(read_directory_changes);
 DECL_HANDLER(read_change);
@@ -383,7 +385,6 @@ DECL_HANDLER(set_cursor);
 DECL_HANDLER(get_cursor_history);
 DECL_HANDLER(get_rawinput_buffer);
 DECL_HANDLER(update_rawinput_devices);
-DECL_HANDLER(get_rawinput_devices);
 DECL_HANDLER(create_job);
 DECL_HANDLER(open_job);
 DECL_HANDLER(assign_job);
@@ -457,6 +458,8 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_unlock_file,
     (req_handler)req_recv_socket,
     (req_handler)req_send_socket,
+    (req_handler)req_socket_send_icmp_id,
+    (req_handler)req_socket_get_icmp_id,
     (req_handler)req_get_next_console_request,
     (req_handler)req_read_directory_changes,
     (req_handler)req_read_change,
@@ -665,7 +668,6 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_get_cursor_history,
     (req_handler)req_get_rawinput_buffer,
     (req_handler)req_update_rawinput_devices,
-    (req_handler)req_get_rawinput_devices,
     (req_handler)req_create_job,
     (req_handler)req_open_job,
     (req_handler)req_assign_job,
@@ -1059,6 +1061,16 @@ C_ASSERT( FIELD_OFFSET(struct send_socket_reply, wait) == 8 );
 C_ASSERT( FIELD_OFFSET(struct send_socket_reply, options) == 12 );
 C_ASSERT( FIELD_OFFSET(struct send_socket_reply, nonblocking) == 16 );
 C_ASSERT( sizeof(struct send_socket_reply) == 24 );
+C_ASSERT( FIELD_OFFSET(struct socket_send_icmp_id_request, handle) == 12 );
+C_ASSERT( FIELD_OFFSET(struct socket_send_icmp_id_request, icmp_id) == 16 );
+C_ASSERT( FIELD_OFFSET(struct socket_send_icmp_id_request, icmp_seq) == 18 );
+C_ASSERT( sizeof(struct socket_send_icmp_id_request) == 24 );
+C_ASSERT( sizeof(struct socket_send_icmp_id_reply) == 8 );
+C_ASSERT( FIELD_OFFSET(struct socket_get_icmp_id_request, handle) == 12 );
+C_ASSERT( FIELD_OFFSET(struct socket_get_icmp_id_request, icmp_seq) == 16 );
+C_ASSERT( sizeof(struct socket_get_icmp_id_request) == 24 );
+C_ASSERT( FIELD_OFFSET(struct socket_get_icmp_id_reply, icmp_id) == 8 );
+C_ASSERT( sizeof(struct socket_get_icmp_id_reply) == 16 );
 C_ASSERT( FIELD_OFFSET(struct get_next_console_request_request, handle) == 12 );
 C_ASSERT( FIELD_OFFSET(struct get_next_console_request_request, signal) == 16 );
 C_ASSERT( FIELD_OFFSET(struct get_next_console_request_request, read) == 20 );
@@ -1174,7 +1186,6 @@ C_ASSERT( FIELD_OFFSET(struct create_key_request, access) == 12 );
 C_ASSERT( FIELD_OFFSET(struct create_key_request, options) == 16 );
 C_ASSERT( sizeof(struct create_key_request) == 24 );
 C_ASSERT( FIELD_OFFSET(struct create_key_reply, hkey) == 8 );
-C_ASSERT( FIELD_OFFSET(struct create_key_reply, created) == 12 );
 C_ASSERT( sizeof(struct create_key_reply) == 16 );
 C_ASSERT( FIELD_OFFSET(struct open_key_request, parent) == 12 );
 C_ASSERT( FIELD_OFFSET(struct open_key_request, access) == 16 );
@@ -2213,9 +2224,6 @@ C_ASSERT( FIELD_OFFSET(struct get_rawinput_buffer_reply, next_size) == 8 );
 C_ASSERT( FIELD_OFFSET(struct get_rawinput_buffer_reply, count) == 12 );
 C_ASSERT( sizeof(struct get_rawinput_buffer_reply) == 16 );
 C_ASSERT( sizeof(struct update_rawinput_devices_request) == 16 );
-C_ASSERT( sizeof(struct get_rawinput_devices_request) == 16 );
-C_ASSERT( FIELD_OFFSET(struct get_rawinput_devices_reply, device_count) == 8 );
-C_ASSERT( sizeof(struct get_rawinput_devices_reply) == 16 );
 C_ASSERT( FIELD_OFFSET(struct create_job_request, access) == 12 );
 C_ASSERT( sizeof(struct create_job_request) == 16 );
 C_ASSERT( FIELD_OFFSET(struct create_job_reply, handle) == 8 );

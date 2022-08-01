@@ -1470,6 +1470,24 @@ enum server_fd_type
 @END
 
 
+/* Store ICMP id for ICMP over datagram fixup */
+@REQ(socket_send_icmp_id)
+    obj_handle_t   handle;        /* socket handle */
+    unsigned short icmp_id;       /* ICMP packet id */
+    unsigned short icmp_seq;      /* ICMP packed sequence */
+@REPLY
+@END
+
+
+/* Get ICMP id for ICMP over datagram fixup */
+@REQ(socket_get_icmp_id)
+    obj_handle_t   handle;        /* socket handle */
+    unsigned short icmp_seq;      /* ICMP packed sequence */
+@REPLY
+    unsigned short icmp_id;       /* ICMP packet id */
+@END
+
+
 /* Retrieve the next pending console ioctl request */
 @REQ(get_next_console_request)
     obj_handle_t handle;        /* console server handle */
@@ -1718,7 +1736,6 @@ struct process_info
     VARARG(class,unicode_str);         /* class name */
 @REPLY
     obj_handle_t hkey;         /* handle to the created key */
-    int          created;      /* has it been newly created? */
 @END
 
 /* Open a registry key */
@@ -3656,13 +3673,6 @@ struct handle_info
 
 /* Modify the list of registered rawinput devices */
 @REQ(update_rawinput_devices)
-    VARARG(devices,rawinput_devices);
-@END
-
-/* Retrieve the list of registered rawinput devices */
-@REQ(get_rawinput_devices)
-@REPLY
-    unsigned int device_count;
     VARARG(devices,rawinput_devices);
 @END
 

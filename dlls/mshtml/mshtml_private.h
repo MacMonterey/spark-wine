@@ -91,6 +91,7 @@ typedef struct EventTarget EventTarget;
     XDIID(DispDOMMouseEvent) \
     XDIID(DispDOMProgressEvent) \
     XDIID(DispDOMUIEvent) \
+    XDIID(DispDOMDocumentType) \
     XDIID(DispHTMLAnchorElement) \
     XDIID(DispHTMLAreaElement) \
     XDIID(DispHTMLAttributeCollection) \
@@ -153,6 +154,7 @@ typedef struct EventTarget EventTarget;
     XIID(IDOMMouseEvent) \
     XIID(IDOMProgressEvent) \
     XIID(IDOMUIEvent) \
+    XIID(IDOMDocumentType) \
     XIID(IDocumentEvent) \
     XIID(IDocumentRange) \
     XIID(IDocumentSelector) \
@@ -297,6 +299,7 @@ PRIVATE_TID_LIST
 } tid_t;
 
 typedef enum {
+    COMPAT_MODE_INVALID = -1,
     COMPAT_MODE_QUIRKS,
     COMPAT_MODE_IE5,
     COMPAT_MODE_IE7,
@@ -928,6 +931,7 @@ HRESULT MHTMLDocument_Create(IUnknown*,REFIID,void**) DECLSPEC_HIDDEN;
 HRESULT HTMLLoadOptions_Create(IUnknown*,REFIID,void**) DECLSPEC_HIDDEN;
 HRESULT create_document_node(nsIDOMHTMLDocument*,GeckoBrowser*,HTMLInnerWindow*,
                              compat_mode_t,HTMLDocumentNode**) DECLSPEC_HIDDEN;
+HRESULT create_doctype_node(HTMLDocumentNode*,nsIDOMNode*,HTMLDOMNode**) DECLSPEC_HIDDEN;
 
 HRESULT create_outer_window(GeckoBrowser*,mozIDOMWindowProxy*,HTMLOuterWindow*,HTMLOuterWindow**) DECLSPEC_HIDDEN;
 HRESULT update_window_doc(HTMLInnerWindow*) DECLSPEC_HIDDEN;
@@ -1253,7 +1257,7 @@ HRESULT set_task_timer(HTMLInnerWindow*,LONG,enum timer_type,IDispatch*,LONG*) D
 HRESULT clear_task_timer(HTMLInnerWindow*,DWORD) DECLSPEC_HIDDEN;
 HRESULT clear_animation_timer(HTMLInnerWindow*,DWORD) DECLSPEC_HIDDEN;
 
-BOOL parse_compat_version(const WCHAR*,compat_mode_t*) DECLSPEC_HIDDEN;
+const WCHAR *parse_compat_version(const WCHAR*,compat_mode_t*) DECLSPEC_HIDDEN;
 
 const char *debugstr_mshtml_guid(const GUID*) DECLSPEC_HIDDEN;
 

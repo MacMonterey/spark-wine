@@ -1158,7 +1158,7 @@ LRESULT MDIClientWndProc_common( HWND hwnd, UINT message, WPARAM wParam, LPARAM 
 
       case WM_MDITILE:
 	ci->mdiFlags |= MDIF_NEEDUPDATE;
-        ShowScrollBar( hwnd, SB_BOTH, FALSE );
+        NtUserShowScrollBar( hwnd, SB_BOTH, FALSE );
         MDITile( hwnd, ci, wParam );
         ci->mdiFlags &= ~MDIF_NEEDUPDATE;
         return 0;
@@ -1701,7 +1701,7 @@ void WINAPI CalcChildScroll( HWND hwnd, INT scroll )
             if (style & WS_MAXIMIZE)
             {
                 HeapFree( GetProcessHeap(), 0, list );
-                ShowScrollBar( hwnd, SB_BOTH, FALSE );
+                NtUserShowScrollBar( hwnd, SB_BOTH, FALSE );
                 return;
             }
             if (style & WS_VISIBLE)
@@ -1730,7 +1730,7 @@ void WINAPI CalcChildScroll( HWND hwnd, INT scroll )
                             info.nMin = childRect.left;
                             info.nMax = childRect.right - clientRect.right;
                             info.nPos = clientRect.left - childRect.left;
-                            SetScrollInfo(hwnd, SB_HORZ, &info, TRUE);
+                            NtUserSetScrollInfo(hwnd, SB_HORZ, &info, TRUE);
                         }
 			if (scroll == SB_HORZ) break;
 			/* fall through */
@@ -1740,7 +1740,7 @@ void WINAPI CalcChildScroll( HWND hwnd, INT scroll )
                             info.nMin = childRect.top;
                             info.nMax = childRect.bottom - clientRect.bottom;
                             info.nPos = clientRect.top - childRect.top;
-                            SetScrollInfo(hwnd, SB_VERT, &info, TRUE);
+                            NtUserSetScrollInfo(hwnd, SB_VERT, &info, TRUE);
                         }
 			break;
     }

@@ -25,29 +25,6 @@
 #include "ntuser.h"
 #include "wine/list.h"
 
-struct dce;
-struct tagWND;
-
-struct hardware_msg_data;
-
-struct user_callbacks
-{
-    BOOL (WINAPI *pImmProcessKey)(HWND, HKL, UINT, LPARAM, DWORD);
-    BOOL (WINAPI *pImmTranslateMessage)(HWND, UINT, WPARAM, LPARAM);
-    NTSTATUS (WINAPI *pNtWaitForMultipleObjects)(ULONG,const HANDLE*,BOOLEAN,BOOLEAN,const LARGE_INTEGER*);
-    void (CDECL *draw_nc_scrollbar)( HWND hwnd, HDC hdc, BOOL draw_horizontal, BOOL draw_vertical );
-    void (CDECL *free_win_ptr)( struct tagWND *win );
-    void (CDECL *notify_ime)( HWND hwnd, UINT param );
-    BOOL (CDECL *post_dde_message)( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, DWORD dest_tid,
-                                    DWORD type );
-    void (WINAPI *set_standard_scroll_painted)( HWND hwnd, INT bar, BOOL visible );
-    BOOL (CDECL *unpack_dde_message)( HWND hwnd, UINT message, WPARAM *wparam, LPARAM *lparam,
-                                      void **buffer, size_t size );
-    BOOL (WINAPI *register_imm)( HWND hwnd );
-    void (WINAPI *unregister_imm)( HWND hwnd );
-    NTSTATUS (CDECL *try_finally)( NTSTATUS (CDECL *func)( void *), void *arg,
-                                   void (CALLBACK *finally_func)( BOOL ));
-};
 
 #define WM_SYSTIMER         0x0118
 #define WM_POPUPSYSTEMMENU  0x0313
@@ -98,7 +75,7 @@ typedef struct tagWND
     POINT              min_pos;       /* Position for minimized window */
     POINT              max_pos;       /* Position for maximized window */
     WCHAR             *text;          /* Window text */
-    void              *pScroll;       /* Scroll-bar info */
+    struct win_scroll_bar_info *pScroll; /* Scroll-bar info */
     DWORD              dwStyle;       /* Window style (from CreateWindow) */
     DWORD              dwExStyle;     /* Extended style (from CreateWindowEx) */
     UINT_PTR           wIDmenu;       /* ID or hmenu (from CreateWindow) */
@@ -108,6 +85,7 @@ typedef struct tagWND
     HICON              hIcon;         /* window's icon */
     HICON              hIconSmall;    /* window's small icon */
     HICON              hIconSmall2;   /* window's secondary small icon, derived from hIcon */
+    HIMC               imc;           /* window's input context */
     UINT               dpi;           /* window DPI */
     DPI_AWARENESS      dpi_awareness; /* DPI awareness */
     struct window_surface *surface;   /* Window surface if any */
@@ -128,18 +106,14 @@ typedef struct tagWND
 #define WIN_CHILDREN_MOVED        0x0040 /* children may have moved, ignore stored positions */
 #define WIN_HAS_IME_WIN           0x0080 /* the window has been registered with imm32 */
 
-#define WND_OTHER_PROCESS ((WND *)1)  /* returned by WIN_GetPtr on unknown window handles */
-#define WND_DESKTOP       ((WND *)2)  /* returned by WIN_GetPtr on the desktop window */
+#define WND_OTHER_PROCESS ((WND *)1)  /* returned by get_win_ptr on unknown window handles */
+#define WND_DESKTOP       ((WND *)2)  /* returned by get_win_ptr on the desktop window */
 
 /* check if hwnd is a broadcast magic handle */
 static inline BOOL is_broadcast( HWND hwnd )
 {
     return hwnd == HWND_BROADCAST || hwnd == HWND_TOPMOST;
 }
-
-#define WM_IME_INTERNAL 0x287
-#define IME_INTERNAL_ACTIVATE 0x17
-#define IME_INTERNAL_DEACTIVATE 0x18
 
 /* this is the structure stored in TEB->Win32ClientInfo */
 /* no attempt is made to keep the layout compatible with the Windows one */
@@ -160,6 +134,7 @@ struct user_thread_info
     struct received_message_info *receive_info;           /* Message being currently received */
     struct wm_char_mapping_data  *wmchar_data;            /* Data for WM_CHAR mappings */
     struct user_key_state_info   *key_state;              /* Cache of global key state */
+    struct imm_thread_data       *imm_thread_data;        /* IMM thread data */
     HKL                           kbd_layout;             /* Current keyboard layout */
     DWORD                         kbd_layout_id;          /* Current keyboard layout ID */
     struct rawinput_thread_data  *rawinput;               /* RawInput thread local data / buffer */
@@ -203,12 +178,24 @@ enum builtin_winprocs
     NB_BUILTIN_AW_WINPROCS = WINPROC_DESKTOP
 };
 
-/* FIXME: make it private to class.c */
-typedef struct tagWINDOWPROC
+/* FIXME: make it private to scroll.c */
+
+/* data for a single scroll bar */
+struct scroll_info
 {
-    WNDPROC        procA;    /* ANSI window proc */
-    WNDPROC        procW;    /* Unicode window proc */
-} WINDOWPROC;
+    INT   curVal;   /* Current scroll-bar value */
+    INT   minVal;   /* Minimum scroll-bar value */
+    INT   maxVal;   /* Maximum scroll-bar value */
+    INT   page;     /* Page size of scroll bar (Win32) */
+    UINT  flags;    /* EnableScrollBar flags */
+    BOOL  painted;  /* Whether the scroll bar is painted by DefWinProc() */
+};
+
+struct scroll_bar_win_data
+{
+    DWORD magic;
+    struct scroll_info info;
+};
 
 #define WINPROC_HANDLE (~0u >> 16)
 #define BUILTIN_WINPROC(index) ((WNDPROC)(ULONG_PTR)((index) | (WINPROC_HANDLE << 16)))
@@ -249,17 +236,18 @@ extern void spy_exit_message( INT flag, HWND hwnd, UINT msg,
 /* class.c */
 extern HINSTANCE user32_module DECLSPEC_HIDDEN;
 WNDPROC alloc_winproc( WNDPROC func, BOOL ansi ) DECLSPEC_HIDDEN;
-WINDOWPROC *get_winproc_ptr( WNDPROC handle ) DECLSPEC_HIDDEN;
 BOOL is_winproc_unicode( WNDPROC proc, BOOL def_val ) DECLSPEC_HIDDEN;
 DWORD get_class_long( HWND hwnd, INT offset, BOOL ansi ) DECLSPEC_HIDDEN;
 WNDPROC get_class_winproc( struct tagCLASS *class ) DECLSPEC_HIDDEN;
 ULONG_PTR get_class_long_ptr( HWND hwnd, INT offset, BOOL ansi ) DECLSPEC_HIDDEN;
 WORD get_class_word( HWND hwnd, INT offset ) DECLSPEC_HIDDEN;
+DLGPROC get_dialog_proc( HWND hwnd, enum dialog_proc_type type ) DECLSPEC_HIDDEN;
 ATOM get_int_atom_value( UNICODE_STRING *name ) DECLSPEC_HIDDEN;
 WNDPROC get_winproc( WNDPROC proc, BOOL ansi ) DECLSPEC_HIDDEN;
 void get_winproc_params( struct win_proc_params *params ) DECLSPEC_HIDDEN;
 struct dce *get_class_dce( struct tagCLASS *class ) DECLSPEC_HIDDEN;
 struct dce *set_class_dce( struct tagCLASS *class, struct dce *dce ) DECLSPEC_HIDDEN;
+BOOL needs_ime_window( HWND hwnd ) DECLSPEC_HIDDEN;
 extern void register_builtin_classes(void) DECLSPEC_HIDDEN;
 
 /* cursoricon.c */
