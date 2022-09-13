@@ -312,7 +312,7 @@ static INT CDECL nulldrv_GetDeviceCaps( PHYSDEV dev, INT cap )
 
 static BOOL CDECL nulldrv_GetDeviceGammaRamp( PHYSDEV dev, void *ramp )
 {
-    SetLastError( ERROR_INVALID_PARAMETER );
+    RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
     return FALSE;
 }
 
@@ -516,7 +516,7 @@ static void CDECL nulldrv_SetDeviceClipping( PHYSDEV dev, HRGN rgn )
 
 static BOOL CDECL nulldrv_SetDeviceGammaRamp( PHYSDEV dev, void *ramp )
 {
-    SetLastError( ERROR_INVALID_PARAMETER );
+    RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
     return FALSE;
 }
 
@@ -753,13 +753,18 @@ static void nulldrv_UpdateClipboard(void)
 {
 }
 
-static LONG nulldrv_ChangeDisplaySettingsEx( LPCWSTR name, LPDEVMODEW mode, HWND hwnd,
-                                             DWORD flags, LPVOID lparam )
+static LONG nulldrv_ChangeDisplaySettings( LPDEVMODEW displays, HWND hwnd,
+                                           DWORD flags, LPVOID lparam )
 {
     return DISP_CHANGE_FAILED;
 }
 
 static BOOL nulldrv_EnumDisplaySettingsEx( LPCWSTR name, DWORD num, LPDEVMODEW mode, DWORD flags )
+{
+    return FALSE;
+}
+
+static BOOL nulldrv_GetCurrentDisplaySettings( LPCWSTR name, LPDEVMODEW mode )
 {
     return FALSE;
 }
@@ -780,7 +785,7 @@ static BOOL nodrv_CreateWindow( HWND hwnd )
     HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
 
     /* HWND_MESSAGE windows don't need a graphics driver */
-    if (!parent || parent == NtUserGetThreadInfo()->msg_window) return TRUE;
+    if (!parent || parent == UlongToHandle( NtUserGetThreadInfo()->msg_window )) return TRUE;
     if (warned++) return FALSE;
 
     ERR_(winediag)( "Application tried to create a window, but no driver could be loaded.\n" );
@@ -1066,15 +1071,20 @@ static SHORT loaderdrv_VkKeyScanEx( WCHAR ch, HKL layout )
     return load_driver()->pVkKeyScanEx( ch, layout );
 }
 
-static LONG loaderdrv_ChangeDisplaySettingsEx( LPCWSTR name, LPDEVMODEW mode, HWND hwnd,
-                                                     DWORD flags, LPVOID lparam )
+static LONG loaderdrv_ChangeDisplaySettings( LPDEVMODEW displays, HWND hwnd,
+                                             DWORD flags, LPVOID lparam )
 {
-    return load_driver()->pChangeDisplaySettingsEx( name, mode, hwnd, flags, lparam );
+    return load_driver()->pChangeDisplaySettings( displays, hwnd, flags, lparam );
 }
 
 static BOOL loaderdrv_EnumDisplaySettingsEx( LPCWSTR name, DWORD num, LPDEVMODEW mode, DWORD flags )
 {
     return load_driver()->pEnumDisplaySettingsEx( name, num, mode, flags );
+}
+
+static BOOL loaderdrv_GetCurrentDisplaySettings( LPCWSTR name, LPDEVMODEW mode )
+{
+    return load_driver()->pGetCurrentDisplaySettings( name, mode );
 }
 
 static void loaderdrv_SetCursor( HCURSOR cursor )
@@ -1177,8 +1187,9 @@ static const struct user_driver_funcs lazy_load_driver =
     nulldrv_ClipboardWindowProc,
     loaderdrv_UpdateClipboard,
     /* display modes */
-    loaderdrv_ChangeDisplaySettingsEx,
+    loaderdrv_ChangeDisplaySettings,
     loaderdrv_EnumDisplaySettingsEx,
+    loaderdrv_GetCurrentDisplaySettings,
     loaderdrv_UpdateDisplayDevices,
     /* windowing functions */
     loaderdrv_CreateDesktopWindow,
@@ -1252,8 +1263,9 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
     SET_USER_FUNC(ClipCursor);
     SET_USER_FUNC(ClipboardWindowProc);
     SET_USER_FUNC(UpdateClipboard);
-    SET_USER_FUNC(ChangeDisplaySettingsEx);
+    SET_USER_FUNC(ChangeDisplaySettings);
     SET_USER_FUNC(EnumDisplaySettingsEx);
+    SET_USER_FUNC(GetCurrentDisplaySettings);
     SET_USER_FUNC(UpdateDisplayDevices);
     SET_USER_FUNC(CreateDesktopWindow);
     SET_USER_FUNC(CreateWindow);

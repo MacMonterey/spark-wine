@@ -1931,6 +1931,8 @@ int a(int b, ...) { __builtin_ms_va_list list; __builtin_ms_va_start(list,b); }]
            fi
            MSVCRTFLAGS="$MSVCRTFLAGS -mabi=ms" ;;
       esac ;;
+    arm*)
+      WINE_TRY_CFLAGS([-Wincompatible-function-pointer-types],[EXTRACFLAGS="$EXTRACFLAGS -Wno-error=incompatible-function-pointer-types"]) ;;
   esac
 
   CFLAGS=$saved_CFLAGS
@@ -2433,6 +2435,7 @@ WINE_CONFIG_MAKEFILE(dlls/comm.drv16,enable_win16)
 WINE_CONFIG_MAKEFILE(dlls/commdlg.dll16,enable_win16)
 WINE_CONFIG_MAKEFILE(dlls/compobj.dll16,enable_win16)
 WINE_CONFIG_MAKEFILE(dlls/compstui)
+WINE_CONFIG_MAKEFILE(dlls/compstui/tests)
 WINE_CONFIG_MAKEFILE(dlls/comsvcs)
 WINE_CONFIG_MAKEFILE(dlls/comsvcs/tests)
 WINE_CONFIG_MAKEFILE(dlls/concrt140)
@@ -2738,6 +2741,8 @@ WINE_CONFIG_MAKEFILE(dlls/mfplay)
 WINE_CONFIG_MAKEFILE(dlls/mfplay/tests)
 WINE_CONFIG_MAKEFILE(dlls/mfreadwrite)
 WINE_CONFIG_MAKEFILE(dlls/mfreadwrite/tests)
+WINE_CONFIG_MAKEFILE(dlls/mfsrcsnk)
+WINE_CONFIG_MAKEFILE(dlls/mfsrcsnk/tests)
 WINE_CONFIG_MAKEFILE(dlls/mgmtapi)
 WINE_CONFIG_MAKEFILE(dlls/midimap)
 WINE_CONFIG_MAKEFILE(dlls/mlang)

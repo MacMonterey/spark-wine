@@ -2,8 +2,8 @@
 # 使用系统默认的 python3 运行
 ###########################################################################################
 # 作者：gfdgd xi
-# 版本：1.5.1
-# 更新时间：2022年07月03日
+# 版本：7.17
+# 更新时间：2022年09月12日
 # 感谢：感谢 wine 以及 deepin-wine 团队，提供了 wine 和 deepin-wine 给大家使用，让我能做这个程序
 # 基于 Python3 的 tkinter 构建
 ###########################################################################################
@@ -22,9 +22,8 @@ def AddSparkStoreSource():
     os.system("sudo apt update -o Dir::Etc::sourcelist=\"sources.list.d/sparkstore.list\"     -o Dir::Etc::sourceparts=\"-\" -o APT::Get::List-Cleanup=\"0\"")
 
 def InstallSparkWine(wine):
-    if os.path.exists("/usr/local/bin/ss-apt-fast"):
-        os.system("sudo apt install apt-fast -y")
-        os.system(f"sudo ss-apt-fast install \"{wine}\" -y")
+    if os.path.exists("/usr/local/bin/aptss"):
+        os.system(f"sudo aptss install \"{wine}\" -y")
         return
     os.system(f"sudo apt install \"{wine}\" -y")
 

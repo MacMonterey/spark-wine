@@ -29,6 +29,7 @@
 #include "windef.h"
 #include "winnt.h"
 #include "ntgdi_private.h"
+#include "ntuser_private.h"
 #include "ntuser.h"
 #include "wine/unixlib.h"
 
@@ -217,6 +218,7 @@ static void * const syscalls[] =
     NtUserIsClipboardFormatAvailable,
     NtUserKillTimer,
     NtUserLockWindowUpdate,
+    NtUserLogicalToPerMonitorDPIPhysicalPoint,
     NtUserMapVirtualKeyEx,
     NtUserMenuItemFromPoint,
     NtUserMessageCall,
@@ -228,6 +230,7 @@ static void * const syscalls[] =
     NtUserOpenInputDesktop,
     NtUserOpenWindowStation,
     NtUserPeekMessage,
+    NtUserPerMonitorDPIPhysicalToLogicalPoint,
     NtUserPostMessage,
     NtUserPostThreadMessage,
     NtUserQueryInputContext,
@@ -313,12 +316,7 @@ static SYSTEM_SERVICE_TABLE syscall_table =
 
 static NTSTATUS init( void *dispatcher )
 {
-    NTSTATUS status;
-    if ((status = ntdll_init_syscalls( 1, &syscall_table, dispatcher ))) return status;
-    if ((status = gdi_init())) return status;
-    winstation_init();
-    sysparams_init();
-    return STATUS_SUCCESS;
+    return ntdll_init_syscalls( 1, &syscall_table, dispatcher );
 }
 
 unixlib_entry_t __wine_unix_call_funcs[] =

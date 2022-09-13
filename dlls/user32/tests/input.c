@@ -55,6 +55,7 @@
 #include "winnls.h"
 #include "winreg.h"
 #include "ddk/hidsdi.h"
+#include "imm.h"
 
 #include "wine/test.h"
 
@@ -1188,8 +1189,6 @@ static void test_Input_unicode(void)
     WNDCLASSW wclass;
     HANDLE hInstance = GetModuleHandleW(NULL);
     HHOOK hook;
-    HMODULE hModuleImm32;
-    BOOL (WINAPI *pImmDisableIME)(DWORD);
     BOOL us_kbd = (GetKeyboardLayout(0) == (HKL)(ULONG_PTR)0x04090409);
     if (!us_kbd)
     {
@@ -1212,14 +1211,7 @@ static void test_Input_unicode(void)
         return;
     }
 
-    hModuleImm32 = LoadLibraryA("imm32.dll");
-    if (hModuleImm32) {
-        pImmDisableIME = (void *)GetProcAddress(hModuleImm32, "ImmDisableIME");
-        if (pImmDisableIME)
-            pImmDisableIME(0);
-    }
-    pImmDisableIME = NULL;
-    FreeLibrary(hModuleImm32);
+    ImmDisableIME(0);
 
     /* create the test window that will receive the keystrokes */
     hWndTest = CreateWindowW(wclass.lpszClassName, windowNameW,
@@ -2906,6 +2898,25 @@ static void test_rawinput(const char* argv0)
     CloseHandle(thread);
 
     CloseDesktop(params.desk);
+}
+
+static void test_DefRawInputProc(void)
+{
+    LRESULT ret;
+
+    SetLastError(0xdeadbeef);
+    ret = DefRawInputProc(NULL, 0, sizeof(RAWINPUTHEADER));
+    ok(!ret, "got %Id\n", ret);
+    ok(GetLastError() == 0xdeadbeef, "got %ld\n", GetLastError());
+    ret = DefRawInputProc(LongToPtr(0xcafe), 0xbeef, sizeof(RAWINPUTHEADER));
+    ok(!ret, "got %Id\n", ret);
+    ok(GetLastError() == 0xdeadbeef, "got %ld\n", GetLastError());
+    ret = DefRawInputProc(NULL, 0, sizeof(RAWINPUTHEADER) - 1);
+    ok(ret == -1, "got %Id\n", ret);
+    ok(GetLastError() == 0xdeadbeef, "got %ld\n", GetLastError());
+    ret = DefRawInputProc(NULL, 0, sizeof(RAWINPUTHEADER) + 1);
+    ok(ret == -1, "got %Id\n", ret);
+    ok(GetLastError() == 0xdeadbeef, "got %ld\n", GetLastError());
 }
 
 static void test_key_map(void)
@@ -4597,6 +4608,7 @@ START_TEST(input)
     test_GetRawInputBuffer();
     test_RegisterRawInputDevices();
     test_rawinput(argv[0]);
+    test_DefRawInputProc();
 
     if(pGetMouseMovePointsEx)
         test_GetMouseMovePointsEx(argv[0]);

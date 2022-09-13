@@ -72,7 +72,8 @@
 
 #define NSAPI WINAPI
 
-#define MSHTML_E_NODOC    0x800a025c
+#define MSHTML_E_INVALID_ACTION   0x800a01bd
+#define MSHTML_E_NODOC            0x800a025c
 
 typedef struct HTMLDOMNode HTMLDOMNode;
 typedef struct ConnectionPoint ConnectionPoint;
@@ -285,7 +286,8 @@ typedef struct EventTarget EventTarget;
     XIID(IWineHTMLWindowPrivate) \
     XIID(IWineHTMLWindowCompatPrivate) \
     XIID(IWineXMLHttpRequestPrivate) \
-    XIID(IWineMSHTMLConsole)
+    XIID(IWineMSHTMLConsole) \
+    XIID(IWineMSHTMLMediaQueryList)
 
 typedef enum {
 #define XIID(iface) iface ## _tid,
@@ -331,7 +333,10 @@ typedef struct DispatchEx DispatchEx;
 typedef struct {
     HRESULT (*value)(DispatchEx*,LCID,WORD,DISPPARAMS*,VARIANT*,EXCEPINFO*,IServiceProvider*);
     HRESULT (*get_dispid)(DispatchEx*,BSTR,DWORD,DISPID*);
+    HRESULT (*get_name)(DispatchEx*,DISPID,BSTR*);
     HRESULT (*invoke)(DispatchEx*,DISPID,LCID,WORD,DISPPARAMS*,VARIANT*,EXCEPINFO*,IServiceProvider*);
+    HRESULT (*delete)(DispatchEx*,DISPID);
+    HRESULT (*next_dispid)(DispatchEx*,DISPID,DISPID*);
     compat_mode_t (*get_compat_mode)(DispatchEx*);
     HRESULT (*populate_props)(DispatchEx*);
 } dispex_static_data_vtbl_t;
@@ -801,6 +806,7 @@ typedef struct {
     HRESULT (*get_document)(HTMLDOMNode*,IDispatch**);
     HRESULT (*get_readystate)(HTMLDOMNode*,BSTR*);
     HRESULT (*get_dispid)(HTMLDOMNode*,BSTR,DWORD,DISPID*);
+    HRESULT (*get_name)(HTMLDOMNode*,DISPID,BSTR*);
     HRESULT (*invoke)(HTMLDOMNode*,DISPID,LCID,WORD,DISPPARAMS*,VARIANT*,EXCEPINFO*,IServiceProvider*);
     HRESULT (*bind_to_tree)(HTMLDOMNode*);
     void (*traverse)(HTMLDOMNode*,nsCycleCollectionTraversalCallback*);
@@ -949,7 +955,7 @@ HRESULT create_namespace_collection(compat_mode_t,IHTMLNamespaceCollection**) DE
 HRESULT create_dom_implementation(HTMLDocumentNode*,IHTMLDOMImplementation**) DECLSPEC_HIDDEN;
 void detach_dom_implementation(IHTMLDOMImplementation*) DECLSPEC_HIDDEN;
 
-HRESULT create_html_storage(compat_mode_t,IUri*,IHTMLStorage**) DECLSPEC_HIDDEN;
+HRESULT create_html_storage(HTMLInnerWindow*,BOOL,IHTMLStorage**) DECLSPEC_HIDDEN;
 
 void HTMLDocument_Persist_Init(HTMLDocument*) DECLSPEC_HIDDEN;
 void HTMLDocument_OleCmd_Init(HTMLDocument*) DECLSPEC_HIDDEN;
@@ -1237,10 +1243,13 @@ typedef struct {
     HWND thread_hwnd;
     struct list task_list;
     struct list timer_list;
+    struct wine_rb_tree session_storage_map;
 } thread_data_t;
 
 thread_data_t *get_thread_data(BOOL) DECLSPEC_HIDDEN;
 HWND get_thread_hwnd(void) DECLSPEC_HIDDEN;
+int session_storage_map_cmp(const void*,const struct wine_rb_entry*) DECLSPEC_HIDDEN;
+void destroy_session_storage(thread_data_t*) DECLSPEC_HIDDEN;
 
 LONG get_task_target_magic(void) DECLSPEC_HIDDEN;
 HRESULT push_task(task_t*,task_proc_t,task_proc_t,LONG) DECLSPEC_HIDDEN;
@@ -1419,6 +1428,11 @@ static inline BOOL is_digit(WCHAR c)
     return '0' <= c && c <= '9';
 }
 
+static inline BOOL is_power_of_2(unsigned x)
+{
+    return !(x & (x - 1));
+}
+
 #ifdef __i386__
 extern void *call_thiscall_func;
 #endif
@@ -1432,3 +1446,4 @@ IInternetSecurityManager *get_security_manager(void) DECLSPEC_HIDDEN;
 
 extern HINSTANCE hInst DECLSPEC_HIDDEN;
 void create_console(compat_mode_t compat_mode, IWineMSHTMLConsole **ret) DECLSPEC_HIDDEN;
+HRESULT create_media_query_list(HTMLWindow *window, BSTR media_query, IDispatch **ret) DECLSPEC_HIDDEN;

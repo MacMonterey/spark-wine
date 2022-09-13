@@ -1910,7 +1910,10 @@ struct vulkan_device_funcs
     void (*p_vkCmdDrawIndirectCount)(VkCommandBuffer, VkBuffer, VkDeviceSize, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
     void (*p_vkCmdDrawIndirectCountAMD)(VkCommandBuffer, VkBuffer, VkDeviceSize, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
     void (*p_vkCmdDrawIndirectCountKHR)(VkCommandBuffer, VkBuffer, VkDeviceSize, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
+    void (*p_vkCmdDrawMeshTasksEXT)(VkCommandBuffer, uint32_t, uint32_t, uint32_t);
+    void (*p_vkCmdDrawMeshTasksIndirectCountEXT)(VkCommandBuffer, VkBuffer, VkDeviceSize, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
     void (*p_vkCmdDrawMeshTasksIndirectCountNV)(VkCommandBuffer, VkBuffer, VkDeviceSize, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
+    void (*p_vkCmdDrawMeshTasksIndirectEXT)(VkCommandBuffer, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
     void (*p_vkCmdDrawMeshTasksIndirectNV)(VkCommandBuffer, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
     void (*p_vkCmdDrawMeshTasksNV)(VkCommandBuffer, uint32_t, uint32_t);
     void (*p_vkCmdDrawMultiEXT)(VkCommandBuffer, uint32_t, const VkMultiDrawInfoEXT *, uint32_t, uint32_t, uint32_t);
@@ -2141,8 +2144,10 @@ struct vulkan_device_funcs
     void (*p_vkGetDeviceQueue)(VkDevice, uint32_t, uint32_t, VkQueue *);
     void (*p_vkGetDeviceQueue2)(VkDevice, const VkDeviceQueueInfo2 *, VkQueue *);
     VkResult (*p_vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI)(VkDevice, VkRenderPass, VkExtent2D *);
+    VkResult (*p_vkGetDynamicRenderingTilePropertiesQCOM)(VkDevice, const VkRenderingInfo_host *, VkTilePropertiesQCOM *);
     VkResult (*p_vkGetEventStatus)(VkDevice, VkEvent);
     VkResult (*p_vkGetFenceStatus)(VkDevice, VkFence);
+    VkResult (*p_vkGetFramebufferTilePropertiesQCOM)(VkDevice, VkFramebuffer, uint32_t *, VkTilePropertiesQCOM *);
     void (*p_vkGetGeneratedCommandsMemoryRequirementsNV)(VkDevice, const VkGeneratedCommandsMemoryRequirementsInfoNV_host *, VkMemoryRequirements2_host *);
     void (*p_vkGetImageMemoryRequirements)(VkDevice, VkImage, VkMemoryRequirements_host *);
     void (*p_vkGetImageMemoryRequirements2)(VkDevice, const VkImageMemoryRequirementsInfo2_host *, VkMemoryRequirements2_host *);
@@ -2365,7 +2370,10 @@ struct vulkan_instance_funcs
     USE_VK_FUNC(vkCmdDrawIndirectCount) \
     USE_VK_FUNC(vkCmdDrawIndirectCountAMD) \
     USE_VK_FUNC(vkCmdDrawIndirectCountKHR) \
+    USE_VK_FUNC(vkCmdDrawMeshTasksEXT) \
+    USE_VK_FUNC(vkCmdDrawMeshTasksIndirectCountEXT) \
     USE_VK_FUNC(vkCmdDrawMeshTasksIndirectCountNV) \
+    USE_VK_FUNC(vkCmdDrawMeshTasksIndirectEXT) \
     USE_VK_FUNC(vkCmdDrawMeshTasksIndirectNV) \
     USE_VK_FUNC(vkCmdDrawMeshTasksNV) \
     USE_VK_FUNC(vkCmdDrawMultiEXT) \
@@ -2596,8 +2604,10 @@ struct vulkan_instance_funcs
     USE_VK_FUNC(vkGetDeviceQueue) \
     USE_VK_FUNC(vkGetDeviceQueue2) \
     USE_VK_FUNC(vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI) \
+    USE_VK_FUNC(vkGetDynamicRenderingTilePropertiesQCOM) \
     USE_VK_FUNC(vkGetEventStatus) \
     USE_VK_FUNC(vkGetFenceStatus) \
+    USE_VK_FUNC(vkGetFramebufferTilePropertiesQCOM) \
     USE_VK_FUNC(vkGetGeneratedCommandsMemoryRequirementsNV) \
     USE_VK_FUNC(vkGetImageMemoryRequirements) \
     USE_VK_FUNC(vkGetImageMemoryRequirements2) \

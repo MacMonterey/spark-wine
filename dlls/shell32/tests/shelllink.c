@@ -26,6 +26,7 @@
 #include "shlguid.h"
 #include "shobjidl.h"
 #include "shlobj.h"
+#include "shlwapi.h"
 #include "shellapi.h"
 #include "commoncontrols.h"
 
@@ -619,6 +620,9 @@ static void test_load_save(void)
     char mypath[MAX_PATH];
     char mydir[MAX_PATH];
     char realpath[MAX_PATH];
+    IPersistFile *pf;
+    IShellLinkA *sl;
+    IStream *stm;
     char* p;
     HANDLE hf;
     DWORD r;
@@ -809,13 +813,52 @@ static void test_load_save(void)
     r = DeleteFileA(realpath);
     ok(r, "failed to delete file %s (%ld)\n", realpath, GetLastError());
 
+    /* test sharing modes */
+    r = CoCreateInstance(&CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, &IID_IShellLinkA, (LPVOID*)&sl);
+    ok( r == S_OK, "no IID_IShellLinkA (0x%08lx)\n", r );
+    r = IShellLinkA_QueryInterface(sl, &IID_IPersistFile, (void**)&pf);
+    ok( r == S_OK, "no IID_IPersistFile (0x%08lx)\n", r );
+
+    r = SHCreateStreamOnFileW(lnkfile, STGM_READ, &stm);
+    ok( !r, "SHCreateStreamOnFileW failed %lx\n", r );
+    r = IPersistFile_Save(pf, lnkfile, FALSE);
+    ok(r == S_OK, "IPersistFile_Save failed (0x%08lx)\n", r);
+    r = IPersistFile_Load(pf, lnkfile, 0);
+    ok(r == S_OK, "IPersistFile_Load failed (0x%08lx)\n", r);
+    IStream_Release( stm );
+
+    r = SHCreateStreamOnFileW(lnkfile, STGM_READ | STGM_SHARE_DENY_WRITE, &stm);
+    ok( r == S_OK, "SHCreateStreamOnFileW failed %lx\n", r );
+    r = IPersistFile_Save(pf, lnkfile, FALSE);
+    ok( r == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION), "IPersistFile_Save failed (0x%08lx)\n", r );
+    r = IPersistFile_Load(pf, lnkfile, 0);
+    ok(r == S_OK, "IPersistFile_Load failed (0x%08lx)\n", r);
+    IStream_Release( stm );
+
+    r = SHCreateStreamOnFileW(lnkfile, STGM_READWRITE | STGM_SHARE_DENY_WRITE, &stm);
+    ok( r == S_OK, "SHCreateStreamOnFileW failed %lx\n", r );
+    r = IPersistFile_Save(pf, lnkfile, FALSE);
+    ok( r == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION), "IPersistFile_Save failed (0x%08lx)\n", r );
+    r = IPersistFile_Load(pf, lnkfile, 0);
+    ok(r == S_OK, "IPersistFile_Load failed (0x%08lx)\n", r);
+    IStream_Release( stm );
+
+    r = SHCreateStreamOnFileW(lnkfile, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, &stm);
+    ok( r == S_OK, "SHCreateStreamOnFileW failed %lx\n", r );
+    r = IPersistFile_Save(pf, lnkfile, FALSE);
+    ok( r == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION), "IPersistFile_Save failed (0x%08lx)\n", r );
+    r = IPersistFile_Load(pf, lnkfile, 0);
+    ok( r == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION), "IPersistFile_Load failed (0x%08lx)\n", r );
+    IStream_Release( stm );
+
+    IShellLinkA_Release( sl );
+    IPersistFile_Release( pf );
+
     /* FIXME: Also test saving a .lnk pointing to a pidl that cannot be
      * represented as a path.
      */
 
-    /* DeleteFileW is not implemented on Win9x */
-    r=DeleteFileA(lnkfileA);
-    ok(r, "failed to delete link '%s' (%ld)\n", lnkfileA, GetLastError());
+    DeleteFileW(lnkfile);
 }
 
 static void test_datalink(void)
@@ -1174,6 +1217,7 @@ static void test_ExtractIcon(void)
 {
     static const WCHAR nameW[] = {'\\','e','x','t','r','a','c','t','i','c','o','n','_','t','e','s','t','.','t','x','t',0};
     static const WCHAR shell32W[] = {'s','h','e','l','l','3','2','.','d','l','l',0};
+    static const WCHAR emptyW[] = {0};
     WCHAR pathW[MAX_PATH];
     HICON hicon, hicon2;
     char path[MAX_PATH];
@@ -1184,7 +1228,6 @@ static void test_ExtractIcon(void)
 
     /* specified instance handle */
     hicon = ExtractIconA(GetModuleHandleA("shell32.dll"), NULL, 0);
-    todo_wine
     ok(hicon == NULL, "Got icon %p\n", hicon);
     hicon2 = ExtractIconA(GetModuleHandleA("shell32.dll"), "shell32.dll", -1);
     ok(hicon2 != NULL, "Got icon %p\n", hicon2);
@@ -1210,18 +1253,23 @@ static void test_ExtractIcon(void)
     CloseHandle(file);
 
     hicon = ExtractIconA(NULL, path, 0);
-    todo_wine
     ok(hicon == NULL, "Got icon %p\n", hicon);
 
     hicon = ExtractIconA(NULL, path, -1);
     ok(hicon == NULL, "Got icon %p\n", hicon);
 
     hicon = ExtractIconA(NULL, path, 1);
-    todo_wine
     ok(hicon == NULL, "Got icon %p\n", hicon);
 
     r = DeleteFileA(path);
     ok(r, "failed to delete file %s (%ld)\n", path, GetLastError());
+
+    /* Empty file path */
+    hicon = ExtractIconA(NULL, "", -1);
+    ok(hicon == NULL, "Got icon %p\n", hicon);
+
+    hicon = ExtractIconA(NULL, "", 0);
+    ok(hicon == NULL, "Got icon %p\n", hicon);
 
     /* same for W variant */
 if (0)
@@ -1258,18 +1306,23 @@ if (0)
     CloseHandle(file);
 
     hicon = ExtractIconW(NULL, pathW, 0);
-    todo_wine
     ok(hicon == NULL, "Got icon %p\n", hicon);
 
     hicon = ExtractIconW(NULL, pathW, -1);
     ok(hicon == NULL, "Got icon %p\n", hicon);
 
     hicon = ExtractIconW(NULL, pathW, 1);
-    todo_wine
     ok(hicon == NULL, "Got icon %p\n", hicon);
 
     r = DeleteFileW(pathW);
     ok(r, "failed to delete file %s (%ld)\n", path, GetLastError());
+
+    /* Empty file path */
+    hicon = ExtractIconW(NULL, emptyW, -1);
+    ok(hicon == NULL, "Got icon %p\n", hicon);
+
+    hicon = ExtractIconW(NULL, emptyW, 0);
+    ok(hicon == NULL, "Got icon %p\n", hicon);
 }
 
 static void test_ExtractAssociatedIcon(void)

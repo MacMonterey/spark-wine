@@ -18,19 +18,11 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#include <assert.h>
-#include <stdlib.h>
-#include <string.h>
-#include <limits.h>
-
 #include "user_private.h"
-#include "winnls.h"
+#include "controls.h"
 #include "winver.h"
 #include "wine/server.h"
 #include "wine/asm.h"
-#include "win.h"
-#include "controls.h"
-#include "winerror.h"
 #include "wine/exception.h"
 #include "wine/debug.h"
 
@@ -86,20 +78,6 @@ static HWND *list_window_children( HDESK desktop, HWND hwnd, UNICODE_STRING *cla
 
 
 /*******************************************************************
- *           get_hwnd_message_parent
- *
- * Return the parent for HWND_MESSAGE windows.
- */
-HWND get_hwnd_message_parent(void)
-{
-    struct ntuser_thread_info *thread_info = NtUserGetThreadInfo();
-
-    if (!thread_info->msg_window) GetDesktopWindow();  /* trigger creation */
-    return thread_info->msg_window;
-}
-
-
-/*******************************************************************
  *           is_desktop_window
  *
  * Check if window is the desktop or the HWND_MESSAGE top parent.
@@ -109,8 +87,8 @@ BOOL is_desktop_window( HWND hwnd )
     struct ntuser_thread_info *thread_info = NtUserGetThreadInfo();
 
     if (!hwnd) return FALSE;
-    if (hwnd == thread_info->top_window) return TRUE;
-    if (hwnd == thread_info->msg_window) return TRUE;
+    if (hwnd == UlongToHandle( thread_info->top_window )) return TRUE;
+    if (hwnd == UlongToHandle( thread_info->msg_window )) return TRUE;
 
     if (!HIWORD(hwnd) || HIWORD(hwnd) == 0xffff)
     {
@@ -121,28 +99,10 @@ BOOL is_desktop_window( HWND hwnd )
 }
 
 
-/***********************************************************************
- *           WIN_GetPtr
- *
- * Return a pointer to the WND structure if local to the process,
- * or WND_OTHER_PROCESS if handle may be valid in other process.
- * If ret value is a valid pointer, it must be released with WIN_ReleasePtr.
- */
-WND *WIN_GetPtr( HWND hwnd )
+/* check if hwnd is a broadcast magic handle */
+static inline BOOL is_broadcast( HWND hwnd )
 {
-    WND *ptr = (void *)NtUserCallTwoParam( HandleToUlong(hwnd), NTUSER_OBJ_WINDOW, NtUserGetHandlePtr );
-    if (ptr == WND_OTHER_PROCESS && is_desktop_window( hwnd )) ptr = WND_DESKTOP;
-    return ptr;
-}
-
-
-/***********************************************************************
- *           WIN_ReleasePtr
- */
-void WIN_ReleasePtr( WND *ptr )
-{
-    assert( ptr && ptr != OBJ_OTHER_PROCESS );
-    NtUserCallOneParam( 1, NtUserLock );
+    return hwnd == HWND_BROADCAST || hwnd == HWND_TOPMOST;
 }
 
 
@@ -169,24 +129,6 @@ HWND WIN_IsCurrentThread( HWND hwnd )
 
 
 /***********************************************************************
- *           win_set_flags
- *
- * Set the flags of a window and return the previous value.
- */
-UINT win_set_flags( HWND hwnd, UINT set_mask, UINT clear_mask )
-{
-    UINT ret;
-    WND *ptr = WIN_GetPtr( hwnd );
-
-    if (!ptr || ptr == WND_OTHER_PROCESS || ptr == WND_DESKTOP) return 0;
-    ret = ptr->flags;
-    ptr->flags = (ret & ~clear_mask) | set_mask;
-    WIN_ReleasePtr( ptr );
-    return ret;
-}
-
-
-/***********************************************************************
  *           WIN_GetFullHandle
  *
  * Convert a possibly truncated window handle to a full 32-bit handle.
@@ -208,141 +150,6 @@ ULONG WIN_SetStyle( HWND hwnd, ULONG set_bits, ULONG clear_bits )
      * We use STYLESTRUCT to pass params, but meaning of its field does not match our usage. */
     STYLESTRUCT style = { .styleNew = set_bits, .styleOld = clear_bits };
     return NtUserCallHwndParam( hwnd, (UINT_PTR)&style, NtUserSetWindowStyle );
-}
-
-
-/***********************************************************************
- *           WIN_GetRectangles
- *
- * Get the window and client rectangles.
- */
-BOOL WIN_GetRectangles( HWND hwnd, enum coords_relative relative, RECT *rectWindow, RECT *rectClient )
-{
-    WND *win = WIN_GetPtr( hwnd );
-    BOOL ret = TRUE;
-
-    if (!win)
-    {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
-        return FALSE;
-    }
-    if (win == WND_DESKTOP)
-    {
-        RECT rect;
-        rect.left = rect.top = 0;
-        if (hwnd == get_hwnd_message_parent())
-        {
-            rect.right  = 100;
-            rect.bottom = 100;
-            rect = rect_win_to_thread_dpi( hwnd, rect );
-        }
-        else
-        {
-            rect = get_primary_monitor_rect();
-        }
-        if (rectWindow) *rectWindow = rect;
-        if (rectClient) *rectClient = rect;
-        return TRUE;
-    }
-    if (win != WND_OTHER_PROCESS)
-    {
-        RECT window_rect = win->window_rect, client_rect = win->client_rect;
-
-        switch (relative)
-        {
-        case COORDS_CLIENT:
-            OffsetRect( &window_rect, -win->client_rect.left, -win->client_rect.top );
-            OffsetRect( &client_rect, -win->client_rect.left, -win->client_rect.top );
-            if (win->dwExStyle & WS_EX_LAYOUTRTL)
-                mirror_rect( &win->client_rect, &window_rect );
-            break;
-        case COORDS_WINDOW:
-            OffsetRect( &window_rect, -win->window_rect.left, -win->window_rect.top );
-            OffsetRect( &client_rect, -win->window_rect.left, -win->window_rect.top );
-            if (win->dwExStyle & WS_EX_LAYOUTRTL)
-                mirror_rect( &win->window_rect, &client_rect );
-            break;
-        case COORDS_PARENT:
-            if (win->parent)
-            {
-                WND *parent = WIN_GetPtr( win->parent );
-                if (parent == WND_DESKTOP) break;
-                if (!parent || parent == WND_OTHER_PROCESS)
-                {
-                    WIN_ReleasePtr( win );
-                    goto other_process;
-                }
-                if (parent->flags & WIN_CHILDREN_MOVED)
-                {
-                    WIN_ReleasePtr( parent );
-                    WIN_ReleasePtr( win );
-                    goto other_process;
-                }
-                if (parent->dwExStyle & WS_EX_LAYOUTRTL)
-                {
-                    mirror_rect( &parent->client_rect, &window_rect );
-                    mirror_rect( &parent->client_rect, &client_rect );
-                }
-                WIN_ReleasePtr( parent );
-            }
-            break;
-        case COORDS_SCREEN:
-            while (win->parent)
-            {
-                WND *parent = WIN_GetPtr( win->parent );
-                if (parent == WND_DESKTOP) break;
-                if (!parent || parent == WND_OTHER_PROCESS)
-                {
-                    WIN_ReleasePtr( win );
-                    goto other_process;
-                }
-                WIN_ReleasePtr( win );
-                if (parent->flags & WIN_CHILDREN_MOVED)
-                {
-                    WIN_ReleasePtr( parent );
-                    goto other_process;
-                }
-                win = parent;
-                if (win->parent)
-                {
-                    OffsetRect( &window_rect, win->client_rect.left, win->client_rect.top );
-                    OffsetRect( &client_rect, win->client_rect.left, win->client_rect.top );
-                }
-            }
-            break;
-        }
-        if (rectWindow) *rectWindow = rect_win_to_thread_dpi( hwnd, window_rect );
-        if (rectClient) *rectClient = rect_win_to_thread_dpi( hwnd, client_rect );
-        WIN_ReleasePtr( win );
-        return TRUE;
-    }
-
-other_process:
-    SERVER_START_REQ( get_window_rectangles )
-    {
-        req->handle = wine_server_user_handle( hwnd );
-        req->relative = relative;
-        req->dpi = get_thread_dpi();
-        if ((ret = !wine_server_call_err( req )))
-        {
-            if (rectWindow)
-            {
-                rectWindow->left   = reply->window.left;
-                rectWindow->top    = reply->window.top;
-                rectWindow->right  = reply->window.right;
-                rectWindow->bottom = reply->window.bottom;
-            }
-            if (rectClient)
-            {
-                rectClient->left   = reply->client.left;
-                rectClient->top    = reply->client.top;
-                rectClient->right  = reply->client.right;
-                rectClient->bottom = reply->client.bottom;
-            }
-        }
-    }
-    SERVER_END_REQ;
-    return ret;
 }
 
 
@@ -471,11 +278,11 @@ static BOOL is_default_coord( int x )
  */
 HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module, BOOL unicode )
 {
+    UNICODE_STRING class, window_name;
     HWND hwnd, top_child = 0;
     MDICREATESTRUCTW mdi_cs;
-    UNICODE_STRING class;
-    CBT_CREATEWNDW cbtc;
     WNDCLASSEXW info;
+    WCHAR name_buf[8];
     HMENU menu;
 
     if (!get_class_info( module, className, &info, &class, FALSE )) return FALSE;
@@ -494,7 +301,7 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
         POINT pos[2];
         UINT id = 0;
 
-        if (!(win_get_flags( cs->hwndParent ) & WIN_ISMDICLIENT))
+        if (!NtUserGetMDIClientInfo( cs->hwndParent ))
         {
             WARN("WS_EX_MDICHILD, but parent %p is not MDIClient\n", cs->hwndParent);
             return 0;
@@ -570,15 +377,31 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
         }
     }
 
+    if (!unicode && cs->lpszName)
+    {
+        const char *nameA = (const char *)cs->lpszName;
+        /* resource ID string is a special case */
+        if (nameA[0] == '\xff')
+        {
+            name_buf[0] = 0xffff;
+            name_buf[1] = MAKEWORD( nameA[1], nameA[2] );
+            name_buf[2] = 0;
+            RtlInitUnicodeString( &window_name, name_buf );
+        }
+        else if (!RtlCreateUnicodeStringFromAsciiz( &window_name, (const char *)cs->lpszName ))
+            return 0;
+    }
+    else RtlInitUnicodeString( &window_name, cs->lpszName );
+
     menu = cs->hMenu;
     if (!menu && info.lpszMenuName && (cs->style & (WS_CHILD | WS_POPUP)) != WS_CHILD)
         menu = LoadMenuW( cs->hInstance, info.lpszMenuName );
 
-    cbtc.lpcs = cs;
-    hwnd = NtUserCreateWindowEx( cs->dwExStyle, &class, NULL, NULL, cs->style, cs->x, cs->y,
-                                 cs->cx, cs->cy, cs->hwndParent, menu, module,
-                                 cs->lpCreateParams, 0, &cbtc, 0, !unicode );
+    hwnd = NtUserCreateWindowEx( cs->dwExStyle, &class, NULL, &window_name, cs->style,
+                                 cs->x, cs->y, cs->cx, cs->cy, cs->hwndParent, menu, module,
+                                 cs->lpCreateParams, 0, NULL, 0, !unicode );
     if (!hwnd && menu && menu != cs->hMenu) NtUserDestroyMenu( menu );
+    if (!unicode) RtlFreeUnicodeString( &window_name );
     return hwnd;
 }
 
@@ -643,18 +466,6 @@ HWND WINAPI DECLSPEC_HOTPATCH CreateWindowExW( DWORD exStyle, LPCWSTR className,
     cs.lpszName       = windowName;
     cs.lpszClass      = className;
     cs.dwExStyle      = exStyle;
-
-    if (exStyle == 0x080800a0) // WeChat/WxWork shadow hwnd
-    {
-        FIXME("hack %x\n", cs.dwExStyle);
-        return NULL;
-    }
-    if (exStyle == 0x000800a0) // Netease Cloudmusic shadow wnd
-    {
-        FIXME("hack %x\n", cs.dwExStyle);
-        return NULL;
-    }
-
 
     return wow_handlers.create_window( &cs, className, instance, TRUE );
 }
@@ -765,7 +576,7 @@ HWND WINAPI GetDesktopWindow(void)
 {
     struct ntuser_thread_info *thread_info = NtUserGetThreadInfo();
 
-    if (thread_info->top_window) return thread_info->top_window;
+    if (thread_info->top_window) return UlongToHandle( thread_info->top_window );
     return NtUserGetDesktopWindow();
 }
 
@@ -805,6 +616,29 @@ DPI_AWARENESS_CONTEXT WINAPI GetWindowDpiAwarenessContext( HWND hwnd )
 }
 
 
+static LONG_PTR get_window_long_ptr( HWND hwnd, int offset, LONG_PTR ret, BOOL ansi )
+{
+    if (offset == DWLP_DLGPROC && NtUserGetDialogInfo( hwnd ))
+    {
+        DLGPROC proc = NtUserGetDialogProc( (DLGPROC)ret, ansi );
+        if (proc && proc != WINPROC_PROC16) return (LONG_PTR)proc;
+    }
+    return ret;
+}
+
+
+static LONG_PTR set_dialog_proc( HWND hwnd, LONG_PTR newval, BOOL ansi )
+{
+    DLGPROC proc;
+    LONG_PTR ret;
+    newval = NtUserCallTwoParam( newval, ansi, NtUserAllocWinProc );
+    ret = NtUserSetWindowLong( hwnd, DWLP_DLGPROC, newval, ansi );
+    proc = NtUserGetDialogProc( (DLGPROC)ret, ansi );
+    if (proc) ret = (UINT_PTR)proc;
+    return ret;
+}
+
+
 /***********************************************************************
  *              GetDpiForWindow   (USER32.@)
  */
@@ -839,6 +673,11 @@ LONG WINAPI GetWindowLongA( HWND hwnd, INT offset )
         return 0;
 #endif
     default:
+        if (sizeof(void *) == sizeof(LONG))
+        {
+            LONG_PTR ret = NtUserGetWindowLongA( hwnd, offset );
+            return get_window_long_ptr( hwnd, offset, ret, TRUE );
+        }
         return NtUserGetWindowLongA( hwnd, offset );
     }
 }
@@ -860,6 +699,11 @@ LONG WINAPI GetWindowLongW( HWND hwnd, INT offset )
         return 0;
 #endif
     default:
+        if (sizeof(void *) == sizeof(LONG))
+        {
+            LONG_PTR ret = NtUserGetWindowLongW( hwnd, offset );
+            return get_window_long_ptr( hwnd, offset, ret, FALSE );
+        }
         return NtUserGetWindowLongW( hwnd, offset );
     }
 }
@@ -881,6 +725,10 @@ LONG WINAPI DECLSPEC_HOTPATCH SetWindowLongA( HWND hwnd, INT offset, LONG newval
         WARN( "Invalid offset %d\n", offset );
         SetLastError( ERROR_INVALID_INDEX );
         return 0;
+#else
+    case DWLP_DLGPROC:
+        if (NtUserGetDialogInfo( hwnd )) return set_dialog_proc( hwnd, newval, TRUE );
+        /* fall through */
 #endif
     default:
         return NtUserSetWindowLong( hwnd, offset, newval, TRUE );
@@ -969,6 +817,10 @@ LONG WINAPI DECLSPEC_HOTPATCH SetWindowLongW(
         WARN("Invalid offset %d\n", offset );
         SetLastError( ERROR_INVALID_INDEX );
         return 0;
+#else
+    case DWLP_DLGPROC:
+        if (NtUserGetDialogInfo( hwnd )) return set_dialog_proc( hwnd, newval, FALSE );
+        /* fall through */
 #endif
     default:
         return NtUserSetWindowLong( hwnd, offset, newval, FALSE );
@@ -1224,8 +1076,6 @@ BOOL WINAPI EnumWindows( WNDENUMPROC lpEnumFunc, LPARAM lParam )
     BOOL ret = TRUE;
     int i;
 
-    USER_CheckNotLock();
-
     /* We have to build a list of all windows first, to avoid */
     /* unpleasant side-effects, for instance if the callback */
     /* function changes the Z-order of the windows.          */
@@ -1254,8 +1104,6 @@ BOOL WINAPI EnumThreadWindows( DWORD id, WNDENUMPROC func, LPARAM lParam )
     int i;
     BOOL ret = TRUE;
 
-    USER_CheckNotLock();
-
     if (!(list = list_window_children( 0, GetDesktopWindow(), NULL, id ))) return TRUE;
 
     /* Now call the callback function for every window */
@@ -1274,8 +1122,6 @@ BOOL WINAPI EnumDesktopWindows( HDESK desktop, WNDENUMPROC func, LPARAM lparam )
 {
     HWND *list;
     int i;
-
-    USER_CheckNotLock();
 
     if (!(list = list_window_children( desktop, 0, NULL, 0 ))) return TRUE;
 
@@ -1348,8 +1194,6 @@ BOOL WINAPI EnumChildWindows( HWND parent, WNDENUMPROC func, LPARAM lParam )
 {
     HWND *list;
     BOOL ret;
-
-    USER_CheckNotLock();
 
     if (!(list = WIN_ListChildren( parent ))) return FALSE;
     ret = WIN_EnumChildWindows( list, func, lParam );
@@ -1598,7 +1442,8 @@ BOOL WINAPI SetProcessDefaultLayout( DWORD layout )
  */
 LONG_PTR WINAPI GetWindowLongPtrW( HWND hwnd, INT offset )
 {
-    return NtUserGetWindowLongPtrW( hwnd, offset );
+    LONG_PTR ret = NtUserGetWindowLongPtrW( hwnd, offset );
+    return get_window_long_ptr( hwnd, offset, ret, FALSE );
 }
 
 /*****************************************************************************
@@ -1606,7 +1451,8 @@ LONG_PTR WINAPI GetWindowLongPtrW( HWND hwnd, INT offset )
  */
 LONG_PTR WINAPI GetWindowLongPtrA( HWND hwnd, INT offset )
 {
-    return NtUserGetWindowLongPtrA( hwnd, offset );
+    LONG_PTR ret = NtUserGetWindowLongPtrA( hwnd, offset );
+    return get_window_long_ptr( hwnd, offset, ret, TRUE );
 }
 
 /*****************************************************************************
@@ -1614,6 +1460,9 @@ LONG_PTR WINAPI GetWindowLongPtrA( HWND hwnd, INT offset )
  */
 LONG_PTR WINAPI SetWindowLongPtrW( HWND hwnd, INT offset, LONG_PTR newval )
 {
+    if (offset == DWLP_DLGPROC && NtUserGetDialogInfo( hwnd ))
+        return set_dialog_proc( hwnd, newval, FALSE );
+
     return NtUserSetWindowLongPtr( hwnd, offset, newval, FALSE );
 }
 
@@ -1622,6 +1471,9 @@ LONG_PTR WINAPI SetWindowLongPtrW( HWND hwnd, INT offset, LONG_PTR newval )
  */
 LONG_PTR WINAPI SetWindowLongPtrA( HWND hwnd, INT offset, LONG_PTR newval )
 {
+    if (offset == DWLP_DLGPROC && NtUserGetDialogInfo( hwnd ))
+        return set_dialog_proc( hwnd, newval, TRUE );
+
     return NtUserSetWindowLongPtr( hwnd, offset, newval, TRUE );
 }
 

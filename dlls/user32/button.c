@@ -38,18 +38,10 @@
  *  - BN_UNPUSHED/BN_UNHILITE
  */
 
-#include <stdarg.h>
-#include <string.h>
-#include <stdlib.h>
-
 #define OEMRESOURCE
 
-#include "windef.h"
-#include "winbase.h"
-#include "wingdi.h"
-#include "controls.h"
-#include "win.h"
 #include "user_private.h"
+#include "controls.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(button);
@@ -116,19 +108,6 @@ static const pfPaint btnPaintFunc[MAX_BTN_TYPE] =
     CB_Paint,    /* BS_AUTORADIOBUTTON */
     NULL,        /* BS_PUSHBOX */
     OB_Paint     /* BS_OWNERDRAW */
-};
-
-/*********************************************************************
- * button class descriptor
- */
-const struct builtin_class_descr BUTTON_builtin_class =
-{
-    L"Button",           /* name */
-    CS_DBLCLKS | CS_VREDRAW | CS_HREDRAW | CS_PARENTDC, /* style  */
-    WINPROC_BUTTON,      /* proc */
-    NB_EXTRA_BYTES,      /* extra */
-    IDC_ARROW,           /* cursor */
-    0                    /* brush */
 };
 
 

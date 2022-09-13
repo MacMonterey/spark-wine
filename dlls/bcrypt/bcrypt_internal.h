@@ -132,6 +132,7 @@ enum alg_id
 
     /* secret agreement */
     ALG_ID_ECDH_P256,
+    ALG_ID_ECDH_P384,
 
     /* signature */
     ALG_ID_RSA_SIGN,
@@ -147,7 +148,8 @@ enum mode_id
 {
     MODE_ID_ECB,
     MODE_ID_CBC,
-    MODE_ID_GCM
+    MODE_ID_GCM,
+    MODE_ID_CFB,
 };
 
 struct algorithm
@@ -237,6 +239,16 @@ struct key_asymmetric_decrypt_params
     ULONG       *ret_len;
 };
 
+struct key_asymmetric_encrypt_params
+{
+    struct key  *key;
+    UCHAR       *input;
+    unsigned    input_len;
+    UCHAR       *output;
+    ULONG       output_len;
+    ULONG       *ret_len;
+};
+
 struct key_asymmetric_duplicate_params
 {
     struct key  *key_orig;
@@ -298,6 +310,7 @@ enum key_funcs
     unix_key_symmetric_destroy,
     unix_key_asymmetric_generate,
     unix_key_asymmetric_decrypt,
+    unix_key_asymmetric_encrypt,
     unix_key_asymmetric_duplicate,
     unix_key_asymmetric_sign,
     unix_key_asymmetric_verify,

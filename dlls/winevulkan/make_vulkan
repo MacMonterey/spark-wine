@@ -64,7 +64,7 @@ from enum import Enum
 LOGGER = logging.Logger("vulkan")
 LOGGER.addHandler(logging.StreamHandler())
 
-VK_XML_VERSION = "1.3.221"
+VK_XML_VERSION = "1.3.226"
 WINE_VK_VERSION = (1, 3)
 
 # Filenames to create.
@@ -113,6 +113,7 @@ UNSUPPORTED_EXTENSIONS = [
     "VK_KHR_external_fence_fd",
     "VK_KHR_external_memory_fd",
     "VK_KHR_external_semaphore_fd",
+    "VK_SEC_amigo_profiling", # Angle specific.
 
     # Extensions which require callback handling
     "VK_EXT_device_memory_report",
@@ -175,18 +176,18 @@ class ThunkType(Enum):
 #   - PUBLIC means the implementation is fully auto generated.
 #   - PRIVATE thunks can be used in custom implementations for
 #     struct conversion.
-# - loader_thunk sets whether to create a thunk for unix_funcs.
+# - loader_thunk sets whether to create a thunk for unix funcs.
 FUNCTION_OVERRIDES = {
     # Global functions
-    "vkCreateInstance" : {"dispatch" : False, "driver" : True, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.PRIVATE},
+    "vkCreateInstance" : {"dispatch" : False, "driver" : True, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.PRIVATE, "extra_param" : "client_ptr"},
     "vkEnumerateInstanceExtensionProperties" : {"dispatch" : False, "driver" : True, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.PRIVATE},
     "vkEnumerateInstanceLayerProperties" : {"dispatch" : False, "driver" : False, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.NONE},
     "vkEnumerateInstanceVersion": {"dispatch" : False, "driver" : False, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.PRIVATE},
     "vkGetInstanceProcAddr": {"dispatch" : False, "driver" : True, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.NONE},
 
     # Instance functions
-    "vkCreateDevice" : {"dispatch" : True, "driver" : False, "thunk" : ThunkType.NONE},
-    "vkDestroyInstance" : {"dispatch" : False, "driver" : True, "thunk" : ThunkType.NONE },
+    "vkCreateDevice" : {"dispatch" : True, "driver" : False, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.PRIVATE, "extra_param" : "client_ptr"},
+    "vkDestroyInstance" : {"dispatch" : False, "driver" : True, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.PRIVATE},
     "vkEnumerateDeviceExtensionProperties" : {"dispatch" : True, "driver" : False, "thunk" : ThunkType.NONE},
     "vkEnumerateDeviceLayerProperties": {"dispatch": True, "driver": False, "thunk": ThunkType.NONE},
     "vkEnumeratePhysicalDeviceGroups" : {"dispatch" : True, "driver" : False, "thunk" : ThunkType.NONE},
@@ -199,13 +200,13 @@ FUNCTION_OVERRIDES = {
     "vkGetPhysicalDeviceProperties2KHR" : {"dispatch" : True, "driver" : False, "thunk" : ThunkType.PUBLIC, "loader_thunk" : ThunkType.PRIVATE},
 
     # Device functions
-    "vkAllocateCommandBuffers" : {"dispatch" : True, "driver" : False, "thunk" : ThunkType.NONE},
-    "vkCreateCommandPool" : {"dispatch": True, "driver" : False, "thunk" : ThunkType.NONE},
+    "vkAllocateCommandBuffers" : {"dispatch" : True, "driver" : False, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.PRIVATE},
+    "vkCreateCommandPool" : {"dispatch": True, "driver" : False, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.PRIVATE, "extra_param" : "client_ptr"},
     "vkCreateComputePipelines" : {"dispatch": True, "driver" : False, "thunk" : ThunkType.PRIVATE},
     "vkCreateGraphicsPipelines" : {"dispatch": True, "driver" : False, "thunk" : ThunkType.PRIVATE},
-    "vkDestroyCommandPool" : {"dispatch": True, "driver" : False, "thunk" : ThunkType.NONE},
-    "vkDestroyDevice" : {"dispatch" : True, "driver" : False, "thunk" : ThunkType.NONE},
-    "vkFreeCommandBuffers" : {"dispatch" : True, "driver" : False, "thunk" : ThunkType.NONE},
+    "vkDestroyCommandPool" : {"dispatch": True, "driver" : False, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.PRIVATE},
+    "vkDestroyDevice" : {"dispatch" : True, "driver" : False, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.PRIVATE},
+    "vkFreeCommandBuffers" : {"dispatch" : True, "driver" : False, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.PRIVATE},
     "vkGetDeviceProcAddr" : {"dispatch" : False, "driver" : True, "thunk" : ThunkType.NONE, "loader_thunk" : ThunkType.NONE},
     "vkGetDeviceQueue" : {"dispatch": True, "driver" : False, "thunk" : ThunkType.NONE},
     "vkGetDeviceQueue2" : {"dispatch": True, "driver" : False, "thunk" : ThunkType.NONE},
@@ -434,13 +435,7 @@ class VkEnum(object):
 
     def create_alias(self, name, alias_name):
         """ Create an aliased value for this enum """
-        # Older GCC versions need a literal to initialize a static const uint64_t
-        # which is what we use for 64bit bitmasks.
-        if self.bitwidth == 64:
-            alias = next(x for x in self.values if x.name == alias_name)
-            self.add(VkEnumValue(name, self.bitwidth, value=alias.value, hex=alias.hex, alias=alias_name))
-        else:
-            self.add(VkEnumValue(name, self.bitwidth, alias=alias_name))
+        self.add(VkEnumValue(name, self.bitwidth, alias=alias_name))
 
     def create_value(self, name, value):
         """ Create a new value for this enum """
@@ -467,6 +462,19 @@ class VkEnum(object):
         # Avoid adding duplicate aliases multiple times
         if not any(x.name == value.name for x in self.values):
             self.values.append(value)
+
+    def fixup_64bit_aliases(self):
+        """ Replace 64bit aliases with literal values """
+        # Older GCC versions need a literal to initialize a static const uint64_t
+        # which is what we use for 64bit bitmasks.
+        if self.bitwidth != 64:
+            return
+        for value in self.values:
+            if not value.is_alias():
+                continue
+            alias = next(x for x in self.values if x.name == value.alias)
+            value.hex = alias.hex
+            value.value = alias.value
 
     def definition(self):
         if self.is_alias():
@@ -545,6 +553,7 @@ class VkFunction(object):
         self.driver = func_info["driver"] if func_info else False
         self.thunk_type = func_info["thunk"] if func_info else ThunkType.PUBLIC
         self.loader_thunk_type = func_info["loader_thunk"] if func_info and "loader_thunk" in func_info else ThunkType.PUBLIC
+        self.extra_param = func_info["extra_param"] if func_info and "extra_param" in func_info else None
 
         # Required is set while parsing which APIs and types are required
         # and is used by the code generation.
@@ -759,8 +768,8 @@ class VkFunction(object):
             body += "{0}result = ".format(params_prefix)
         elif self.type != "void":
             body += "return "
-        body += "{0}{1}.p_{2}({3});\n".format(params_prefix, self.params[0].dispatch_table(),
-                                              self.name, params)
+        body += "{0}.p_{1}({2});\n".format(self.params[0].dispatch_table(params_prefix),
+                                           self.name, params)
         if self.type == "void" or self.returns_longlong():
             body += "    return STATUS_SUCCESS;\n"
 
@@ -776,7 +785,7 @@ class VkFunction(object):
         if self.type != "void" and not self.returns_longlong():
             body += "return "
         if self.needs_direct_call():
-            body += "unix_funcs->p_vk_call(unix_{0}, &params);\n".format(self.name)
+            body += "p_vk_direct_unix_call(unix_handle, unix_{0}, &params);\n".format(self.name)
         else:
             body += "vk_unix_call(unix_{0}, &params);\n".format(self.name)
         if self.returns_longlong():
@@ -820,12 +829,12 @@ class VkFunction(object):
 
         # Call the native Vulkan function.
         if self.type == "void":
-            body += "    {0}{1}.p_{2}({3});\n".format(params_prefix, self.params[0].dispatch_table(),
-                                                      self.name, params)
+            body += "    {0}.p_{1}({2});\n".format(self.params[0].dispatch_table(params_prefix),
+                                                   self.name, params)
         else:
-            body += "    {0}result = {1}{2}.p_{3}({4});\n".format(result_prefix, params_prefix,
-                                                                  self.params[0].dispatch_table(),
-                                                                  self.name, params)
+            body += "    {0}result = {1}.p_{2}({3});\n".format(result_prefix,
+                                                               self.params[0].dispatch_table(params_prefix),
+                                                               self.name, params)
 
         body += "\n"
 
@@ -1045,20 +1054,25 @@ class VkHandle(object):
         parent = handle.attrib.get("parent") # Most objects have a parent e.g. VkQueue has VkDevice.
         return VkHandle(name, _type, parent)
 
-    def dispatch_table(self):
+    def dispatch_table(self, param):
         if not self.is_dispatchable():
             return None
 
         if self.parent is None:
             # Should only happen for VkInstance
-            return "funcs"
+            return "wine_instance_from_handle({0})->funcs".format(param)
+        elif self.name == "VkCommandBuffer":
+            return "wine_cmd_buffer_from_handle({0})->device->funcs".format(param)
         elif self.name == "VkDevice":
-            # VkDevice has VkInstance as a parent, but has its own dispatch table.
-            return "funcs"
+            return "wine_device_from_handle({0})->funcs".format(param)
+        elif self.name == "VkPhysicalDevice":
+            return "wine_phys_dev_from_handle({0})->instance->funcs".format(param)
+        elif self.name == "VkQueue":
+            return "wine_queue_from_handle({0})->device->funcs".format(param)
         elif self.parent in ["VkInstance", "VkPhysicalDevice"]:
-            return "instance->funcs"
+            return "{0}->instance->funcs".format(param)
         elif self.parent in ["VkDevice", "VkCommandPool"]:
-            return "device->funcs"
+            return "{0}->device->funcs".format(param)
         else:
             LOGGER.error("Unhandled dispatchable parent: {0}".format(self.parent))
 
@@ -1086,31 +1100,24 @@ class VkHandle(object):
     def native_handle(self, name):
         """ Provide access to the native handle of a wrapped object. """
 
+        if self.name == "VkCommandBuffer":
+            return "wine_cmd_buffer_from_handle({0})->command_buffer".format(name)
         if self.name == "VkCommandPool":
             return "wine_cmd_pool_from_handle({0})->command_pool".format(name)
         if self.name == "VkDebugUtilsMessengerEXT":
             return "wine_debug_utils_messenger_from_handle({0})->debug_messenger".format(name)
         if self.name == "VkDebugReportCallbackEXT":
             return "wine_debug_report_callback_from_handle({0})->debug_callback".format(name)
+        if self.name == "VkDevice":
+            return "wine_device_from_handle({0})->device".format(name)
+        if self.name == "VkInstance":
+            return "wine_instance_from_handle({0})->instance".format(name)
+        if self.name == "VkPhysicalDevice":
+            return "wine_phys_dev_from_handle({0})->phys_dev".format(name)
+        if self.name == "VkQueue":
+            return "wine_queue_from_handle({0})->queue".format(name)
         if self.name == "VkSurfaceKHR":
             return "wine_surface_from_handle({0})->surface".format(name)
-
-        native_handle_name = None
-
-        if self.name == "VkCommandBuffer":
-            native_handle_name = "command_buffer"
-        if self.name == "VkDevice":
-            native_handle_name = "device"
-        if self.name == "VkInstance":
-            native_handle_name = "instance"
-        if self.name == "VkPhysicalDevice":
-            native_handle_name = "phys_dev"
-        if self.name == "VkQueue":
-            native_handle_name = "queue"
-
-        if native_handle_name:
-            return "{0}->{1}".format(name, native_handle_name)
-
         if self.is_dispatchable():
             LOGGER.error("Unhandled native handle for: {0}".format(self.name))
         return None
@@ -1693,13 +1700,13 @@ class VkParam(object):
 
         return self._direction
 
-    def dispatch_table(self):
+    def dispatch_table(self, params_prefix=""):
         """ Return functions dispatch table pointer for dispatchable objects. """
 
         if not self.is_dispatchable():
             return None
 
-        return "{0}->{1}".format(self.name, self.handle.dispatch_table())
+        return self.handle.dispatch_table(params_prefix + self.name)
 
     def format_string(self):
         return self.format_str
@@ -2838,6 +2845,8 @@ class VkGenerator(object):
         f.write("const unixlib_entry_t __wine_unix_call_funcs[] =\n")
         f.write("{\n")
         f.write("    init_vulkan,\n")
+        f.write("    vk_is_available_instance_function,\n")
+        f.write("    vk_is_available_device_function,\n")
         for vk_func in self.registry.funcs.values():
             if not vk_func.needs_exposing():
                 continue
@@ -2848,17 +2857,10 @@ class VkGenerator(object):
         f.write("};\n")
         f.write("C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == unix_count);\n\n")
 
-        f.write("static NTSTATUS WINAPI wine_vk_call(enum unix_call code, void *params)\n")
+        f.write("NTSTATUS WINAPI vk_direct_unix_call(unixlib_handle_t handle, unsigned int code, void *params)\n")
         f.write("{\n")
         f.write("    return __wine_unix_call_funcs[code](params);\n")
-        f.write("}\n\n")
-
-        f.write("const struct unix_funcs loader_funcs =\n")
-        f.write("{\n")
-        f.write("    wine_vk_call,\n")
-        f.write("    wine_vk_is_available_instance_function,\n")
-        f.write("    wine_vk_is_available_device_function,\n")
-        f.write("};\n")
+        f.write("}\n")
 
     def generate_thunks_h(self, f, prefix):
         self._generate_copyright(f)
@@ -3049,6 +3051,8 @@ class VkGenerator(object):
         f.write("enum unix_call\n")
         f.write("{\n")
         f.write("    unix_init,\n")
+        f.write("    unix_is_available_instance_function,\n")
+        f.write("    unix_is_available_device_function,\n")
         for vk_func in self.registry.funcs.values():
             if not vk_func.needs_exposing():
                 continue
@@ -3071,6 +3075,8 @@ class VkGenerator(object):
             f.write("{\n");
             for p in vk_func.params:
                 f.write("    {0};\n".format(p.definition(is_member=True)))
+            if vk_func.extra_param:
+                f.write("    void *{0};\n".format(vk_func.extra_param))
             if vk_func.returns_longlong():
                 f.write("    {0} result;\n".format(vk_func.type))
             f.write("};\n\n");
@@ -3311,6 +3317,9 @@ class VkRegistry(object):
         # Pull in any required types and functions.
         self._parse_features(root)
         self._parse_extensions(root)
+
+        for enum in self.enums.values():
+            enum.fixup_64bit_aliases()
 
         self._match_object_types()
 

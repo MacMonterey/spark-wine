@@ -19,34 +19,15 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#include <stdarg.h>
-
-#include "windef.h"
-#include "winbase.h"
-#include "wingdi.h"
-#include "controls.h"
-#include "win.h"
-#include "wine/debug.h"
 #include "user_private.h"
+#include "controls.h"
+#include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(scroll);
 
 
   /* Overlap between arrows and thumb */
 #define SCROLL_ARROW_THUMB_OVERLAP 0
-
-/*********************************************************************
- * scrollbar class descriptor
- */
-const struct builtin_class_descr SCROLL_builtin_class =
-{
-    L"ScrollBar",           /* name */
-    CS_DBLCLKS | CS_VREDRAW | CS_HREDRAW | CS_PARENTDC, /* style  */
-    WINPROC_SCROLLBAR,      /* proc */
-    sizeof(struct scroll_bar_win_data), /* extra */
-    IDC_ARROW,              /* cursor */
-    0                       /* brush */
-};
 
 
 /***********************************************************************
@@ -259,6 +240,14 @@ LRESULT WINAPI USER_ScrollBarProc( HWND hwnd, UINT message, WPARAM wParam, LPARA
     case WM_KEYDOWN:
     case WM_KEYUP:
     case WM_ENABLE:
+    case WM_LBUTTONDBLCLK:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_NCMOUSEMOVE:
+    case WM_NCMOUSELEAVE:
+    case WM_MOUSEMOVE:
+    case WM_MOUSELEAVE:
+    case WM_SYSTIMER:
     case WM_SETFOCUS:
     case WM_KILLFOCUS:
     case WM_CREATE:

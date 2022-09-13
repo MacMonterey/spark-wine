@@ -19,44 +19,16 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#include <assert.h>
-#include <stdarg.h>
-
-#define NONAMELESSUNION
-#define NONAMELESSSTRUCT
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
-#include "windef.h"
-#include "winbase.h"
-#include "wingdi.h"
-#include "winuser.h"
-#include "winerror.h"
-#include "winnls.h"
-#include "dbt.h"
-#include "dde.h"
-#include "imm.h"
-#include "hidusage.h"
-#include "ddk/imm.h"
-#include "wine/server.h"
 #include "user_private.h"
-#include "win.h"
 #include "controls.h"
+#include "dde.h"
+#include "wine/server.h"
 #include "wine/debug.h"
 #include "wine/exception.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(msg);
-
-
-/* Message class descriptor */
-const struct builtin_class_descr MESSAGE_builtin_class =
-{
-    L"Message",           /* name */
-    0,                    /* style */
-    WINPROC_MESSAGE,      /* proc */
-    0,                    /* extra */
-    0,                    /* cursor */
-    0                     /* brush */
-};
 
 
 /* pack a pointer into a 32/64 portable format */
@@ -72,10 +44,15 @@ static inline void *unpack_ptr( ULONGLONG ptr64 )
     return (void *)(ULONG_PTR)ptr64;
 }
 
+static struct wm_char_mapping_data *get_wmchar_data(void)
+{
+    return (struct wm_char_mapping_data *)(UINT_PTR)NtUserGetThreadInfo()->wmchar_data;
+}
+
 /* check for pending WM_CHAR message with DBCS trailing byte */
 static inline BOOL get_pending_wmchar( MSG *msg, UINT first, UINT last, BOOL remove )
 {
-    struct wm_char_mapping_data *data = get_user_thread_info()->wmchar_data;
+    struct wm_char_mapping_data *data = get_wmchar_data();
 
     if (!data || !data->get_msg.message) return FALSE;
     if ((first || last) && (first > WM_CHAR || last < WM_CHAR)) return FALSE;
@@ -131,7 +108,7 @@ BOOL map_wparam_AtoW( UINT message, WPARAM *wparam, enum wm_char_mapping mapping
          */
         if (mapping != WMCHAR_MAP_NOMAPPING)
         {
-            struct wm_char_mapping_data *data = get_user_thread_info()->wmchar_data;
+            struct wm_char_mapping_data *data = get_wmchar_data();
             BYTE low = LOBYTE(*wparam);
             cp = get_input_codepage();
 
@@ -164,7 +141,7 @@ BOOL map_wparam_AtoW( UINT message, WPARAM *wparam, enum wm_char_mapping mapping
                 {
                     if (!(data = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*data) )))
                         return FALSE;
-                    get_user_thread_info()->wmchar_data = data;
+                    NtUserGetThreadInfo()->wmchar_data = (UINT_PTR)data;
                 }
                 TRACE( "storing lead byte %02x mapping %u\n", low, mapping );
                 data->lead_byte[mapping] = low;
@@ -222,11 +199,11 @@ static void map_wparam_WtoA( MSG *msg, BOOL remove )
             len = WideCharToMultiByte( cp, 0, wch, 1, (LPSTR)ch, 2, NULL, NULL );
             if (len == 2)  /* DBCS char */
             {
-                struct wm_char_mapping_data *data = get_user_thread_info()->wmchar_data;
+                struct wm_char_mapping_data *data = get_wmchar_data();
                 if (!data)
                 {
                     if (!(data = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*data) ))) return;
-                    get_user_thread_info()->wmchar_data = data;
+                    NtUserGetThreadInfo()->wmchar_data = (UINT_PTR)data;
                 }
                 if (remove)
                 {
@@ -595,13 +572,17 @@ LRESULT WINAPI SendMessageTimeoutA( HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
 }
 
 
-static LRESULT dispatch_send_message( struct win_proc_params *params )
+static LRESULT dispatch_send_message( struct win_proc_params *params, WPARAM wparam, LPARAM lparam )
 {
-    struct user_thread_info *thread_info = get_user_thread_info();
+    struct ntuser_thread_info *thread_info = NtUserGetThreadInfo();
     INPUT_MESSAGE_SOURCE prev_source = thread_info->msg_source;
     LRESULT retval = 0;
 
     static const INPUT_MESSAGE_SOURCE msg_source_unavailable = { IMDT_UNAVAILABLE, IMO_UNAVAILABLE };
+
+    /* params may contain arguments modified by wow, use original parameters instead */
+    params->wparam = wparam;
+    params->lparam = lparam;
 
     thread_info->recursion_count++;
 
@@ -628,7 +609,7 @@ LRESULT WINAPI SendMessageW( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
 
     params.hwnd = 0;
     retval = NtUserMessageCall( hwnd, msg, wparam, lparam, &params, NtUserSendMessage, FALSE );
-    if (params.hwnd) retval = dispatch_send_message( &params );
+    if (params.hwnd) retval = dispatch_send_message( &params, wparam, lparam );
     return retval;
 }
 
@@ -650,7 +631,7 @@ LRESULT WINAPI SendMessageA( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
 
     params.hwnd = 0;
     retval = NtUserMessageCall( hwnd, msg, wparam, lparam, &params, NtUserSendMessage, TRUE );
-    if (params.hwnd) retval = dispatch_send_message( &params );
+    if (params.hwnd) retval = dispatch_send_message( &params, wparam, lparam );
     return retval;
 }
 
@@ -707,7 +688,7 @@ BOOL WINAPI SendMessageCallbackW( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
  */
 BOOL WINAPI ReplyMessage( LRESULT result )
 {
-    return NtUserReplyMessage( result, NULL );
+    return NtUserReplyMessage( result );
 }
 
 
@@ -725,10 +706,7 @@ BOOL WINAPI InSendMessage(void)
  */
 DWORD WINAPI InSendMessageEx( LPVOID reserved )
 {
-    struct received_message_info *info = get_user_thread_info()->receive_info;
-
-    if (info) return info->flags;
-    return ISMEX_NOSEND;
+    return NtUserGetThreadInfo()->receive_flags;
 }
 
 
@@ -1043,7 +1021,7 @@ LPARAM WINAPI SetMessageExtraInfo(LPARAM lParam)
  */
 BOOL WINAPI GetCurrentInputMessageSource( INPUT_MESSAGE_SOURCE *source )
 {
-    *source = get_user_thread_info()->msg_source;
+    *source = NtUserGetThreadInfo()->msg_source;
     return TRUE;
 }
 

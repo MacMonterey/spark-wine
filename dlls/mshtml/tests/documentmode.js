@@ -253,6 +253,7 @@ sync_test("builtin_toString", function() {
     if(v >= 10) {
         test("classList", e.classList, "DOMTokenList", "testclass    another ");
         test("console", window.console, "Console");
+        test("mediaQueryList", window.matchMedia("(hover:hover)"), "MediaQueryList");
     }
     if(v >= 9) {
         document.body.innerHTML = "<!--...-->";
@@ -364,6 +365,7 @@ sync_test("window_props", function() {
     test_exposed("Set", v >= 11);
     test_exposed("performance", true);
     test_exposed("console", v >= 10);
+    test_exposed("matchMedia", v >= 10);
 });
 
 sync_test("domimpl_props", function() {
@@ -1197,6 +1199,57 @@ sync_test("map_obj", function() {
         ok(s.size === 0, "size = " + s.size);
     });
     ok(r === 1, "r = " + r);
+});
+
+sync_test("storage", function() {
+    var v = document.documentMode, i, r, list;
+
+    sessionStorage["add-at-end"] = 0;
+    sessionStorage.removeItem("add-at-end");
+
+    sessionStorage.setItem("foobar", "1234");
+    ok("foobar" in sessionStorage, "foobar not in sessionStorage");
+    r = sessionStorage.foobar;
+    ok(r === "1234", "sessionStorage.foobar = " + r);
+    sessionStorage.barfoo = 4321;
+    r = sessionStorage.getItem("barfoo");
+    ok(r === "4321", "sessionStorage.barfoo = " + r);
+    sessionStorage.setItem("abcd", "blah");
+    sessionStorage.dcba = "test";
+
+    // Order isn't consistent, but changes are reflected during the enumeration.
+    // Elements that were already traversed in DISPID (even if removed before
+    // the enumeration) are not enumerated, even if re-added during the enum.
+    i = 0; list = [ "foobar", "barfoo", "abcd", "dcba" ];
+    for(r in sessionStorage) {
+        for(var j = 0; j < list.length; j++)
+            if(r === list[j])
+                break;
+        ok(j < list.length, "got '" + r + "' enumerating");
+        list.splice(j, 1);
+        if(i === 1) {
+            sessionStorage.removeItem(list[0]);
+            sessionStorage.setItem("new", "new");
+            list.splice(0, 1, "new");
+        }
+        if(!list.length)
+            sessionStorage.setItem("add-at-end", "0");
+        i++;
+    }
+    ok(i === 4, "enum did " + i + " iterations");
+
+    try {
+        delete sessionStorage.foobar;
+        ok(v >= 8, "expected exception deleting sessionStorage.foobar");
+        ok(!("foobar" in sessionStorage), "foobar in sessionStorage after deletion");
+        r = sessionStorage.getItem("foobar");
+        ok(r === null, "sessionStorage.foobar after deletion = " + r);
+    }catch(e) {
+        ok(v < 8, "did not expect exception deleting sessionStorage.foobar");
+        ok(e.number === 0xa01bd - 0x80000000, "deleting sessionStorage.foobar threw = " + e.number);
+    }
+
+    sessionStorage.clear();
 });
 
 sync_test("elem_attr", function() {
@@ -2076,10 +2129,61 @@ sync_test("__defineSetter__", function() {
 async_test("postMessage", function() {
     var v = document.documentMode;
     var onmessage_called = false;
-    window.onmessage = function() {
+    window.onmessage = function(e) {
         onmessage_called = true;
-        next_test();
+        if(v < 9)
+            ok(e === undefined, "e = " + e);
+        else {
+            ok(e.data === (v < 10 ? "10" : 10), "e.data = " + e.data);
+            next_test();
+        }
     }
-    window.postMessage("test", "*");
+
+    var invalid = [
+        v < 10 ? { toString: function() { return "http://winetest.example.org"; } } : null,
+        (function() { return "http://winetest.example.org"; }),
+        "winetest.example.org",
+        "example.org",
+        undefined
+    ];
+    for(var i = 0; i < invalid.length; i++) {
+        try {
+            window.postMessage("invalid " + i, invalid[i]);
+            ok(false, "expected exception with targetOrigin " + invalid[i]);
+        }catch(ex) {
+            var n = ex.number >>> 0;
+            todo_wine_if(v >= 10).
+            ok(n === (v < 10 ? 0x80070057 : 0), "postMessage with targetOrigin " + invalid[i] + " threw " + n);
+            if(v >= 10)
+                todo_wine.
+                ok(ex.name === "SyntaxError", "postMessage with targetOrigin " + invalid[i] + " threw " + ex.name);
+        }
+    }
+    try {
+        window.postMessage("invalid empty", "");
+        ok(false, "expected exception with empty targetOrigin");
+    }catch(ex) {
+        var n = ex.number >>> 0;
+        ok(n === 0x80070057, "postMessage with empty targetOrigin threw " + n);
+    }
+
+    window.postMessage("wrong port", "http://winetest.example.org:1234");
+    ok(onmessage_called == (v < 9 ? true : false), "onmessage not called with wrong port");
+    onmessage_called = false;
+
+    var not_sent = [
+        "http://winetest.example.com",
+        "ftp://winetest.example.org",
+        "http://wine.example.org",
+        "http://example.org"
+    ];
+    for(var i = 0; i < not_sent.length; i++) {
+        window.postMessage("not_sent " + i, not_sent[i]);
+        ok(onmessage_called == false, "onmessage called with targetOrigin " + not_sent[i]);
+        onmessage_called = false;
+    }
+
+    window.postMessage(10, (v < 10 ? "*" : { toString: function() { return "*"; } }));
     ok(onmessage_called == (v < 9 ? true : false), "onmessage not called");
+    if(v < 9) next_test();
 });

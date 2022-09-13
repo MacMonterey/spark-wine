@@ -26,7 +26,6 @@
 #include "wine/list.h"
 
 
-#define WM_SYSTIMER         0x0118
 #define WM_POPUPSYSTEMMENU  0x0313
 
 enum system_timer_id
@@ -123,16 +122,12 @@ struct user_thread_info
     HANDLE                        server_queue;           /* Handle to server-side queue */
     DWORD                         wake_mask;              /* Current queue wake mask */
     DWORD                         changed_mask;           /* Current queue changed mask */
-    WORD                          recursion_count;        /* SendMessage recursion counter */
     WORD                          message_count;          /* Get/PeekMessage loop counter */
     WORD                          hook_call_depth;        /* Number of recursively called hook procs */
     WORD                          hook_unicode;           /* Is current hook unicode? */
     HHOOK                         hook;                   /* Current hook */
     UINT                          active_hooks;           /* Bitmap of active hooks */
-    DPI_AWARENESS                 dpi_awareness;          /* DPI awareness */
-    INPUT_MESSAGE_SOURCE          msg_source;             /* Message source for current message */
     struct received_message_info *receive_info;           /* Message being currently received */
-    struct wm_char_mapping_data  *wmchar_data;            /* Data for WM_CHAR mappings */
     struct user_key_state_info   *key_state;              /* Cache of global key state */
     struct imm_thread_data       *imm_thread_data;        /* IMM thread data */
     HKL                           kbd_layout;             /* Current keyboard layout */
@@ -142,6 +137,11 @@ struct user_thread_info
 };
 
 C_ASSERT( sizeof(struct user_thread_info) <= sizeof(((TEB *)0)->Win32ClientInfo) );
+
+static inline struct user_thread_info *get_user_thread_info(void)
+{
+    return CONTAINING_RECORD( NtUserGetThreadInfo(), struct user_thread_info, client_info );
+}
 
 struct user_key_state_info
 {
@@ -209,24 +209,6 @@ struct scroll_bar_win_data
 #define WINSWITCH_CLASS_ATOM MAKEINTATOM(32771)  /* WinSwitch */
 #define ICONTITLE_CLASS_ATOM MAKEINTATOM(32772)  /* IconTitle */
 
-/* message spy definitions */
-
-#define SPY_DISPATCHMESSAGE       0x0100
-#define SPY_SENDMESSAGE           0x0101
-#define SPY_DEFWNDPROC            0x0102
-
-#define SPY_RESULT_OK             0x0001
-#define SPY_RESULT_DEFWND         0x0002
-
-/* info about the message currently being received by the current thread */
-struct received_message_info
-{
-    UINT  type;
-    MSG   msg;
-    UINT  flags;  /* InSendMessageEx return flags */
-    struct received_message_info *prev;
-};
-
 extern const char *debugstr_msg_name( UINT msg, HWND hwnd ) DECLSPEC_HIDDEN;
 extern const char *debugstr_vkey_name( WPARAM wParam ) DECLSPEC_HIDDEN;
 extern void spy_enter_message( INT flag, HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam ) DECLSPEC_HIDDEN;
@@ -241,14 +223,15 @@ DWORD get_class_long( HWND hwnd, INT offset, BOOL ansi ) DECLSPEC_HIDDEN;
 WNDPROC get_class_winproc( struct tagCLASS *class ) DECLSPEC_HIDDEN;
 ULONG_PTR get_class_long_ptr( HWND hwnd, INT offset, BOOL ansi ) DECLSPEC_HIDDEN;
 WORD get_class_word( HWND hwnd, INT offset ) DECLSPEC_HIDDEN;
-DLGPROC get_dialog_proc( HWND hwnd, enum dialog_proc_type type ) DECLSPEC_HIDDEN;
+DLGPROC get_dialog_proc( DLGPROC proc, BOOL ansi ) DECLSPEC_HIDDEN;
 ATOM get_int_atom_value( UNICODE_STRING *name ) DECLSPEC_HIDDEN;
 WNDPROC get_winproc( WNDPROC proc, BOOL ansi ) DECLSPEC_HIDDEN;
-void get_winproc_params( struct win_proc_params *params ) DECLSPEC_HIDDEN;
+void get_winproc_params( struct win_proc_params *params, BOOL fixup_ansi_dst ) DECLSPEC_HIDDEN;
 struct dce *get_class_dce( struct tagCLASS *class ) DECLSPEC_HIDDEN;
 struct dce *set_class_dce( struct tagCLASS *class, struct dce *dce ) DECLSPEC_HIDDEN;
 BOOL needs_ime_window( HWND hwnd ) DECLSPEC_HIDDEN;
 extern void register_builtin_classes(void) DECLSPEC_HIDDEN;
+extern void register_desktop_class(void) DECLSPEC_HIDDEN;
 
 /* cursoricon.c */
 HICON alloc_cursoricon_handle( BOOL is_icon ) DECLSPEC_HIDDEN;

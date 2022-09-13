@@ -295,8 +295,9 @@ struct user_driver_funcs
     LRESULT (*pClipboardWindowProc)(HWND,UINT,WPARAM,LPARAM);
     void    (*pUpdateClipboard)(void);
     /* display modes */
-    LONG    (*pChangeDisplaySettingsEx)(LPCWSTR,LPDEVMODEW,HWND,DWORD,LPVOID);
+    LONG    (*pChangeDisplaySettings)(LPDEVMODEW,HWND,DWORD,LPVOID);
     BOOL    (*pEnumDisplaySettingsEx)(LPCWSTR,DWORD,LPDEVMODEW,DWORD);
+    BOOL    (*pGetCurrentDisplaySettings)(LPCWSTR,LPDEVMODEW);
     BOOL    (*pUpdateDisplayDevices)(const struct gdi_device_manager *,BOOL,void*);
     /* windowing functions */
     BOOL    (*pCreateDesktopWindow)(HWND);

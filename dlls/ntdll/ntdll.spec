@@ -244,6 +244,7 @@
 @ stdcall -syscall NtLoadDriver(ptr)
 @ stdcall -syscall NtLoadKey2(ptr ptr long)
 @ stdcall -syscall NtLoadKey(ptr ptr)
+@ stdcall -syscall NtLoadKeyEx(ptr ptr long long long long ptr ptr)
 @ stdcall -syscall NtLockFile(long long ptr ptr ptr ptr ptr ptr long long)
 # @ stub NtLockProductActivationKeys
 # @ stub NtLockRegistryKey
@@ -952,7 +953,7 @@
 @ stdcall RtlRemoveVectoredContinueHandler(ptr)
 @ stdcall RtlRemoveVectoredExceptionHandler(ptr)
 @ stdcall RtlResetRtlTranslations(ptr)
-@ cdecl -arch=arm,arm64,x86_64 RtlRestoreContext(ptr ptr)
+@ cdecl RtlRestoreContext(ptr ptr)
 @ stdcall RtlRestoreLastWin32Error(long) RtlSetLastWin32Error
 @ stub RtlRevertMemoryStream
 @ stub RtlRunDecodeUnicodeString

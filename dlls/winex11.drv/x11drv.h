@@ -213,10 +213,10 @@ extern void X11DRV_SetCursor( HCURSOR handle ) DECLSPEC_HIDDEN;
 extern BOOL X11DRV_SetCursorPos( INT x, INT y ) DECLSPEC_HIDDEN;
 extern BOOL X11DRV_GetCursorPos( LPPOINT pos ) DECLSPEC_HIDDEN;
 extern BOOL X11DRV_ClipCursor( LPCRECT clip ) DECLSPEC_HIDDEN;
-extern LONG X11DRV_ChangeDisplaySettingsEx( LPCWSTR devname, LPDEVMODEW devmode,
-                                            HWND hwnd, DWORD flags, LPVOID lpvoid ) DECLSPEC_HIDDEN;
+extern LONG X11DRV_ChangeDisplaySettings( LPDEVMODEW displays, HWND hwnd, DWORD flags, LPVOID lpvoid ) DECLSPEC_HIDDEN;
 extern BOOL X11DRV_EnumDisplaySettingsEx( LPCWSTR name, DWORD n, LPDEVMODEW devmode,
                                           DWORD flags ) DECLSPEC_HIDDEN;
+extern BOOL X11DRV_GetCurrentDisplaySettings( LPCWSTR name, LPDEVMODEW devmode ) DECLSPEC_HIDDEN;
 extern BOOL X11DRV_UpdateDisplayDevices( const struct gdi_device_manager *device_manager,
                                          BOOL force, void *param ) DECLSPEC_HIDDEN;
 extern BOOL X11DRV_CreateDesktopWindow( HWND hwnd ) DECLSPEC_HIDDEN;
@@ -392,7 +392,7 @@ extern struct x11drv_thread_data *x11drv_init_thread_data(void) DECLSPEC_HIDDEN;
 
 static inline struct x11drv_thread_data *x11drv_thread_data(void)
 {
-    return NtUserGetThreadInfo()->driver_data;
+    return (struct x11drv_thread_data *)(UINT_PTR)NtUserGetThreadInfo()->driver_data;
 }
 
 /* retrieve the thread display, or NULL if not created yet */
@@ -741,7 +741,7 @@ struct x11drv_settings_handler
      * mode must be a valid mode from get_modes() with optional fields, such as dmPosition set.
      *
      * Return DISP_CHANGE_*, same as ChangeDisplaySettingsExW() return values */
-    LONG (*set_current_mode)(ULONG_PTR id, DEVMODEW *mode);
+    LONG (*set_current_mode)(ULONG_PTR id, const DEVMODEW *mode);
 };
 
 extern void X11DRV_Settings_SetHandler(const struct x11drv_settings_handler *handler) DECLSPEC_HIDDEN;

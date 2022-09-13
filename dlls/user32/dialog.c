@@ -18,26 +18,17 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#include <ctype.h>
-#include <errno.h>
-#include <limits.h>
 #include <stdlib.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
-
-#include "windef.h"
-#include "winbase.h"
-#include "wingdi.h"
-#include "winuser.h"
-#include "winnls.h"
-#include "controls.h"
-#include "win.h"
+#include <limits.h>
+#include <errno.h>
 #include "user_private.h"
+#include "controls.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(dialog);
 
+
+#define DIALOG_CLASS_ATOM    MAKEINTATOM(32770)  /* Dialog */
 
   /* Dialog control information */
 typedef struct
@@ -83,20 +74,6 @@ typedef struct
     UINT lastID;
     UINT checkID;
 } RADIOGROUP;
-
-
-/*********************************************************************
- * dialog class descriptor
- */
-const struct builtin_class_descr DIALOG_builtin_class =
-{
-    (LPCWSTR)DIALOG_CLASS_ATOM, /* name */
-    CS_SAVEBITS | CS_DBLCLKS, /* style  */
-    WINPROC_DIALOG,     /* proc */
-    DLGWINDOWEXTRA,     /* extra */
-    IDC_ARROW,          /* cursor */
-    0                   /* brush */
-};
 
 
 /***********************************************************************
@@ -232,8 +209,19 @@ static BOOL DIALOG_CreateControls32( HWND hwnd, LPCSTR template, const DLG_TEMPL
         }
         if (unicode)
         {
+            const WCHAR *caption = info.windowName;
+            WCHAR caption_buf[3];
+
+            if (IS_INTRESOURCE(caption) && caption)
+            {
+                caption_buf[0] = 0xffff;
+                caption_buf[1] = PtrToUlong( caption );
+                caption_buf[2] = 0;
+                caption = caption_buf;
+            }
+
             hwndCtrl = CreateWindowExW( info.exStyle | WS_EX_NOPARENTNOTIFY,
-                                        info.className, info.windowName,
+                                        info.className, caption,
                                         info.style | WS_CHILD,
                                         MulDiv(info.x, dlgInfo->xBaseUnit, 4),
                                         MulDiv(info.y, dlgInfo->yBaseUnit, 8),
@@ -248,6 +236,7 @@ static BOOL DIALOG_CreateControls32( HWND hwnd, LPCSTR template, const DLG_TEMPL
             LPCSTR caption = (LPCSTR)info.windowName;
             LPSTR class_tmp = NULL;
             LPSTR caption_tmp = NULL;
+            char caption_buf[4];
 
             if (!IS_INTRESOURCE(class))
             {
@@ -263,6 +252,15 @@ static BOOL DIALOG_CreateControls32( HWND hwnd, LPCSTR template, const DLG_TEMPL
                 WideCharToMultiByte( CP_ACP, 0, info.windowName, -1, caption_tmp, len, NULL, NULL );
                 caption = caption_tmp;
             }
+            else if (caption)
+            {
+                caption_buf[0] = 0xff;
+                caption_buf[1] = PtrToUlong( caption );
+                caption_buf[2] = PtrToUlong( caption ) >> 8;
+                caption_buf[3] = 0;
+                caption = caption_buf;
+            }
+
             hwndCtrl = CreateWindowExA( info.exStyle | WS_EX_NOPARENTNOTIFY,
                                         class, caption, info.style | WS_CHILD,
                                         MulDiv(info.x, dlgInfo->xBaseUnit, 4),
@@ -940,7 +938,7 @@ BOOL WINAPI EndDialog( HWND hwnd, INT_PTR retval )
         if (owner)
             SetForegroundWindow( owner );
         else
-            WINPOS_ActivateOtherWindow( hwnd );
+            NtUserActivateOtherWindow( hwnd );
     }
 
     /* unblock dialog loop */

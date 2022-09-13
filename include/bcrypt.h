@@ -84,6 +84,7 @@ typedef LONG NTSTATUS;
 #define BCRYPT_DES_ALGORITHM        L"DES"
 #define BCRYPT_DSA_ALGORITHM        L"DSA"
 #define BCRYPT_ECDH_P256_ALGORITHM  L"ECDH_P256"
+#define BCRYPT_ECDH_P384_ALGORITHM  L"ECDH_P384"
 #define BCRYPT_ECDSA_P256_ALGORITHM L"ECDSA_P256"
 #define BCRYPT_ECDSA_P384_ALGORITHM L"ECDSA_P384"
 #define BCRYPT_ECDSA_P521_ALGORITHM L"ECDSA_P521"
@@ -158,6 +159,7 @@ static const WCHAR BCRYPT_AES_ALGORITHM[] = {'A','E','S',0};
 static const WCHAR BCRYPT_DES_ALGORITHM[] = {'D','E','S',0};
 static const WCHAR BCRYPT_DSA_ALGORITHM[] = {'D','S','A',0};
 static const WCHAR BCRYPT_ECDH_P256_ALGORITHM[] = {'E','C','D','H','_','P','2','5','6',0};
+static const WCHAR BCRYPT_ECDH_P384_ALGORITHM[] = {'E','C','D','H','_','P','3','8','4',0};
 static const WCHAR BCRYPT_ECDSA_P256_ALGORITHM[] = {'E','C','D','S','A','_','P','2','5','6',0};
 static const WCHAR BCRYPT_ECDSA_P384_ALGORITHM[] = {'E','C','D','S','A','_','P','3','8','4',0};
 static const WCHAR BCRYPT_ECDSA_P521_ALGORITHM[] = {'E','C','D','S','A','_','P','5','2','1',0};
@@ -284,6 +286,12 @@ typedef struct _BCRYPT_PKCS1_PADDING_INFO
     LPCWSTR pszAlgId;
 } BCRYPT_PKCS1_PADDING_INFO;
 
+typedef struct _BCRYPT_OAEP_PADDING_INFO {
+    LPCWSTR pszAlgId;
+    PUCHAR  pbLabel;
+    ULONG   cbLabel;
+} BCRYPT_OAEP_PADDING_INFO;
+
 #define BCRYPT_PAD_NONE                     0x00000001
 #define BCRYPT_PAD_PKCS1                    0x00000002
 #define BCRYPT_PAD_OAEP                     0x00000004
@@ -392,6 +400,9 @@ typedef PVOID BCRYPT_KEY_HANDLE;
 typedef PVOID BCRYPT_HANDLE;
 typedef PVOID BCRYPT_HASH_HANDLE;
 typedef PVOID BCRYPT_SECRET_HANDLE;
+
+/* Pseudo handles for BCryptGenRandom */
+#define BCRYPT_RNG_ALG_HANDLE       ((BCRYPT_ALG_HANDLE)0x00000081)
 
 /* Flags for BCryptGenRandom */
 #define BCRYPT_RNG_USE_ENTROPY_IN_BUFFER 0x00000001

@@ -60,6 +60,17 @@ typedef struct tagCLASS
     struct client_menu_name menu_name; /* Default menu name */
 } CLASS;
 
+/* Built-in class descriptor */
+struct builtin_class_descr
+{
+    const char *name;    /* class name */
+    UINT       style;    /* class style */
+    INT        extra;     /* window extra bytes */
+    ULONG_PTR  cursor;    /* cursor id */
+    HBRUSH     brush;     /* brush or system color */
+    enum builtin_winprocs proc;
+};
+
 typedef struct tagWINDOWPROC
 {
     WNDPROC  procA;    /* ANSI window proc */
@@ -190,7 +201,7 @@ BOOL is_winproc_unicode( WNDPROC proc, BOOL def_val )
     return ptr->procW != NULL;
 }
 
-void get_winproc_params( struct win_proc_params *params )
+void get_winproc_params( struct win_proc_params *params, BOOL fixup_ansi_dst )
 {
     WINDOWPROC *proc = get_winproc_ptr( params->func );
 
@@ -206,32 +217,41 @@ void get_winproc_params( struct win_proc_params *params )
     {
         params->procA = proc->procA;
         params->procW = proc->procW;
+
+        if (fixup_ansi_dst)
+        {
+            if (params->ansi)
+            {
+                if (params->procA) params->ansi_dst = TRUE;
+                else if (params->procW) params->ansi_dst = FALSE;
+            }
+            else
+            {
+                if (params->procW) params->ansi_dst = FALSE;
+                else if (params->procA) params->ansi_dst = TRUE;
+            }
+        }
     }
+
+    if (!params->procA) params->procA = params->func;
+    if (!params->procW) params->procW = params->func;
 }
 
-DLGPROC get_dialog_proc( HWND hwnd, enum dialog_proc_type type )
+DLGPROC get_dialog_proc( DLGPROC ret, BOOL ansi )
 {
     WINDOWPROC *proc;
-    DLGPROC ret;
-    WND *win;
 
-    if (!(win = get_win_ptr( hwnd ))) return NULL;
-    if (win == WND_OTHER_PROCESS || win == WND_DESKTOP)
-    {
-        ERR( "cannot get dlg proc %p from other process\n", hwnd );
-        return 0;
-    }
-    ret = *(DLGPROC *)((char *)win->wExtra + DWLP_DLGPROC);
-    release_win_ptr( win );
-    if (type == DLGPROC_WIN16 || !(proc = get_winproc_ptr( ret ))) return ret;
+    if (!(proc = get_winproc_ptr( ret ))) return ret;
     if (proc == WINPROC_PROC16) return WINPROC_PROC16;
+    return ansi ? proc->procA : proc->procW;
+}
 
-    if (type == DLGPROC_ANSI)
-        ret = proc->procA ? proc->procA : proc->procW;
-    else
-        ret = proc->procW ? proc->procW : proc->procA;
-
-    return ret;
+static void init_user(void)
+{
+    gdi_init();
+    winstation_init();
+    sysparams_init();
+    register_desktop_class();
 }
 
 /***********************************************************************
@@ -241,6 +261,8 @@ NTSTATUS WINAPI NtUserInitializeClientPfnArrays( const struct user_client_procs 
                                                  const struct user_client_procs *client_procsW,
                                                  const void *client_workers, HINSTANCE user_module )
 {
+    static pthread_once_t init_once = PTHREAD_ONCE_INIT;
+
     winproc_array[WINPROC_BUTTON].procA = client_procsA->pButtonWndProc;
     winproc_array[WINPROC_BUTTON].procW = client_procsW->pButtonWndProc;
     winproc_array[WINPROC_COMBO].procA = client_procsA->pComboWndProc;
@@ -271,6 +293,8 @@ NTSTATUS WINAPI NtUserInitializeClientPfnArrays( const struct user_client_procs 
     winproc_array[WINPROC_MESSAGE].procW = client_procsW->pMessageWndProc;
 
     user32_module = user_module;
+
+    pthread_once( &init_once, init_user );
     return STATUS_SUCCESS;
 }
 
@@ -310,11 +334,11 @@ static CLASS *get_class_ptr( HWND hwnd, BOOL write_access )
         /* modifying classes in other processes is not allowed */
         if (ptr == WND_DESKTOP || is_window( hwnd ))
         {
-            SetLastError( ERROR_ACCESS_DENIED );
+            RtlSetLastWin32Error( ERROR_ACCESS_DENIED );
             return NULL;
         }
     }
-    SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+    RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
     return NULL;
 }
 
@@ -400,7 +424,7 @@ ATOM WINAPI NtUserRegisterClassExWOW( const WNDCLASSEXW *wc, UNICODE_STRING *nam
     if (wc->cbSize != sizeof(*wc) || wc->cbClsExtra < 0 || wc->cbWndExtra < 0 ||
         (!is_builtin && wc->hInstance == user32_module))  /* we can't register a class for user32 */
     {
-         SetLastError( ERROR_INVALID_PARAMETER );
+         RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
          return 0;
     }
     if (!(instance = wc->hInstance)) instance = NtCurrentTeb()->Peb->ImageBaseAddress;
@@ -575,7 +599,7 @@ ULONG WINAPI NtUserGetAtomName( ATOM atom, UNICODE_STRING *name )
 
     if (name->MaximumLength < sizeof(WCHAR))
     {
-        SetLastError( ERROR_INSUFFICIENT_BUFFER );
+        RtlSetLastWin32Error( ERROR_INSUFFICIENT_BUFFER );
         return 0;
     }
 
@@ -597,7 +621,7 @@ INT WINAPI NtUserGetClassName( HWND hwnd, BOOL real, UNICODE_STRING *name )
 
     if (name->MaximumLength <= sizeof(WCHAR))
     {
-        SetLastError( ERROR_INSUFFICIENT_BUFFER );
+        RtlSetLastWin32Error( ERROR_INSUFFICIENT_BUFFER );
         return 0;
     }
 
@@ -812,10 +836,10 @@ static ULONG_PTR set_class_long( HWND hwnd, INT offset, LONG_PTR newval, UINT si
         }
         break;
     case GCL_CBCLSEXTRA:  /* cannot change this one */
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         break;
     default:
-        SetLastError( ERROR_INVALID_INDEX );
+        RtlSetLastWin32Error( ERROR_INVALID_INDEX );
         break;
     }
     release_class_ptr( class );
@@ -895,7 +919,7 @@ static ULONG_PTR get_class_long_size( HWND hwnd, INT offset, UINT size, BOOL ans
                 case GCLP_WNDPROC:
                 case GCLP_MENUNAME:
                     FIXME( "offset %d not supported on other process window %p\n", offset, hwnd );
-                    SetLastError( ERROR_INVALID_HANDLE );
+                    RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
                     break;
                 case GCL_STYLE:
                     retvalue = reply->old_style;
@@ -925,7 +949,7 @@ static ULONG_PTR get_class_long_size( HWND hwnd, INT offset, UINT size, BOOL ans
                             memcpy( &retvalue, &reply->old_extra_value,
                                     sizeof(ULONG_PTR) );
                     }
-                    else SetLastError( ERROR_INVALID_INDEX );
+                    else RtlSetLastWin32Error( ERROR_INVALID_INDEX );
                     break;
                 }
             }
@@ -948,7 +972,7 @@ static ULONG_PTR get_class_long_size( HWND hwnd, INT offset, UINT size, BOOL ans
                 memcpy( &retvalue, (char *)(class + 1) + offset, sizeof(ULONG_PTR) );
         }
         else
-            SetLastError( ERROR_INVALID_INDEX );
+            RtlSetLastWin32Error( ERROR_INVALID_INDEX );
         release_class_ptr( class );
         return retvalue;
     }
@@ -989,7 +1013,7 @@ static ULONG_PTR get_class_long_size( HWND hwnd, INT offset, UINT size, BOOL ans
         retvalue = class->atomName;
         break;
     default:
-        SetLastError( ERROR_INVALID_INDEX );
+        RtlSetLastWin32Error( ERROR_INVALID_INDEX );
         break;
     }
     release_class_ptr( class );
@@ -1033,7 +1057,7 @@ WORD get_class_word( HWND hwnd, INT offset )
     if (offset <= class->cbClsExtra - sizeof(WORD))
         memcpy( &retvalue, (char *)(class + 1) + offset, sizeof(retvalue) );
     else
-        SetLastError( ERROR_INVALID_INDEX );
+        RtlSetLastWin32Error( ERROR_INVALID_INDEX );
     release_class_ptr( class );
     return retvalue;
 }
@@ -1050,11 +1074,164 @@ BOOL needs_ime_window( HWND hwnd )
     return ret;
 }
 
+static const struct builtin_class_descr desktop_builtin_class =
+{
+    .name = MAKEINTRESOURCEA(DESKTOP_CLASS_ATOM),
+    .style = CS_DBLCLKS,
+    .proc = WINPROC_DESKTOP,
+    .brush = (HBRUSH)(COLOR_BACKGROUND + 1),
+};
+
+static const struct builtin_class_descr message_builtin_class =
+{
+    .name = "Message",
+    .proc = WINPROC_MESSAGE,
+};
+
+static const struct builtin_class_descr builtin_classes[] =
+{
+    /* button */
+    {
+        .name = "Button",
+        .style = CS_DBLCLKS | CS_VREDRAW | CS_HREDRAW | CS_PARENTDC,
+        .proc = WINPROC_BUTTON,
+        .extra = sizeof(UINT) + 2 * sizeof(HANDLE),
+        .cursor = IDC_ARROW,
+    },
+    /* combo  */
+    {
+        .name = "ComboBox",
+        .style = CS_PARENTDC | CS_DBLCLKS | CS_HREDRAW | CS_VREDRAW,
+        .proc = WINPROC_COMBO,
+        .extra = sizeof(void *),
+        .cursor = IDC_ARROW,
+    },
+    /* combolbox */
+    {
+        .name = "ComboLBox",
+        .style = CS_DBLCLKS | CS_SAVEBITS,
+        .proc = WINPROC_LISTBOX,
+        .extra = sizeof(void *),
+        .cursor = IDC_ARROW,
+    },
+    /* dialog */
+    {
+        .name = MAKEINTRESOURCEA(DIALOG_CLASS_ATOM),
+        .style = CS_SAVEBITS | CS_DBLCLKS,
+        .proc = WINPROC_DIALOG,
+        .extra = DLGWINDOWEXTRA,
+        .cursor = IDC_ARROW,
+    },
+    /* edit */
+    {
+        .name = "Edit",
+        .style = CS_DBLCLKS | CS_PARENTDC,
+        .proc = WINPROC_EDIT,
+        .extra = sizeof(UINT64),
+        .cursor = IDC_IBEAM,
+    },
+    /* icon title */
+    {
+        .name = MAKEINTRESOURCEA(ICONTITLE_CLASS_ATOM),
+        .proc = WINPROC_ICONTITLE,
+        .cursor = IDC_ARROW,
+    },
+    /* IME */
+    {
+        .name = "IME",
+        .proc = WINPROC_IME,
+        .extra = 2 * sizeof(LONG_PTR),
+        .cursor = IDC_ARROW,
+    },
+    /* listbox  */
+    {
+        .name = "ListBox",
+        .style = CS_DBLCLKS,
+        .proc = WINPROC_LISTBOX,
+        .extra = sizeof(void *),
+        .cursor = IDC_ARROW,
+    },
+    /* menu */
+    {
+        .name = MAKEINTRESOURCEA(POPUPMENU_CLASS_ATOM),
+        .style = CS_DROPSHADOW | CS_SAVEBITS | CS_DBLCLKS,
+        .proc = WINPROC_MENU,
+        .extra = sizeof(HMENU),
+        .cursor = IDC_ARROW,
+        .brush = (HBRUSH)(COLOR_MENU + 1),
+    },
+    /* MDIClient */
+    {
+        .name = "MDIClient",
+        .proc = WINPROC_MDICLIENT,
+        .extra = 2 * sizeof(void *),
+        .cursor = IDC_ARROW,
+        .brush = (HBRUSH)(COLOR_APPWORKSPACE + 1),
+    },
+    /* scrollbar */
+    {
+        .name = "ScrollBar",
+        .style = CS_DBLCLKS | CS_VREDRAW | CS_HREDRAW | CS_PARENTDC,
+        .proc = WINPROC_SCROLLBAR,
+        .extra = sizeof(struct scroll_bar_win_data),
+        .cursor = IDC_ARROW,
+    },
+    /* static */
+    {
+        .name = "Static",
+        .style = CS_DBLCLKS | CS_PARENTDC,
+        .proc = WINPROC_STATIC,
+        .extra = 2 * sizeof(HANDLE),
+        .cursor = IDC_ARROW,
+    },
+};
+
+/***********************************************************************
+ *           register_builtin
+ *
+ * Register a builtin control class.
+ * This allows having both ANSI and Unicode winprocs for the same class.
+ */
+static void register_builtin( const struct builtin_class_descr *descr )
+{
+    UNICODE_STRING name, version = { .Length = 0 };
+    struct client_menu_name menu_name = { 0 };
+    WCHAR nameW[64];
+    WNDCLASSEXW class = {
+        .cbSize = sizeof(class),
+        .hInstance = user32_module,
+        .style = descr->style,
+        .cbWndExtra = descr->extra,
+        .hbrBackground = descr->brush,
+        .lpfnWndProc = BUILTIN_WINPROC( descr->proc ),
+    };
+
+    if (descr->cursor)
+        class.hCursor = LoadImageW( 0, (const WCHAR *)descr->cursor, IMAGE_CURSOR,
+                                    0, 0, LR_SHARED | LR_DEFAULTSIZE );
+
+    if (IS_INTRESOURCE( descr->name ))
+    {
+        name.Buffer = (WCHAR *)descr->name;
+        name.Length = name.MaximumLength = 0;
+    }
+    else
+    {
+        asciiz_to_unicode( nameW, descr->name );
+        RtlInitUnicodeString( &name, nameW );
+    }
+
+    if (!NtUserRegisterClassExWOW( &class, &name, &version, &menu_name, 1, 0, NULL ) && class.hCursor)
+        NtUserDestroyCursor( class.hCursor, 0 );
+}
+
 static void register_builtins(void)
 {
+    ULONG ret_len, i;
     void *ret_ptr;
-    ULONG ret_len;
-    KeUserModeCallback( NtUserRegisterBuiltinClasses, NULL, 0, &ret_ptr, &ret_len );
+
+    for (i = 0; i < ARRAYSIZE(builtin_classes); i++) register_builtin( &builtin_classes[i] );
+    KeUserModeCallback( NtUserInitBuiltinClasses, NULL, 0, &ret_ptr, &ret_len );
 }
 
 /***********************************************************************
@@ -1064,4 +1241,13 @@ void register_builtin_classes(void)
 {
     static pthread_once_t init_once = PTHREAD_ONCE_INIT;
     pthread_once( &init_once, register_builtins );
+}
+
+/***********************************************************************
+ *           register_desktop_class
+ */
+void register_desktop_class(void)
+{
+    register_builtin( &desktop_builtin_class );
+    register_builtin( &message_builtin_class );
 }

@@ -79,7 +79,7 @@ static inline DC *get_dc_obj( HDC hdc )
         return dc;
     default:
         GDI_ReleaseObj( hdc );
-        SetLastError( ERROR_INVALID_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
         return NULL;
     }
 }
@@ -112,8 +112,8 @@ static DC_ATTR *alloc_dc_attr(void)
     {
         SIZE_T size = system_info.AllocationGranularity;
         bucket->entries = NULL;
-        if (!NtAllocateVirtualMemory( GetCurrentProcess(), (void **)&bucket->entries, 0, &size,
-                                      MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE ))
+        if (!NtAllocateVirtualMemory( GetCurrentProcess(), (void **)&bucket->entries, zero_bits(),
+                                      &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE ))
         {
             bucket->next_free = NULL;
             bucket->next_unused = bucket->entries + 1;
@@ -230,7 +230,8 @@ DC *alloc_dc_ptr( DWORD magic )
         free( dc );
         return NULL;
     }
-    dc->attr->hdc = dc->nulldrv.hdc = dc->hSelf;
+    dc->nulldrv.hdc = dc->hSelf;
+    dc->attr->hdc = HandleToUlong( dc->hSelf );
     set_gdi_client_ptr( dc->hSelf, dc->attr );
 
     if (!font_driver.pCreateDC( &dc->physDev, NULL, NULL, NULL ))
@@ -1245,7 +1246,7 @@ BOOL WINAPI NtGdiGetDeviceGammaRamp( HDC hdc, void *ptr )
             PHYSDEV physdev = GET_DC_PHYSDEV( dc, pGetDeviceGammaRamp );
             ret = physdev->funcs->pGetDeviceGammaRamp( physdev, ptr );
         }
-        else SetLastError( ERROR_INVALID_PARAMETER );
+        else RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
 	release_dc_ptr( dc );
     }
     return ret;
@@ -1347,7 +1348,7 @@ BOOL WINAPI NtGdiSetDeviceGammaRamp( HDC hdc, void *ptr )
             if (check_gamma_ramps(ptr))
                 ret = physdev->funcs->pSetDeviceGammaRamp( physdev, ptr );
         }
-        else SetLastError( ERROR_INVALID_PARAMETER );
+        else RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
 	release_dc_ptr( dc );
     }
     return ret;

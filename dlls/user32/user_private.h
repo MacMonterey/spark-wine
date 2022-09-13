@@ -25,20 +25,16 @@
 #include "windef.h"
 #include "winbase.h"
 #include "wingdi.h"
-#include "../win32u/ntuser_private.h"
+#include "ntuser.h"
 #include "winreg.h"
-#include "winternl.h"
-#include "hidusage.h"
+#include "winnls.h"
 #include "wine/heap.h"
 
 #define GET_WORD(ptr)  (*(const WORD *)(ptr))
 #define GET_DWORD(ptr) (*(const DWORD *)(ptr))
 #define GET_LONG(ptr) (*(const LONG *)(ptr))
 
-#define WINE_MOUSE_HANDLE       ((HANDLE)1)
-#define WINE_KEYBOARD_HANDLE    ((HANDLE)2)
-
-struct received_message_info;
+#define WINPROC_PROC16  ((void *)1)  /* placeholder for 16-bit window procs */
 
 /* data to store state for A/W mappings of WM_CHAR */
 struct wm_char_mapping_data
@@ -47,15 +43,7 @@ struct wm_char_mapping_data
     MSG  get_msg;
 };
 
-static inline struct user_thread_info *get_user_thread_info(void)
-{
-    return (struct user_thread_info *)NtCurrentTeb()->Win32ClientInfo;
-}
-
 extern HMODULE user32_module DECLSPEC_HIDDEN;
-
-struct dce;
-struct tagWND;
 
 extern BOOL post_dde_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, DWORD dest_tid,
                               DWORD type ) DECLSPEC_HIDDEN;
@@ -76,7 +64,6 @@ extern BOOL map_wparam_AtoW( UINT message, WPARAM *wparam, enum wm_char_mapping 
 extern HPEN SYSCOLOR_GetPen( INT index ) DECLSPEC_HIDDEN;
 extern HBRUSH SYSCOLOR_Get55AABrush(void) DECLSPEC_HIDDEN;
 extern void SYSPARAMS_Init(void) DECLSPEC_HIDDEN;
-extern void USER_CheckNotLock(void) DECLSPEC_HIDDEN;
 
 typedef LRESULT (*winproc_callback_t)( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                        LRESULT *result, void *arg );
@@ -99,8 +86,8 @@ BOOL WINAPI User32CallEnumDisplayMonitor( struct enum_display_monitor_params *pa
 BOOL WINAPI User32CallSendAsyncCallback( const struct send_async_params *params, ULONG size );
 BOOL WINAPI User32CallWinEventHook( const struct win_event_hook_params *params, ULONG size );
 BOOL WINAPI User32CallWindowProc( struct win_proc_params *params, ULONG size );
-BOOL WINAPI User32CallWindowsHook( const struct win_hook_params *params, ULONG size );
-BOOL WINAPI User32RegisterBuiltinClasses( const struct win_hook_params *params, ULONG size );
+BOOL WINAPI User32CallWindowsHook( struct win_hook_params *params, ULONG size );
+BOOL WINAPI User32InitBuiltinClasses( const struct win_hook_params *params, ULONG size );
 
 /* message spy definitions */
 
@@ -175,5 +162,25 @@ void WINAPI USER_ScrollBarDraw(HWND, HDC, INT, enum SCROLL_HITTEST,
                                const struct SCROLL_TRACKING_INFO *, BOOL, BOOL, RECT *, UINT,
                                INT, INT, INT, BOOL) DECLSPEC_HIDDEN;
 struct scroll_info *SCROLL_GetInternalInfo( HWND hwnd, INT nBar, BOOL alloc );
+
+/* Window functions */
+BOOL is_desktop_window( HWND hwnd ) DECLSPEC_HIDDEN;
+HWND WIN_GetFullHandle( HWND hwnd ) DECLSPEC_HIDDEN;
+HWND WIN_IsCurrentProcess( HWND hwnd ) DECLSPEC_HIDDEN;
+HWND WIN_IsCurrentThread( HWND hwnd ) DECLSPEC_HIDDEN;
+ULONG WIN_SetStyle( HWND hwnd, ULONG set_bits, ULONG clear_bits ) DECLSPEC_HIDDEN;
+HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module, BOOL unicode ) DECLSPEC_HIDDEN;
+HWND *WIN_ListChildren( HWND hwnd ) DECLSPEC_HIDDEN;
+void MDI_CalcDefaultChildPos( HWND hwndClient, INT total, LPPOINT lpPos, INT delta, UINT *id ) DECLSPEC_HIDDEN;
+HDESK open_winstation_desktop( HWINSTA hwinsta, LPCWSTR name, DWORD flags, BOOL inherit,
+                               ACCESS_MASK access ) DECLSPEC_HIDDEN;
+
+static inline void mirror_rect( const RECT *window_rect, RECT *rect )
+{
+    int width = window_rect->right - window_rect->left;
+    int tmp = rect->left;
+    rect->left = width - rect->right;
+    rect->right = width - tmp;
+}
 
 #endif /* __WINE_USER_PRIVATE_H */

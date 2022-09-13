@@ -62,21 +62,9 @@
  *     WH_MOUSE_LL                  Implemented but should use SendMessage instead
  */
 
-#include <stdarg.h>
-#include <assert.h>
-
-#include "windef.h"
-#include "winbase.h"
-#include "winnls.h"
-#include "wingdi.h"
-#include "winuser.h"
-#include "winerror.h"
-#include "win.h"
 #include "user_private.h"
-#include "wine/server.h"
 #include "wine/asm.h"
 #include "wine/debug.h"
-#include "winternl.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(hook);
 WINE_DECLARE_DEBUG_CHANNEL(relay);
@@ -222,6 +210,7 @@ static LRESULT call_hook_AtoW( HOOKPROC proc, INT id, INT code, WPARAM wparam, L
         CREATESTRUCTW csW;
         LPWSTR nameW = NULL;
         LPWSTR classW = NULL;
+        WCHAR name_buf[3];
 
         cbtcwW.lpcs = &csW;
         cbtcwW.hwndInsertAfter = cbtcwA->hwndInsertAfter;
@@ -229,8 +218,18 @@ static LRESULT call_hook_AtoW( HOOKPROC proc, INT id, INT code, WPARAM wparam, L
 
         if (!IS_INTRESOURCE(cbtcwA->lpcs->lpszName))
         {
-            RtlCreateUnicodeStringFromAsciiz(&usBuffer,cbtcwA->lpcs->lpszName);
-            csW.lpszName = nameW = usBuffer.Buffer;
+            if (cbtcwA->lpcs->lpszName[0] != '\xff')
+            {
+                RtlCreateUnicodeStringFromAsciiz( &usBuffer, cbtcwA->lpcs->lpszName );
+                csW.lpszName = nameW = usBuffer.Buffer;
+            }
+            else
+            {
+                name_buf[0] = 0xffff;
+                name_buf[1] = MAKEWORD( cbtcwA->lpcs->lpszName[1], cbtcwA->lpcs->lpszName[2] );
+                name_buf[2] = 0;
+                csW.lpszName = name_buf;
+            }
         }
         if (!IS_INTRESOURCE(cbtcwA->lpcs->lpszClass))
         {
@@ -263,16 +262,29 @@ static LRESULT call_hook_WtoA( HOOKPROC proc, INT id, INT code, WPARAM wparam, L
         int len;
         LPSTR nameA = NULL;
         LPSTR classA = NULL;
+        char name_buf[4];
 
         cbtcwA.lpcs = &csA;
         cbtcwA.hwndInsertAfter = cbtcwW->hwndInsertAfter;
         csA = *(CREATESTRUCTA *)cbtcwW->lpcs;
 
-        if (!IS_INTRESOURCE(cbtcwW->lpcs->lpszName)) {
-            len = WideCharToMultiByte( CP_ACP, 0, cbtcwW->lpcs->lpszName, -1, NULL, 0, NULL, NULL );
-            nameA = HeapAlloc( GetProcessHeap(), 0, len*sizeof(CHAR) );
-            WideCharToMultiByte( CP_ACP, 0, cbtcwW->lpcs->lpszName, -1, nameA, len, NULL, NULL );
-            csA.lpszName = nameA;
+        if (!IS_INTRESOURCE(cbtcwW->lpcs->lpszName))
+        {
+            if (cbtcwW->lpcs->lpszName[0] != 0xffff)
+            {
+                len = WideCharToMultiByte( CP_ACP, 0, cbtcwW->lpcs->lpszName, -1, NULL, 0, NULL, NULL );
+                nameA = HeapAlloc( GetProcessHeap(), 0, len*sizeof(CHAR) );
+                WideCharToMultiByte( CP_ACP, 0, cbtcwW->lpcs->lpszName, -1, nameA, len, NULL, NULL );
+                csA.lpszName = nameA;
+            }
+            else
+            {
+                name_buf[0] = '\xff';
+                name_buf[1] = cbtcwW->lpcs->lpszName[1];
+                name_buf[2] = cbtcwW->lpcs->lpszName[1] >> 8;
+                name_buf[3] = 0;
+                csA.lpszName = name_buf;
+            }
         }
 
         if (!IS_INTRESOURCE(cbtcwW->lpcs->lpszClass)) {
@@ -439,18 +451,52 @@ BOOL WINAPI User32CallWinEventHook( const struct win_event_hook_params *params, 
     return TRUE;
 }
 
-BOOL WINAPI User32CallWindowsHook( const struct win_hook_params *params, ULONG size )
+BOOL WINAPI User32CallWindowsHook( struct win_hook_params *params, ULONG size )
 {
     HOOKPROC proc = params->proc;
+    const WCHAR *module = NULL;
     HMODULE free_module = 0;
+    void *ret_lparam = NULL;
+    CBT_CREATEWNDW cbtc;
+    UINT ret_lparam_size = 0;
     LRESULT ret;
 
-    if (params->module[0] && !(proc = get_hook_proc( proc, params->module, &free_module ))) return FALSE;
+    if (size > sizeof(*params) + params->lparam_size)
+        module = (const WCHAR *)((const char *)(params + 1) + params->lparam_size);
+
+    if (params->lparam_size)
+    {
+        ret_lparam = (void *)params->lparam;
+        ret_lparam_size = params->lparam_size;
+        params->lparam = (LPARAM)(params + 1);
+
+        if (params->id == WH_CBT && params->code == HCBT_CREATEWND)
+        {
+            CREATESTRUCTW *cs = (CREATESTRUCTW *)params->lparam;
+            const WCHAR *ptr = (const WCHAR *)(cs + 1);
+
+            if (!IS_INTRESOURCE(cs->lpszName))
+            {
+                cs->lpszName = ptr;
+                ptr += wcslen( ptr ) + 1;
+            }
+            if (!IS_INTRESOURCE(cs->lpszClass))
+                cs->lpszClass = ptr;
+
+            cbtc.hwndInsertAfter = HWND_TOP;
+            cbtc.lpcs = cs;
+            params->lparam = (LPARAM)&cbtc;
+            ret_lparam_size = sizeof(*cs);
+        }
+    }
+    if (module && !(proc = get_hook_proc( proc, module, &free_module ))) return FALSE;
 
     ret = call_hook_proc( proc, params->id, params->code, params->wparam, params->lparam,
                           params->prev_unicode, params->next_unicode );
 
     if (free_module) FreeLibrary( free_module );
+    if (ret_lparam) memcpy( ret_lparam, params + 1, ret_lparam_size );
+    else if (ret_lparam_size) NtCallbackReturn( params + 1, ret_lparam_size, ret );
     return ret;
 }
 

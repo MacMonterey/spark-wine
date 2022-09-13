@@ -396,6 +396,9 @@ static void add_func_info(dispex_data_t *data, tid_t tid, const FUNCDESC *desc, 
     }else if(desc->invkind & (DISPATCH_PROPERTYPUT|DISPATCH_PROPERTYGET)) {
         VARTYPE vt = VT_EMPTY;
 
+        if(desc->wFuncFlags & FUNCFLAG_FHIDDEN)
+            info->func_disp_idx = -2;
+
         if(desc->invkind & DISPATCH_PROPERTYGET) {
             vt = desc->elemdescFunc.tdesc.vt;
             info->get_vtbl_off = desc->oVft/sizeof(void*);
@@ -1009,7 +1012,7 @@ static HRESULT get_builtin_func(dispex_data_t *data, DISPID id, func_info_t **re
     }
 
     WARN("invalid id %lx\n", id);
-    return DISP_E_UNKNOWNNAME;
+    return DISP_E_MEMBERNOTFOUND;
 }
 
 static HRESULT get_builtin_id(DispatchEx *This, BSTR name, DWORD grfdex, DISPID *ret)
@@ -1366,12 +1369,12 @@ static HRESULT invoke_builtin_prop(DispatchEx *This, DISPID id, LCID lcid, WORD 
     HRESULT hres;
 
     hres = get_builtin_func(This->info, id, &func);
-    if(id == DISPID_VALUE && hres == DISP_E_UNKNOWNNAME)
+    if(id == DISPID_VALUE && hres == DISP_E_MEMBERNOTFOUND)
         return dispex_value(This, lcid, flags, dp, res, ei, caller);
     if(FAILED(hres))
         return hres;
 
-    if(func->func_disp_idx != -1)
+    if(func->func_disp_idx >= 0)
         return function_invoke(This, func, flags, dp, res, ei, caller);
 
     if(func->hook) {
@@ -1460,7 +1463,7 @@ HRESULT remove_attribute(DispatchEx *This, DISPID id, VARIANT_BOOL *success)
             return hres;
 
         /* For builtin functions, we set their value to the original function. */
-        if(func->func_disp_idx != -1) {
+        if(func->func_disp_idx >= 0) {
             func_obj_entry_t *entry;
 
             if(!This->dynamic_data || !This->dynamic_data->func_disps
@@ -1686,7 +1689,7 @@ static HRESULT WINAPI DispatchEx_InvokeEx(IDispatchEx *iface, DISPID id, LCID lc
     switch(get_dispid_type(id)) {
     case DISPEXPROP_CUSTOM:
         if(!This->info->desc->vtbl || !This->info->desc->vtbl->invoke)
-            return DISP_E_UNKNOWNNAME;
+            return DISP_E_MEMBERNOTFOUND;
         return This->info->desc->vtbl->invoke(This, id, lcid, wFlags, pdp, pvarRes, pei, pspCaller);
 
     case DISPEXPROP_DYNAMIC: {
@@ -1694,7 +1697,7 @@ static HRESULT WINAPI DispatchEx_InvokeEx(IDispatchEx *iface, DISPID id, LCID lc
         dynamic_prop_t *prop;
 
         if(!get_dynamic_data(This) || This->dynamic_data->prop_cnt <= idx)
-            return DISP_E_UNKNOWNNAME;
+            return DISP_E_MEMBERNOTFOUND;
 
         prop = This->dynamic_data->props+idx;
 
@@ -1712,7 +1715,7 @@ static HRESULT WINAPI DispatchEx_InvokeEx(IDispatchEx *iface, DISPID id, LCID lc
             return invoke_disp_value(This, V_DISPATCH(&prop->var), lcid, wFlags, pdp, pvarRes, pei, pspCaller);
         case DISPATCH_PROPERTYGET:
             if(prop->flags & DYNPROP_DELETED)
-                return DISP_E_UNKNOWNNAME;
+                return DISP_E_MEMBERNOTFOUND;
             V_VT(pvarRes) = VT_EMPTY;
             return variant_copy(pvarRes, &prop->var);
         case DISPATCH_PROPERTYPUT:
@@ -1763,15 +1766,12 @@ static HRESULT WINAPI DispatchEx_DeleteMemberByName(IDispatchEx *iface, BSTR nam
 
     TRACE("(%p)->(%s %lx)\n", This, debugstr_w(name), grfdex);
 
-    if(dispex_compat_mode(This) < COMPAT_MODE_IE8) {
-        /* Not implemented by IE */
-        return E_NOTIMPL;
-    }
-
     hres = IDispatchEx_GetDispID(&This->IDispatchEx_iface, name, grfdex & ~fdexNameEnsure, &id);
     if(FAILED(hres)) {
+        compat_mode_t compat_mode = dispex_compat_mode(This);
         TRACE("property %s not found\n", debugstr_w(name));
-        return dispex_compat_mode(This) < COMPAT_MODE_IE9 ? hres : S_OK;
+        return compat_mode < COMPAT_MODE_IE8 ? E_NOTIMPL :
+               compat_mode < COMPAT_MODE_IE9 ? hres : S_OK;
     }
 
     return IDispatchEx_DeleteMemberByDispID(&This->IDispatchEx_iface, id);
@@ -1782,6 +1782,9 @@ static HRESULT WINAPI DispatchEx_DeleteMemberByDispID(IDispatchEx *iface, DISPID
     DispatchEx *This = impl_from_IDispatchEx(iface);
 
     TRACE("(%p)->(%lx)\n", This, id);
+
+    if(is_custom_dispid(id) && This->info->desc->vtbl && This->info->desc->vtbl->delete)
+        return This->info->desc->vtbl->delete(This, id);
 
     if(dispex_compat_mode(This) < COMPAT_MODE_IE8) {
         /* Not implemented by IE */
@@ -1822,11 +1825,17 @@ static HRESULT WINAPI DispatchEx_GetMemberName(IDispatchEx *iface, DISPID id, BS
     if(!ensure_real_info(This))
         return E_OUTOFMEMORY;
 
+    if(is_custom_dispid(id)) {
+        if(This->info->desc->vtbl && This->info->desc->vtbl->get_name)
+            return This->info->desc->vtbl->get_name(This, id, pbstrName);
+        return DISP_E_MEMBERNOTFOUND;
+    }
+
     if(is_dynamic_dispid(id)) {
         DWORD idx = id - DISPID_DYNPROP_0;
 
         if(!get_dynamic_data(This) || This->dynamic_data->prop_cnt <= idx)
-            return DISP_E_UNKNOWNNAME;
+            return DISP_E_MEMBERNOTFOUND;
 
         *pbstrName = SysAllocString(This->dynamic_data->props[idx].name);
         if(!*pbstrName)
@@ -1874,27 +1883,34 @@ static HRESULT WINAPI DispatchEx_GetNextDispID(IDispatchEx *iface, DWORD grfdex,
         DWORD idx = id - DISPID_DYNPROP_0;
 
         if(!get_dynamic_data(This) || This->dynamic_data->prop_cnt <= idx)
-            return DISP_E_UNKNOWNNAME;
+            return DISP_E_MEMBERNOTFOUND;
 
         return next_dynamic_id(This, idx+1, pid);
     }
 
-    if(id == DISPID_STARTENUM) {
-        func = This->info->funcs;
-    }else {
-        hres = get_builtin_func(This->info, id, &func);
-        if(FAILED(hres))
-            return hres;
-        func++;
+    if(!is_custom_dispid(id)) {
+        if(id == DISPID_STARTENUM) {
+            func = This->info->funcs;
+        }else {
+            hres = get_builtin_func(This->info, id, &func);
+            if(FAILED(hres))
+                return hres;
+            func++;
+        }
+
+        while(func < This->info->funcs + This->info->func_cnt) {
+            if(func->func_disp_idx == -1) {
+                *pid = func->id;
+                return S_OK;
+            }
+            func++;
+        }
     }
 
-    while(func < This->info->funcs + This->info->func_cnt) {
-        /* FIXME: Skip hidden properties */
-        if(func->func_disp_idx == -1) {
-            *pid = func->id;
-            return S_OK;
-        }
-        func++;
+    if(This->info->desc->vtbl && This->info->desc->vtbl->next_dispid) {
+        hres = This->info->desc->vtbl->next_dispid(This, id, pid);
+        if(hres != S_FALSE)
+            return hres;
     }
 
     if(get_dynamic_data(This) && This->dynamic_data->prop_cnt)

@@ -3502,6 +3502,10 @@ struct wined3d_output
 
     D3DKMT_HANDLE kmt_device;
     D3DDDI_VIDEO_PRESENT_SOURCE_ID vidpn_source_id;
+
+    struct wined3d_display_mode *modes;
+    SIZE_T mode_count, modes_size;
+    bool modes_valid;
 };
 
 HRESULT wined3d_output_get_gamma_ramp(struct wined3d_output *output, struct wined3d_gamma_ramp *ramp) DECLSPEC_HIDDEN;
@@ -3521,7 +3525,7 @@ struct wined3d_adapter
     struct wined3d_d3d_info d3d_info;
     struct wined3d_driver_info driver_info;
     struct wined3d_output *outputs;
-    unsigned int output_count;
+    SIZE_T output_count, outputs_size;
     D3DKMT_HANDLE kmt_adapter;
     UINT64 vram_bytes_used;
     GUID driver_uuid;

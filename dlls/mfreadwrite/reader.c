@@ -30,7 +30,6 @@
 #undef INITGUID
 #include <guiddef.h>
 #include "mfapi.h"
-#include "mferror.h"
 #include "mfidl.h"
 #include "mfreadwrite.h"
 #include "d3d9.h"
@@ -959,7 +958,7 @@ static struct stream_response *media_stream_pop_response(struct source_reader *r
 
         if (!stream) stream = &reader->streams[response->stream_index];
 
-        if (stream->allocator)
+        if (response->sample && stream->allocator)
         {
             /* Return allocation error to the caller, while keeping original response sample in for later. */
             if (SUCCEEDED(hr = IMFVideoSampleAllocatorEx_AllocateSample(stream->allocator, &sample)))
@@ -2594,6 +2593,10 @@ static HRESULT WINAPI readwrite_factory_CreateInstanceFromURL(IMFReadWriteClassF
     {
         return create_source_reader_from_url(url, attributes, &IID_IMFSourceReader, out);
     }
+    else if (IsEqualGUID(clsid, &CLSID_MFSinkWriter))
+    {
+        return create_sink_writer_from_url(url, NULL, attributes, riid, out);
+    }
 
     FIXME("Unsupported %s.\n", debugstr_guid(clsid));
 
@@ -2621,7 +2624,7 @@ static HRESULT WINAPI readwrite_factory_CreateInstanceFromObject(IMFReadWriteCla
             hr = IUnknown_QueryInterface(unk, &IID_IMFMediaSink, (void **)&sink);
 
         if (stream)
-            hr = create_sink_writer_from_stream(stream, attributes, riid, out);
+            hr = create_sink_writer_from_url(NULL, stream, attributes, riid, out);
         else if (sink)
             hr = create_sink_writer_from_sink(sink, attributes, riid, out);
 

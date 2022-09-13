@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+var E_INVALIDARG = 0x80070057;
 var JS_E_PROP_DESC_MISMATCH = 0x800a01bd;
 var JS_E_NUMBER_EXPECTED = 0x800a1389;
 var JS_E_FUNCTION_EXPECTED = 0x800a138a;
@@ -31,6 +32,18 @@ var JS_E_NONWRITABLE_MODIFIED = 0x800a13d7;
 var JS_E_WRONG_THIS = 0x800a13fc;
 
 var tests = [];
+
+sync_test("script vars", function() {
+    function foo() { }
+    foo.prototype.foo = 13;
+    var obj = new foo();
+    obj.Foo = 42;
+    obj.aBc = 1;
+    obj.abC = 2;
+    obj.Bar = 3;
+    document.body.foobar = 42;
+    external.testVars(document.body, obj);
+});
 
 sync_test("date_now", function() {
     var now = Date.now();
@@ -2015,4 +2028,29 @@ sync_test("console", function() {
         except = true;
     }
     ok(except, "console.timeLog: expected exception");
+});
+
+sync_test("matchMedia", function() {
+    var i, r, mql;
+
+    try {
+        mql = window.matchMedia("");
+    }catch(ex) {
+        var n = ex.number >>> 0;
+        ok(n === E_INVALIDARG, "matchMedia('') threw " + n);
+    }
+    r = [
+        [ undefined, "unknown" ],
+        [ null,      "unknown" ],
+        [ 42,        "not all" ],
+        [{ toString: function() { return "(max-width: 0px)"; }}, "all and (max-width:0px)" ]
+    ];
+    for(i = 0; i < r.length; i++) {
+        mql = window.matchMedia(r[i][0]);
+        todo_wine_if(r[i][0] !== 42).
+        ok(mql.media === r[i][1], r[i][0] + " media = " + mql.media);
+        ok(mql.matches === false, r[i][0] + " matches");
+    }
+    mql = window.matchMedia("(max-width: 1000px)");
+    ok(mql.matches === true, "(max-width: 1000px) does not match");
 });

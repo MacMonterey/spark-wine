@@ -24,25 +24,6 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#include <stdlib.h>
-#include <string.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <ctype.h>
-#include <assert.h>
-
-#define NONAMELESSUNION
-
-#include "ntstatus.h"
-#define WIN32_NO_STATUS
-#include "windef.h"
-#include "winbase.h"
-#include "wingdi.h"
-#include "winuser.h"
-#include "winnls.h"
-#include "winternl.h"
-#include "winerror.h"
-#include "win.h"
 #include "user_private.h"
 #include "dbt.h"
 #include "wine/server.h"
@@ -97,11 +78,11 @@ void WINAPI keybd_event( BYTE bVk, BYTE bScan,
     INPUT input;
 
     input.type = INPUT_KEYBOARD;
-    input.u.ki.wVk = bVk;
-    input.u.ki.wScan = bScan;
-    input.u.ki.dwFlags = dwFlags;
-    input.u.ki.time = 0;
-    input.u.ki.dwExtraInfo = dwExtraInfo;
+    input.ki.wVk = bVk;
+    input.ki.wScan = bScan;
+    input.ki.dwFlags = dwFlags;
+    input.ki.time = 0;
+    input.ki.dwExtraInfo = dwExtraInfo;
     NtUserSendInput( 1, &input, sizeof(input) );
 }
 
@@ -115,12 +96,12 @@ void WINAPI mouse_event( DWORD dwFlags, DWORD dx, DWORD dy,
     INPUT input;
 
     input.type = INPUT_MOUSE;
-    input.u.mi.dx = dx;
-    input.u.mi.dy = dy;
-    input.u.mi.mouseData = dwData;
-    input.u.mi.dwFlags = dwFlags;
-    input.u.mi.time = 0;
-    input.u.mi.dwExtraInfo = dwExtraInfo;
+    input.mi.dx = dx;
+    input.mi.dy = dy;
+    input.mi.mouseData = dwData;
+    input.mi.dwFlags = dwFlags;
+    input.mi.time = 0;
+    input.mi.dwExtraInfo = dwExtraInfo;
     NtUserSendInput( 1, &input, sizeof(input) );
 }
 
@@ -668,7 +649,7 @@ UINT WINAPI GetRawInputDeviceInfoA( HANDLE device, UINT command, void *data, UIN
  */
 LRESULT WINAPI DefRawInputProc( RAWINPUT **data, INT data_count, UINT header_size )
 {
-    FIXME( "data %p, data_count %d, header_size %u stub!\n", data, data_count, header_size );
+    TRACE( "data %p, data_count %d, header_size %u.\n", data, data_count, header_size );
 
-    return 0;
+    return header_size == sizeof(RAWINPUTHEADER) ? 0 : -1;
 }

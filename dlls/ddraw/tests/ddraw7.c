@@ -2860,8 +2860,19 @@ static HRESULT CALLBACK test_coop_level_mode_set_enum_cb(DDSURFACEDESC2 *surface
     if (surface_desc->dwWidth == param->ddraw_width && surface_desc->dwHeight == param->ddraw_height)
         return DDENUMRET_OK;
 
-    param->user32_width = surface_desc->dwWidth;
-    param->user32_height = surface_desc->dwHeight;
+    /* The docs say the DDENUMRET_CANCEL below cancels the enumeration, so the check should be
+     * redundant. However, since Windows 10 this no longer works and the enumeration continues
+     * until all supported modes are enumerated. Win8 and earlier do cancel.
+     *
+     * Unrelatedly, some testbot machines report high res modes like 1920x1080, but suffer from
+     * some problems when we actually try to set them (w10pro64 and its localization siblings).
+     * Try to stay below the registry mode if possible. */
+    if (!param->user32_width || (surface_desc->dwWidth < registry_mode.dmPelsWidth
+            && surface_desc->dwHeight < registry_mode.dmPelsHeight))
+    {
+        param->user32_width = surface_desc->dwWidth;
+        param->user32_height = surface_desc->dwHeight;
+    }
     return DDENUMRET_CANCEL;
 }
 
@@ -8830,7 +8841,9 @@ cleanup:
 
 static void test_create_surface_pitch(void)
 {
-    IDirectDrawSurface7 *surface;
+    DWORD vidmem_total = 0, vidmem_free = 0, vidmem_free2 = 0;
+    DDSCAPS2 vidmem_caps = {DDSCAPS_TEXTURE, 0, 0, {0}};
+    IDirectDrawSurface7 *surface, *primary;
     DDSURFACEDESC2 surface_desc;
     IDirectDraw7 *ddraw;
     unsigned int i;
@@ -8909,13 +8922,16 @@ static void test_create_surface_pitch(void)
         {DDSCAPS_VIDEOMEMORY | DDSCAPS_TEXTURE | DDSCAPS_ALLOCONLOAD,
                 0,                                              0,      DD_OK,
                 DDSD_PITCH,                                     0x100,  0    },
+        {DDSCAPS_VIDEOMEMORY | DDSCAPS_TEXTURE,
+                0,                                              0,      DD_OK,
+                DDSD_PITCH,                                     0x100,  0    },
         {DDSCAPS_VIDEOMEMORY | DDSCAPS_TEXTURE | DDSCAPS_ALLOCONLOAD,
                 DDSD_LPSURFACE | DDSD_PITCH,                    0x100,  DDERR_INVALIDCAPS,
                 0,                                              0,      0    },
+        /* 20 */
         {DDSCAPS_SYSTEMMEMORY | DDSCAPS_OFFSCREENPLAIN | DDSCAPS_ALLOCONLOAD,
                 0,                                              0,      DDERR_INVALIDCAPS,
                 0,                                              0,      0    },
-        /* 20 */
         {DDSCAPS_SYSTEMMEMORY | DDSCAPS_TEXTURE | DDSCAPS_ALLOCONLOAD,
                 0,                                              0,      DD_OK,
                 DDSD_PITCH,                                     0x100,  0    },
@@ -8928,10 +8944,24 @@ static void test_create_surface_pitch(void)
     window = create_window();
     ddraw = create_ddraw();
     ok(!!ddraw, "Failed to create a ddraw object.\n");
-    hr = IDirectDraw7_SetCooperativeLevel(ddraw, window, DDSCL_NORMAL);
+    hr = IDirectDraw7_SetCooperativeLevel(ddraw, window, DDSCL_FULLSCREEN | DDSCL_EXCLUSIVE);
     ok(SUCCEEDED(hr), "Failed to set cooperative level, hr %#lx.\n", hr);
 
     mem = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((63 * 4) + 8) * 63);
+
+    /* We need a primary surface and exclusive mode for video memory accounting to work
+     * right on Windows. Otherwise it gives us junk data, like creating a video memory
+     * surface freeing up memory. */
+    memset(&surface_desc, 0, sizeof(surface_desc));
+    surface_desc.dwSize = sizeof(surface_desc);
+    surface_desc.dwFlags = DDSD_CAPS;
+    surface_desc.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE;
+    hr = IDirectDraw7_CreateSurface(ddraw, &surface_desc, &primary, NULL);
+    ok(SUCCEEDED(hr), "Failed to create a primary surface, hr %#lx.\n", hr);
+
+    hr = IDirectDraw7_GetAvailableVidMem(ddraw, &vidmem_caps, &vidmem_total, &vidmem_free);
+    ok(SUCCEEDED(hr) || hr == DDERR_NODIRECTDRAWHW,
+            "Failed to get available video memory, hr %#lx.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(test_data); ++i)
     {
@@ -8986,9 +9016,38 @@ static void test_create_surface_pitch(void)
         }
         ok(!surface_desc.lpSurface, "Test %u: Got unexpected lpSurface %p.\n", i, surface_desc.lpSurface);
 
+        hr = IDirectDraw7_GetAvailableVidMem(ddraw, &vidmem_caps, &vidmem_total, &vidmem_free2);
+        ok(SUCCEEDED(hr) || hr == DDERR_NODIRECTDRAWHW,
+                "Failed to get available video memory, hr %#lx.\n", hr);
+        if (SUCCEEDED(hr) && surface_desc.ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY)
+        {
+            /* Star Trek Starfleet Academy cares about this bit here: That creating a system memory
+             * resource does not influence available video memory. */
+            ok(vidmem_free2 == vidmem_free, "Free video memory changed from %#lx to %#lx, test %u.\n",
+                    vidmem_free, vidmem_free2, i);
+        }
+        else if (SUCCEEDED(hr) && surface_desc.ddsCaps.dwCaps & DDSCAPS_VIDEOMEMORY)
+        {
+            /* DDSCAPS_ALLOCONLOAD does not seem to delay video memory allocation, at least not on
+             * modern Windows.
+             *
+             * The amount of video memory consumed is different from what dwHeight * lPitch would
+             * suggest, although not by much. */
+            ok(vidmem_free2 < vidmem_free,
+                    "Expected free video memory to change, but it did not, test %u.\n", i);
+        }
+
         IDirectDrawSurface7_Release(surface);
+
+        hr = IDirectDraw7_GetAvailableVidMem(ddraw, &vidmem_caps, &vidmem_total, &vidmem_free2);
+        ok(SUCCEEDED(hr) || hr == DDERR_NODIRECTDRAWHW,
+                "Failed to get available video memory, hr %#lx.\n", hr);
+        ok(hr == DDERR_NODIRECTDRAWHW || vidmem_free2 == vidmem_free,
+                "Free video memory changed from %#lx to %#lx, test %u.\n",
+                vidmem_free, vidmem_free2, i);
     }
 
+    IDirectDrawSurface7_Release(primary);
     HeapFree(GetProcessHeap(), 0, mem);
     refcount = IDirectDraw7_Release(ddraw);
     ok(!refcount, "Got unexpected refcount %lu.\n", refcount);
@@ -9976,11 +10035,13 @@ static void test_vb_writeonly(void)
 
 static void test_lost_device(void)
 {
+    IDirectDrawSurface7 *surface, *back_buffer, *back_buffer2, *ds;
     IDirectDrawSurface7 *sysmem_surface, *vidmem_surface;
-    IDirectDrawSurface7 *surface, *back_buffer;
     DDSURFACEDESC2 surface_desc;
     HWND window1, window2;
     IDirectDraw7 *ddraw;
+    DDPIXELFORMAT z_fmt;
+    IDirect3D7 *d3d;
     ULONG refcount;
     DDSCAPS2 caps;
     HRESULT hr;
@@ -10207,9 +10268,38 @@ static void test_lost_device(void)
     surface_desc.dwSize = sizeof(surface_desc);
     surface_desc.dwFlags = DDSD_CAPS | DDSD_BACKBUFFERCOUNT;
     surface_desc.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE | DDSCAPS_COMPLEX | DDSCAPS_FLIP;
-    U5(surface_desc).dwBackBufferCount = 1;
+    U5(surface_desc).dwBackBufferCount = 2;
     hr = IDirectDraw7_CreateSurface(ddraw, &surface_desc, &surface, NULL);
     ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
+
+    ds = NULL;
+    hr = IDirectDraw7_QueryInterface(ddraw, &IID_IDirect3D7, (void **)&d3d);
+    if (hr == S_OK)
+    {
+        memset(&z_fmt, 0, sizeof(z_fmt));
+        hr = IDirect3D7_EnumZBufferFormats(d3d, &IID_IDirect3DHALDevice, enum_z_fmt, &z_fmt);
+        if (FAILED(hr) || !z_fmt.dwSize)
+        {
+            skip("No depth buffer formats available, skipping Z buffer restore test.\n");
+        }
+        else
+        {
+            memset(&surface_desc, 0, sizeof(surface_desc));
+            surface_desc.dwSize = sizeof(surface_desc);
+            hr = IDirectDrawSurface7_GetSurfaceDesc(surface, &surface_desc);
+            ok(hr == D3D_OK, "Got unexpected hr %#lx.\n", hr);
+
+            surface_desc.dwFlags = DDSD_CAPS | DDSD_PIXELFORMAT | DDSD_WIDTH | DDSD_HEIGHT;
+            surface_desc.ddsCaps.dwCaps = DDSCAPS_ZBUFFER;
+            U4(surface_desc).ddpfPixelFormat = z_fmt;
+            hr = IDirectDraw7_CreateSurface(ddraw, &surface_desc, &ds, NULL);
+            ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
+
+            hr = IDirectDrawSurface7_AddAttachedSurface(surface, ds);
+            ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
+        }
+        IDirect3D7_Release(d3d);
+    }
 
     hr = IDirectDraw7_SetCooperativeLevel(ddraw, window1, DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN);
     ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
@@ -10316,10 +10406,29 @@ static void test_lost_device(void)
     ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
     hr = IDirectDrawSurface7_GetAttachedSurface(surface, &caps, &back_buffer);
     ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
+    ok(back_buffer != surface, "Got the same surface.\n");
     hr = IDirectDrawSurface7_IsLost(back_buffer);
     ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
-
     IDirectDrawSurface7_Release(back_buffer);
+
+    hr = IDirectDrawSurface7_GetAttachedSurface(back_buffer, &caps, &back_buffer2);
+    ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
+    ok(back_buffer2 != back_buffer, "Got the same surface.\n");
+    ok(back_buffer2 != surface, "Got the same surface.\n");
+    hr = IDirectDrawSurface7_IsLost(back_buffer2);
+    ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
+    IDirectDrawSurface7_Release(back_buffer2);
+
+    if (ds)
+    {
+        hr = IDirectDrawSurface7_IsLost(ds);
+        ok(hr == DDERR_SURFACELOST, "Got unexpected hr %#lx.\n", hr);
+        hr = IDirectDrawSurface7_Restore(ds);
+        ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
+        hr = IDirectDrawSurface7_IsLost(ds);
+        ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
+        IDirectDrawSurface7_Release(ds);
+    }
 
     if (vidmem_surface)
         IDirectDrawSurface7_Release(vidmem_surface);
@@ -18413,10 +18522,15 @@ static HRESULT CALLBACK find_different_mode_callback(DDSURFACEDESC2 *surface_des
     if (surface_desc->dwWidth != param->old_width && surface_desc->dwHeight != param->old_height &&
             (!compare_uint(surface_desc->dwRefreshRate, param->old_frequency, 1) || !param->old_frequency))
     {
-        param->new_width = surface_desc->dwWidth;
-        param->new_height = surface_desc->dwHeight;
-        param->new_frequency = surface_desc->dwRefreshRate;
-        param->new_bpp = surface_desc->ddpfPixelFormat.dwRGBBitCount;
+        /* See test_coop_level_mode_set_enum_cb() for why enumeration might accidentally continue. */
+        if (!param->new_width || (param->new_width < registry_mode.dmPelsWidth
+                && param->new_height < registry_mode.dmPelsHeight))
+        {
+            param->new_width = surface_desc->dwWidth;
+            param->new_height = surface_desc->dwHeight;
+            param->new_frequency = surface_desc->dwRefreshRate;
+            param->new_bpp = surface_desc->ddpfPixelFormat.dwRGBBitCount;
+        }
         return DDENUMRET_CANCEL;
     }
 
@@ -19292,6 +19406,67 @@ static void test_filling_convention(void)
     DestroyWindow(window);
 }
 
+static HRESULT WINAPI test_enum_devices_caps_callback(char *device_desc, char *device_name,
+        D3DDEVICEDESC7 *device_desc7, void *ctx)
+{
+    if (IsEqualGUID(&device_desc7->deviceGUID, &IID_IDirect3DTnLHalDevice))
+    {
+        ok(device_desc7->dwDevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT,
+           "TnLHal Device device caps does not have D3DDEVCAPS_HWTRANSFORMANDLIGHT set\n");
+        ok(device_desc7->dwDevCaps & D3DDEVCAPS_DRAWPRIMITIVES2EX,
+           "TnLHal Device device caps does not have D3DDEVCAPS_DRAWPRIMITIVES2EX set\n");
+    }
+    else if (IsEqualGUID(&device_desc7->deviceGUID, &IID_IDirect3DHALDevice))
+    {
+        ok((device_desc7->dwDevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT) == 0,
+           "HAL Device device caps has D3DDEVCAPS_HWTRANSFORMANDLIGHT set\n");
+        ok(device_desc7->dwDevCaps & D3DDEVCAPS_DRAWPRIMITIVES2EX,
+           "HAL Device device caps does not have D3DDEVCAPS_DRAWPRIMITIVES2EX set\n");
+    }
+    else if (IsEqualGUID(&device_desc7->deviceGUID, &IID_IDirect3DRGBDevice))
+    {
+        ok((device_desc7->dwDevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT) == 0,
+           "RGB Device device caps has D3DDEVCAPS_HWTRANSFORMANDLIGHT set\n");
+        ok((device_desc7->dwDevCaps & D3DDEVCAPS_DRAWPRIMITIVES2EX) == 0,
+           "RGB Device device caps has D3DDEVCAPS_DRAWPRIMITIVES2EX set\n");
+    }
+    else
+    {
+        ok(FALSE, "Unexpected device enumerated: \"%s\" \"%s\"\n", device_desc, device_name);
+    }
+
+    return DDENUMRET_OK;
+}
+
+static void test_enum_devices(void)
+{
+    IDirectDraw7 *ddraw;
+    IDirect3D7 *d3d;
+    ULONG refcount;
+    HRESULT hr;
+
+    ddraw = create_ddraw();
+    ok(!!ddraw, "Failed to create a ddraw object.\n");
+
+    hr = IDirectDraw7_QueryInterface(ddraw, &IID_IDirect3D7, (void **)&d3d);
+    if (FAILED(hr))
+    {
+        skip("D3D interface is not available, skipping test.\n");
+        IDirectDraw7_Release(ddraw);
+        return;
+    }
+
+    hr = IDirect3D7_EnumDevices(d3d, NULL, NULL);
+    ok(hr == DDERR_INVALIDPARAMS, "Got hr %#lx.\n", hr);
+
+    hr = IDirect3D7_EnumDevices(d3d, test_enum_devices_caps_callback, NULL);
+    ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
+
+    IDirect3D7_Release(d3d);
+    refcount = IDirectDraw7_Release(ddraw);
+    ok(!refcount, "Device has %lu references left.\n", refcount);
+}
+
 static void run_for_each_device_type(void (*test_func)(const GUID *))
 {
     test_func(hw_device_guid);
@@ -19470,4 +19645,5 @@ START_TEST(ddraw7)
     test_get_display_mode();
     run_for_each_device_type(test_texture_wrong_caps);
     test_filling_convention();
+    test_enum_devices();
 }

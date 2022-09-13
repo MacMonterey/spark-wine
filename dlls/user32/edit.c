@@ -21,25 +21,16 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
  * TODO:
- *   - EM_GETIMESTATUS, EM_SETIMESTATUS
  *   - EN_ALIGN_LTR_EC
  *   - EN_ALIGN_RTL_EC
  *   - ES_OEMCONVERT
  *
  */
 
-#include <stdarg.h>
-#include <string.h>
 #include <stdlib.h>
-
-#include "windef.h"
-#include "winbase.h"
-#include "winnt.h"
-#include "win.h"
-#include "imm.h"
-#include "usp10.h"
-#include "controls.h"
 #include "user_private.h"
+#include "controls.h"
+#include "usp10.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(edit);
@@ -138,6 +129,7 @@ typedef struct
 	 */
 	UINT composition_len;   /* length of composition, 0 == no composition */
 	int composition_start;  /* the character position for the composition */
+        UINT ime_status;        /* IME status flag */
 	/*
 	 * Uniscribe Data
 	 */
@@ -3328,11 +3320,16 @@ static void EDIT_WM_ContextMenu(EDITSTATE *es, INT x, INT y)
 
         if (x == -1 && y == -1) /* passed via VK_APPS press/release */
         {
+            POINT pt;
             RECT rc;
+
             /* Windows places the menu at the edit's center in this case */
-            WIN_GetRectangles( es->hwndSelf, COORDS_SCREEN, NULL, &rc );
-            x = rc.left + (rc.right - rc.left) / 2;
-            y = rc.top + (rc.bottom - rc.top) / 2;
+            GetClientRect( es->hwndSelf, &rc );
+            pt.x = rc.right / 2;
+            pt.y = rc.bottom / 2;
+            ClientToScreen( es->hwndSelf, &pt );
+            x = pt.x;
+            y = pt.y;
         }
 
 	if (!(es->flags & EF_FOCUSED))
@@ -4923,6 +4920,17 @@ LRESULT EditWndProc_common( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, B
 		result = EDIT_EM_CharFromPos(es, (short)LOWORD(lParam), (short)HIWORD(lParam));
 		break;
 
+        case EM_SETIMESTATUS:
+            if (wParam == EMSIS_COMPOSITIONSTRING)
+                es->ime_status = lParam & 0xFFFF;
+
+            result = 1;
+            break;
+
+        case EM_GETIMESTATUS:
+            result = wParam == EMSIS_COMPOSITIONSTRING ? es->ime_status : 1;
+            break;
+
         /* End of the EM_ messages which were in numerical order; what order
          * are these in?  vaguely alphabetical?
          */
@@ -4960,20 +4968,6 @@ LRESULT EditWndProc_common( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, B
                 }
 		break;
 
-        case WM_IME_CHAR:
-            if (!unicode)
-            {
-                WCHAR charW;
-                CHAR  strng[2];
-
-                strng[0] = wParam >> 8;
-                strng[1] = wParam & 0xff;
-                if (strng[0]) MultiByteToWideChar(CP_ACP, 0, strng, 2, &charW, 1);
-                else MultiByteToWideChar(CP_ACP, 0, &strng[1], 1, &charW, 1);
-		result = EDIT_WM_Char(es, charW);
-		break;
-            }
-            /* fall through */
 	case WM_CHAR:
 	{
 		WCHAR charW;
@@ -5196,6 +5190,12 @@ LRESULT EditWndProc_common( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, B
 		break;
 
 	case WM_IME_COMPOSITION:
+                if (lParam & GCS_RESULTSTR && !(es->ime_status & EIMES_GETCOMPSTRATONCE))
+                {
+                    DefWindowProcT(hwnd, msg, wParam, lParam, unicode);
+                    break;
+                }
+
                 EDIT_ImeComposition(hwnd, lParam, es);
 		break;
 
@@ -5250,21 +5250,3 @@ LRESULT EditWndProc_common( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, B
 
 	return result;
 }
-
-
-/*********************************************************************
- * edit class descriptor
- */
-const struct builtin_class_descr EDIT_builtin_class =
-{
-    L"Edit",              /* name */
-    CS_DBLCLKS | CS_PARENTDC,   /* style */
-    WINPROC_EDIT,         /* proc */
-#ifdef __i386__
-    sizeof(EDITSTATE *) + sizeof(WORD), /* extra */
-#else
-    sizeof(EDITSTATE *),  /* extra */
-#endif
-    IDC_IBEAM,            /* cursor */
-    0                     /* brush */
-};

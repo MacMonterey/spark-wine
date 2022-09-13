@@ -39,11 +39,11 @@ enum
     NtUserFreeCachedClipboardData,
     NtUserImmProcessKey,
     NtUserImmTranslateMessage,
+    NtUserInitBuiltinClasses,
     NtUserLoadDriver,
     NtUserLoadImage,
     NtUserLoadSysMenu,
     NtUserPostDDEMessage,
-    NtUserRegisterBuiltinClasses,
     NtUserRenderSynthesizedFormat,
     NtUserUnpackDDEMessage,
     /* win16 hooks */
@@ -54,25 +54,37 @@ enum
     NtUserCallVulkanDebugUtilsCallback,
     /* Driver-specific callbacks */
     NtUserDriverCallbackFirst,
-    NtUserDriverCallbackLast = NtUserDriverCallbackFirst + 10,
+    NtUserDriverCallbackLast = NtUserDriverCallbackFirst + 9,
     NtUserCallCount
 };
 
 /* TEB thread info, not compatible with Windows */
 struct ntuser_thread_info
 {
-    void      *driver_data;       /* driver-specific data */
-    DWORD      message_time;      /* value for GetMessageTime */
-    DWORD      message_pos;       /* value for GetMessagePos */
-    ULONG_PTR  message_extra;     /* value for GetMessageExtraInfo */
-    HWND       top_window;        /* desktop window */
-    HWND       msg_window;        /* HWND_MESSAGE parent window */
-    HIMC       default_imc;       /* default input context */
-    void      *client_imm;        /* client IMM thread info */
+    UINT64         driver_data;       /* driver-specific data */
+    DWORD          message_time;      /* value for GetMessageTime */
+    DWORD          message_pos;       /* value for GetMessagePos */
+    UINT64         message_extra;     /* value for GetMessageExtraInfo */
+    INPUT_MESSAGE_SOURCE msg_source;  /* Message source for current message */
+    WORD           recursion_count;   /* SendMessage recursion counter */
+    UINT           receive_flags;     /* currently received message flags */
+    UINT           top_window;        /* desktop window */
+    UINT           msg_window;        /* HWND_MESSAGE parent window */
+    DPI_AWARENESS  dpi_awareness;     /* DPI awareness */
+    UINT           default_imc;       /* default input context */
+    UINT64         client_imm;        /* client IMM thread info */
+    UINT64         wmchar_data;       /* client data for WM_CHAR mappings */
 };
 
 static inline struct ntuser_thread_info *NtUserGetThreadInfo(void)
 {
+#ifndef _WIN64
+    if (NtCurrentTeb()->GdiBatchCount)
+    {
+        TEB64 *teb64 = (TEB64 *)(UINT_PTR)NtCurrentTeb()->GdiBatchCount;
+        return (struct ntuser_thread_info *)teb64->Win32ClientInfo;
+    }
+#endif
     return (struct ntuser_thread_info *)NtCurrentTeb()->Win32ClientInfo;
 }
 
@@ -134,7 +146,6 @@ struct win_proc_params
     LRESULT *result;
     BOOL ansi;
     BOOL ansi_dst;
-    BOOL is_dialog;
     BOOL needs_unpack;
     enum wm_char_mapping mapping;
     DPI_AWARENESS_CONTEXT dpi_awareness;
@@ -153,9 +164,9 @@ struct win_hook_params
     int code;
     WPARAM wparam;
     LPARAM lparam;
+    UINT lparam_size;
     BOOL prev_unicode;
     BOOL next_unicode;
-    WCHAR module[MAX_PATH];
 };
 
 /* NtUserCopyImage params */
@@ -173,7 +184,8 @@ struct draw_text_params
 {
     HDC hdc;
     int count;
-    RECT *rect; /* FIXME: Use NtCallbackReturn instead */
+    RECT rect;
+    RECT *ret_rect; /* FIXME: Use NtCallbackReturn instead */
     UINT flags;
     WCHAR str[1];
 };
@@ -262,6 +274,14 @@ struct unpack_dde_message_params
 #define NTUSER_DPI_PER_MONITOR_AWARE_V2   0x00000022
 #define NTUSER_DPI_PER_UNAWARE_GDISCALED  0x40006010
 
+/* message spy definitions */
+#define SPY_DISPATCHMESSAGE  0x0100
+#define SPY_SENDMESSAGE      0x0101
+#define SPY_DEFWNDPROC       0x0102
+
+#define SPY_RESULT_OK      0x0001
+#define SPY_RESULT_DEFWND  0x0002
+
 /* NtUserMessageCall codes */
 enum
 {
@@ -277,8 +297,10 @@ enum
     /* Wine-specific exports */
     NtUserClipboardWindowProc = 0x0300,
     NtUserGetDispatchParams   = 0x3001,
-    NtUserSpyEnter            = 0x0302,
-    NtUserSpyExit             = 0x0303,
+    NtUserSpyGetMsgName       = 0x3002,
+    NtUserSpyEnter            = 0x0303,
+    NtUserSpyExit             = 0x0304,
+    NtUserWinProcResult       = 0x0305,
 };
 
 /* NtUserThunkedMenuItemInfo codes */
@@ -450,6 +472,8 @@ enum wine_internal_message
 #define WM_IME_INTERNAL 0x287
 #define IME_INTERNAL_ACTIVATE   0x17
 #define IME_INTERNAL_DEACTIVATE 0x18
+
+#define WM_SYSTIMER  0x0118
 
 /* the various structures that can be sent in messages, in platform-independent layout */
 struct packed_CREATESTRUCTW
@@ -749,6 +773,7 @@ BOOL    WINAPI NtUserInvalidateRect( HWND hwnd, const RECT *rect, BOOL erase );
 BOOL    WINAPI NtUserInvalidateRgn( HWND hwnd, HRGN hrgn, BOOL erase );
 BOOL    WINAPI NtUserKillTimer( HWND hwnd, UINT_PTR id );
 BOOL    WINAPI NtUserLockWindowUpdate( HWND hwnd );
+BOOL    WINAPI NtUserLogicalToPerMonitorDPIPhysicalPoint( HWND hwnd, POINT *pt );
 UINT    WINAPI NtUserMapVirtualKeyEx( UINT code, UINT type, HKL layout );
 INT     WINAPI NtUserMenuItemFromPoint( HWND hwnd, HMENU handle, int x, int y );
 LRESULT WINAPI NtUserMessageCall( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
@@ -763,6 +788,7 @@ BOOL    WINAPI NtUserOpenClipboard( HWND hwnd, ULONG unk );
 HDESK   WINAPI NtUserOpenDesktop( OBJECT_ATTRIBUTES *attr, DWORD flags, ACCESS_MASK access );
 HDESK   WINAPI NtUserOpenInputDesktop( DWORD flags, BOOL inherit, ACCESS_MASK access );
 BOOL    WINAPI NtUserPeekMessage( MSG *msg_out, HWND hwnd, UINT first, UINT last, UINT flags );
+BOOL    WINAPI NtUserPerMonitorDPIPhysicalToLogicalPoint( HWND hwnd, POINT *pt );
 BOOL    WINAPI NtUserPostMessage( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam );
 BOOL    WINAPI NtUserPostThreadMessage( DWORD thread, UINT msg, WPARAM wparam, LPARAM lparam );
 UINT_PTR WINAPI NtUserQueryInputContext( HIMC handle, UINT attr );
@@ -918,11 +944,11 @@ enum
     NtUserCallOneParam_IsWindowRectFullScreen,
     NtUserCallOneParam_MessageBeep,
     NtUserCallOneParam_RealizePalette,
+    NtUserCallOneParam_ReplyMessage,
     NtUserCallOneParam_SetCaretBlinkTime,
     NtUserCallOneParam_SetProcessDefaultLayout,
     /* temporary exports */
     NtUserGetDeskPattern,
-    NtUserLock,
 };
 
 static inline HDWP NtUserBeginDeferWindowPos( INT count )
@@ -1029,6 +1055,11 @@ static inline UINT NtUserRealizePalette( HDC hdc )
     return NtUserCallOneParam( HandleToUlong(hdc), NtUserCallOneParam_RealizePalette );
 }
 
+static inline BOOL NtUserReplyMessage( LRESULT result )
+{
+    return NtUserCallOneParam( result, NtUserCallOneParam_ReplyMessage );
+}
+
 static inline UINT NtUserSetProcessDefaultLayout( DWORD layout )
 {
     return NtUserCallOneParam( layout, NtUserCallOneParam_SetProcessDefaultLayout );
@@ -1037,18 +1068,22 @@ static inline UINT NtUserSetProcessDefaultLayout( DWORD layout )
 /* NtUserCallTwoParam codes, not compatible with Windows */
 enum
 {
+    NtUserCallTwoParam_GetDialogProc,
     NtUserCallTwoParam_GetMenuInfo,
     NtUserCallTwoParam_GetMonitorInfo,
     NtUserCallTwoParam_GetSystemMetricsForDpi,
     NtUserCallTwoParam_MonitorFromRect,
-    NtUserCallTwoParam_ReplyMessage,
     NtUserCallTwoParam_SetCaretPos,
     NtUserCallTwoParam_SetIconParam,
     NtUserCallTwoParam_UnhookWindowsHook,
     /* temporary exports */
     NtUserAllocWinProc,
-    NtUserGetHandlePtr,
 };
+
+static inline DLGPROC NtUserGetDialogProc( DLGPROC proc, BOOL ansi )
+{
+    return (DLGPROC)NtUserCallTwoParam( (UINT_PTR)proc, ansi, NtUserCallTwoParam_GetDialogProc );
+}
 
 static inline BOOL NtUserGetMenuInfo( HMENU menu, MENUINFO *info )
 {
@@ -1073,11 +1108,6 @@ static inline HMONITOR NtUserMonitorFromRect( const RECT *rect, DWORD flags )
     return UlongToHandle( ret );
 }
 
-static inline BOOL NtUserReplyMessage( LRESULT result, MSG *msg )
-{
-    return NtUserCallTwoParam( result, (UINT_PTR)msg, NtUserCallTwoParam_ReplyMessage );
-}
-
 static inline BOOL NtUserSetCaretPos( int x, int y )
 {
     return NtUserCallTwoParam( x, y, NtUserCallTwoParam_SetCaretPos );
@@ -1096,15 +1126,18 @@ static inline BOOL NtUserUnhookWindowsHook( INT id, HOOKPROC proc )
 /* NtUserCallHwnd codes, not compatible with Windows */
 enum
 {
+    NtUserCallHwnd_ActivateOtherWindow,
     NtUserCallHwnd_ArrangeIconicWindows,
     NtUserCallHwnd_DrawMenuBar,
     NtUserCallHwnd_GetDefaultImeWindow,
     NtUserCallHwnd_GetDialogInfo,
     NtUserCallHwnd_GetDpiForWindow,
+    NtUserCallHwnd_GetMDIClientInfo,
     NtUserCallHwnd_GetParent,
     NtUserCallHwnd_GetWindowContextHelpId,
     NtUserCallHwnd_GetWindowDpiAwarenessContext,
     NtUserCallHwnd_GetWindowInputContext,
+    NtUserCallHwnd_GetWindowSysSubMenu,
     NtUserCallHwnd_GetWindowTextLength,
     NtUserCallHwnd_IsWindow,
     NtUserCallHwnd_IsWindowEnabled,
@@ -1116,6 +1149,11 @@ enum
     NtUserIsCurrehtProcessWindow,
     NtUserIsCurrehtThreadWindow,
 };
+
+static inline void NtUserActivateOtherWindow( HWND hwnd )
+{
+    NtUserCallHwnd( hwnd, NtUserCallHwnd_ActivateOtherWindow );
+}
 
 static inline UINT NtUserArrangeIconicWindows( HWND parent )
 {
@@ -1147,6 +1185,11 @@ static inline UINT NtUserGetDpiForWindow( HWND hwnd )
     return NtUserCallHwnd( hwnd, NtUserCallHwnd_GetDpiForWindow );
 }
 
+static inline void *NtUserGetMDIClientInfo( HWND hwnd )
+{
+    return (void *)NtUserCallHwnd( hwnd, NtUserCallHwnd_GetMDIClientInfo );
+}
+
 static inline HWND NtUserGetParent( HWND hwnd )
 {
     return UlongToHandle( NtUserCallHwnd( hwnd, NtUserCallHwnd_GetParent ));
@@ -1161,6 +1204,11 @@ static inline DPI_AWARENESS_CONTEXT NtUserGetWindowDpiAwarenessContext( HWND hwn
 static inline HIMC NtUserGetWindowInputContext( HWND hwnd )
 {
     return UlongToHandle( NtUserCallHwnd( hwnd, NtUserCallHwnd_GetWindowInputContext ));
+}
+
+static inline HMENU NtUserGetWindowSysSubMenu( HWND hwnd )
+{
+    return UlongToHandle( NtUserCallHwnd( hwnd, NtUserCallHwnd_GetWindowSysSubMenu ));
 }
 
 static inline INT NtUserGetWindowTextLength( HWND hwnd )
@@ -1198,13 +1246,13 @@ enum
 {
     NtUserCallHwndParam_ClientToScreen,
     NtUserCallHwndParam_EnableWindow,
+    NtUserCallHwndParam_GetChildRect,
     NtUserCallHwndParam_GetClassLongA,
     NtUserCallHwndParam_GetClassLongW,
     NtUserCallHwndParam_GetClassLongPtrA,
     NtUserCallHwndParam_GetClassLongPtrW,
     NtUserCallHwndParam_GetClassWord,
     NtUserCallHwndParam_GetClientRect,
-    NtUserCallHwndParam_GetDialogProc,
     NtUserCallHwndParam_GetScrollInfo,
     NtUserCallHwndParam_GetWindowInfo,
     NtUserCallHwndParam_GetWindowLongA,
@@ -1222,12 +1270,12 @@ enum
     NtUserCallHwndParam_MonitorFromWindow,
     NtUserCallHwndParam_ScreenToClient,
     NtUserCallHwndParam_SetDialogInfo,
+    NtUserCallHwndParam_SetMDIClientInfo,
     NtUserCallHwndParam_SetWindowContextHelpId,
     NtUserCallHwndParam_SetWindowPixelFormat,
     NtUserCallHwndParam_ShowOwnedPopups,
     /* temporary exports */
     NtUserSetWindowStyle,
-    NtUserSpyGetMsgName,
 };
 
 static inline BOOL NtUserClientToScreen( HWND hwnd, POINT *pt )
@@ -1238,6 +1286,11 @@ static inline BOOL NtUserClientToScreen( HWND hwnd, POINT *pt )
 static inline BOOL NtUserEnableWindow( HWND hwnd, BOOL enable )
 {
     return NtUserCallHwndParam( hwnd, enable, NtUserCallHwndParam_EnableWindow );
+}
+
+static inline BOOL NtUserGetChildRect( HWND hwnd, RECT *rect )
+{
+    return NtUserCallHwndParam( hwnd, (UINT_PTR)rect, NtUserCallHwndParam_GetChildRect );
 }
 
 static inline DWORD NtUserGetClassLongA( HWND hwnd, INT offset )
@@ -1268,18 +1321,6 @@ static inline WORD NtUserGetClassWord( HWND hwnd, INT offset )
 static inline BOOL NtUserGetClientRect( HWND hwnd, RECT *rect )
 {
     return NtUserCallHwndParam( hwnd, (UINT_PTR)rect, NtUserCallHwndParam_GetClientRect );
-}
-
-enum dialog_proc_type
-{
-    DLGPROC_ANSI,
-    DLGPROC_UNICODE,
-    DLGPROC_WIN16,
-};
-
-static inline DLGPROC NtUserGetDialogProc( HWND hwnd, enum dialog_proc_type type )
-{
-    return (DLGPROC)NtUserCallHwndParam( hwnd, type, NtUserCallHwndParam_GetDialogProc );
 }
 
 struct get_scroll_info_params
@@ -1386,6 +1427,11 @@ static inline BOOL NtUserScreenToClient( HWND hwnd, POINT *pt )
 static inline void NtUserSetDialogInfo( HWND hwnd, void *info )
 {
     NtUserCallHwndParam( hwnd, (UINT_PTR)info, NtUserCallHwndParam_SetDialogInfo );
+}
+
+static inline void NtUserSetMDIClientInfo( HWND hwnd, void *info )
+{
+    NtUserCallHwndParam( hwnd, (UINT_PTR)info, NtUserCallHwndParam_SetMDIClientInfo );
 }
 
 static inline BOOL NtUserSetWindowContextHelpId( HWND hwnd, DWORD id )

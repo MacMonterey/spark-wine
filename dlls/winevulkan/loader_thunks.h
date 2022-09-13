@@ -15,6 +15,8 @@
 enum unix_call
 {
     unix_init,
+    unix_is_available_instance_function,
+    unix_is_available_device_function,
     unix_vkAcquireNextImage2KHR,
     unix_vkAcquireNextImageKHR,
     unix_vkAcquirePerformanceConfigurationINTEL,
@@ -96,7 +98,10 @@ enum unix_call
     unix_vkCmdDrawIndirectCount,
     unix_vkCmdDrawIndirectCountAMD,
     unix_vkCmdDrawIndirectCountKHR,
+    unix_vkCmdDrawMeshTasksEXT,
+    unix_vkCmdDrawMeshTasksIndirectCountEXT,
     unix_vkCmdDrawMeshTasksIndirectCountNV,
+    unix_vkCmdDrawMeshTasksIndirectEXT,
     unix_vkCmdDrawMeshTasksIndirectNV,
     unix_vkCmdDrawMeshTasksNV,
     unix_vkCmdDrawMultiEXT,
@@ -345,8 +350,10 @@ enum unix_call
     unix_vkGetDeviceQueue,
     unix_vkGetDeviceQueue2,
     unix_vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI,
+    unix_vkGetDynamicRenderingTilePropertiesQCOM,
     unix_vkGetEventStatus,
     unix_vkGetFenceStatus,
+    unix_vkGetFramebufferTilePropertiesQCOM,
     unix_vkGetGeneratedCommandsMemoryRequirementsNV,
     unix_vkGetImageMemoryRequirements,
     unix_vkGetImageMemoryRequirements2,
@@ -1138,6 +1145,25 @@ struct vkCmdDrawIndirectCountKHR_params
     uint32_t stride;
 };
 
+struct vkCmdDrawMeshTasksEXT_params
+{
+    VkCommandBuffer commandBuffer;
+    uint32_t groupCountX;
+    uint32_t groupCountY;
+    uint32_t groupCountZ;
+};
+
+struct vkCmdDrawMeshTasksIndirectCountEXT_params
+{
+    VkCommandBuffer commandBuffer;
+    VkBuffer buffer;
+    VkDeviceSize offset;
+    VkBuffer countBuffer;
+    VkDeviceSize countBufferOffset;
+    uint32_t maxDrawCount;
+    uint32_t stride;
+};
+
 struct vkCmdDrawMeshTasksIndirectCountNV_params
 {
     VkCommandBuffer commandBuffer;
@@ -1146,6 +1172,15 @@ struct vkCmdDrawMeshTasksIndirectCountNV_params
     VkBuffer countBuffer;
     VkDeviceSize countBufferOffset;
     uint32_t maxDrawCount;
+    uint32_t stride;
+};
+
+struct vkCmdDrawMeshTasksIndirectEXT_params
+{
+    VkCommandBuffer commandBuffer;
+    VkBuffer buffer;
+    VkDeviceSize offset;
+    uint32_t drawCount;
     uint32_t stride;
 };
 
@@ -2031,6 +2066,7 @@ struct vkCreateCommandPool_params
     const VkCommandPoolCreateInfo *pCreateInfo;
     const VkAllocationCallbacks *pAllocator;
     VkCommandPool *pCommandPool;
+    void *client_ptr;
 };
 
 struct vkCreateComputePipelines_params
@@ -2120,6 +2156,7 @@ struct vkCreateDevice_params
     const VkDeviceCreateInfo *pCreateInfo;
     const VkAllocationCallbacks *pAllocator;
     VkDevice *pDevice;
+    void *client_ptr;
 };
 
 struct vkCreateEvent_params
@@ -2185,6 +2222,7 @@ struct vkCreateInstance_params
     const VkInstanceCreateInfo *pCreateInfo;
     const VkAllocationCallbacks *pAllocator;
     VkInstance *pInstance;
+    void *client_ptr;
 };
 
 struct vkCreatePipelineCache_params
@@ -2981,6 +3019,13 @@ struct vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI_params
     VkExtent2D *pMaxWorkgroupSize;
 };
 
+struct vkGetDynamicRenderingTilePropertiesQCOM_params
+{
+    VkDevice device;
+    const VkRenderingInfo *pRenderingInfo;
+    VkTilePropertiesQCOM *pProperties;
+};
+
 struct vkGetEventStatus_params
 {
     VkDevice device;
@@ -2991,6 +3036,14 @@ struct vkGetFenceStatus_params
 {
     VkDevice device;
     VkFence fence;
+};
+
+struct vkGetFramebufferTilePropertiesQCOM_params
+{
+    VkDevice device;
+    VkFramebuffer framebuffer;
+    uint32_t *pPropertiesCount;
+    VkTilePropertiesQCOM *pProperties;
 };
 
 struct vkGetGeneratedCommandsMemoryRequirementsNV_params

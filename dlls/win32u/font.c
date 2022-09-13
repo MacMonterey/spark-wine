@@ -903,6 +903,12 @@ static BOOL add_family_replacement( const WCHAR *new_name, const WCHAR *replace 
         return FALSE;
     }
 
+    if (family->replacement)
+    {
+        TRACE( "%s is replaced by another font, skipping.\n", debugstr_w(replace) );
+        return FALSE;
+    }
+
     if (!(new_family = create_family( new_name, NULL ))) return FALSE;
     new_family->replacement = family;
     family->refcount++;
@@ -1914,7 +1920,7 @@ static struct gdi_font *get_font_from_handle( DWORD handle )
     struct font_handle_entry *entry = handle_entry( handle );
 
     if (entry) return entry->font;
-    SetLastError( ERROR_INVALID_PARAMETER );
+    RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
     return NULL;
 }
 
@@ -3387,7 +3393,7 @@ static DWORD get_glyph_outline( struct gdi_font *font, UINT glyph, UINT format,
     ret = font_funcs->get_glyph_outline( font, index, format, &gm, &abc, buflen, buf, mat, tategaki );
     if (ret == GDI_ERROR) return ret;
 
-    if ((format == GGO_METRICS || format == GGO_BITMAP || format ==  WINE_GGO_GRAY16_BITMAP) && !mat)
+    if (format == GGO_METRICS && !mat)
         set_gdi_font_glyph_metrics( font, index, &gm, &abc );
 
 done:
@@ -4524,7 +4530,7 @@ HFONT WINAPI NtGdiHfontCreate( const void *logfont, ULONG size, ULONG type,
     }
     else if (size != sizeof(LOGFONTW))
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return 0;
     }
     else plf = logfont;
@@ -5870,7 +5876,7 @@ BOOL CDECL __wine_get_file_outline_text_metric( const WCHAR *path, OUTLINETEXTME
 
 done:
     if (font) free_gdi_font( font );
-    SetLastError( ERROR_INVALID_PARAMETER );
+    RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
     return FALSE;
 }
 
@@ -5887,7 +5893,7 @@ DWORD WINAPI NtGdiGetKerningPairs( HDC hdc, DWORD count, KERNINGPAIR *kern_pair 
 
     if (!count && kern_pair)
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return 0;
     }
 
@@ -5912,7 +5918,7 @@ DWORD WINAPI NtGdiGetKerningPairs( HDC hdc, DWORD count, KERNINGPAIR *kern_pair 
  *
  * NOTES
  *
- * Calls SetLastError()
+ * Calls RtlSetLastWin32Error()
  *
  */
 DWORD WINAPI NtGdiGetFontData( HDC hdc, DWORD table, DWORD offset, void *buffer, DWORD length )
@@ -6382,7 +6388,7 @@ HANDLE WINAPI NtGdiAddFontMemResourceEx( void *ptr, DWORD size, void *dv, ULONG 
 
     if (!ptr || !size || !count)
     {
-        SetLastError(ERROR_INVALID_PARAMETER);
+        RtlSetLastWin32Error(ERROR_INVALID_PARAMETER);
         return NULL;
     }
     if (!font_funcs) return NULL;
@@ -6537,7 +6543,7 @@ BOOL WINAPI NtGdiGetFontFileData( DWORD instance_id, DWORD file_index, UINT64 *o
         if (size != GDI_ERROR && size >= buff_size && *offset <= size - buff_size)
             ret = font_funcs->get_font_data( font, tag, *offset, buff, buff_size ) != GDI_ERROR;
         else
-            SetLastError( ERROR_INVALID_PARAMETER );
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
     }
     pthread_mutex_unlock( &font_lock );
     return ret;
@@ -6565,7 +6571,7 @@ BOOL WINAPI NtGdiGetFontFileInfo( DWORD instance_id, DWORD file_index, struct fo
             lstrcpyW( info->path, font->file );
             ret = TRUE;
         }
-        else SetLastError( ERROR_INSUFFICIENT_BUFFER );
+        else RtlSetLastWin32Error( ERROR_INSUFFICIENT_BUFFER );
     }
 
     pthread_mutex_unlock( &font_lock );
@@ -6610,10 +6616,12 @@ INT WINAPI DrawTextW( HDC hdc, const WCHAR *str, INT count, RECT *rect, UINT fla
     size = FIELD_OFFSET( struct draw_text_params, str[count] );
     if (!(params = malloc( size ))) return 0;
     params->hdc = hdc;
-    params->rect = rect;
+    params->rect = *rect;
+    params->ret_rect = rect;
     params->flags = flags;
     if (count) memcpy( params->str, str, count * sizeof(WCHAR) );
     ret = KeUserModeCallback( NtUserDrawText, params, size, &ret_ptr, &ret_len );
+    if (ret_len == sizeof(*rect)) *rect = *(const RECT *)ret_ptr;
     free( params );
     return ret;
 }

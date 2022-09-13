@@ -173,7 +173,7 @@ HWND get_hwnd_message_parent(void)
     struct ntuser_thread_info *thread_info = NtUserGetThreadInfo();
 
     if (!thread_info->msg_window) get_desktop_window(); /* trigger creation */
-    return thread_info->msg_window;
+    return UlongToHandle( thread_info->msg_window );
 }
 
 /***********************************************************************
@@ -225,8 +225,8 @@ BOOL is_desktop_window( HWND hwnd )
     struct ntuser_thread_info *thread_info = NtUserGetThreadInfo();
 
     if (!hwnd) return FALSE;
-    if (hwnd == thread_info->top_window) return TRUE;
-    if (hwnd == thread_info->msg_window) return TRUE;
+    if (hwnd == UlongToHandle( thread_info->top_window )) return TRUE;
+    if (hwnd == UlongToHandle( thread_info->msg_window )) return TRUE;
 
     if (!HIWORD(hwnd) || HIWORD(hwnd) == 0xffff)
     {
@@ -320,7 +320,7 @@ DWORD get_window_thread( HWND hwnd, DWORD *process )
 
     if (!(ptr = get_win_ptr( hwnd )))
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE);
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE);
         return 0;
     }
 
@@ -355,7 +355,7 @@ HWND get_parent( HWND hwnd )
 
     if (!(win = get_win_ptr( hwnd )))
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return 0;
     }
     if (win == WND_DESKTOP) return 0;
@@ -403,7 +403,7 @@ HWND WINAPI NtUserSetParent( HWND hwnd, HWND parent )
 
     if (is_broadcast(hwnd) || is_broadcast(parent))
     {
-        SetLastError(ERROR_INVALID_PARAMETER);
+        RtlSetLastWin32Error(ERROR_INVALID_PARAMETER);
         return 0;
     }
 
@@ -413,14 +413,14 @@ HWND WINAPI NtUserSetParent( HWND hwnd, HWND parent )
 
     if (!is_window( parent ))
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return 0;
     }
 
     /* Some applications try to set a child as a parent */
     if (is_child( hwnd, parent ))
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return 0;
     }
 
@@ -429,7 +429,7 @@ HWND WINAPI NtUserSetParent( HWND hwnd, HWND parent )
 
     if (full_handle == parent)
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return 0;
     }
 
@@ -492,7 +492,7 @@ HWND get_window_relative( HWND hwnd, UINT rel )
         WND *win = get_win_ptr( hwnd );
         if (!win)
         {
-            SetLastError( ERROR_INVALID_HANDLE );
+            RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
             return 0;
         }
         if (win == WND_DESKTOP) return 0;
@@ -666,7 +666,7 @@ HWND WINAPI NtUserGetAncestor( HWND hwnd, UINT type )
     case GA_PARENT:
         if (!(win = get_win_ptr( hwnd )))
         {
-            SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+            RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
             return 0;
         }
         if (win == WND_DESKTOP) return 0;
@@ -818,7 +818,7 @@ BOOL enable_window( HWND hwnd, BOOL enable )
 
     if (is_broadcast(hwnd))
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return FALSE;
     }
 
@@ -850,7 +850,7 @@ BOOL is_window_enabled( HWND hwnd )
 {
     LONG ret;
 
-    SetLastError( NO_ERROR );
+    RtlSetLastWin32Error( NO_ERROR );
     ret = get_window_long( hwnd, GWL_STYLE );
     if (!ret && GetLastError() != NO_ERROR) return FALSE;
     return !(ret & WS_DISABLED);
@@ -864,7 +864,7 @@ DPI_AWARENESS_CONTEXT get_window_dpi_awareness_context( HWND hwnd )
 
     if (!(win = get_win_ptr( hwnd )))
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return 0;
     }
     if (win == WND_DESKTOP) return DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE;
@@ -893,7 +893,7 @@ UINT get_dpi_for_window( HWND hwnd )
 
     if (!(win = get_win_ptr( hwnd )))
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return 0;
     }
     if (win == WND_DESKTOP)
@@ -985,7 +985,7 @@ static LONG_PTR get_window_long_size( HWND hwnd, INT offset, UINT size, BOOL ans
 
     if (!(win = get_win_ptr( hwnd )))
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return 0;
     }
 
@@ -1004,10 +1004,10 @@ static LONG_PTR get_window_long_size( HWND hwnd, INT offset, UINT size, BOOL ans
         case GWLP_HINSTANCE:
             return 0;
         case GWLP_WNDPROC:
-            SetLastError( ERROR_ACCESS_DENIED );
+            RtlSetLastWin32Error( ERROR_ACCESS_DENIED );
             return 0;
         }
-        SetLastError( ERROR_INVALID_INDEX );
+        RtlSetLastWin32Error( ERROR_INVALID_INDEX );
         return 0;
     }
 
@@ -1015,7 +1015,7 @@ static LONG_PTR get_window_long_size( HWND hwnd, INT offset, UINT size, BOOL ans
     {
         if (offset == GWLP_WNDPROC)
         {
-            SetLastError( ERROR_ACCESS_DENIED );
+            RtlSetLastWin32Error( ERROR_ACCESS_DENIED );
             return 0;
         }
         SERVER_START_REQ( set_window_info )
@@ -1035,7 +1035,7 @@ static LONG_PTR get_window_long_size( HWND hwnd, INT offset, UINT size, BOOL ans
                 case GWLP_USERDATA:  retval = reply->old_user_data; break;
                 default:
                     if (offset >= 0) retval = get_win_data( &reply->old_extra_value, size );
-                    else SetLastError( ERROR_INVALID_INDEX );
+                    else RtlSetLastWin32Error( ERROR_INVALID_INDEX );
                     break;
                 }
             }
@@ -1052,14 +1052,10 @@ static LONG_PTR get_window_long_size( HWND hwnd, INT offset, UINT size, BOOL ans
         {
             WARN("Invalid offset %d\n", offset );
             release_win_ptr( win );
-            SetLastError( ERROR_INVALID_INDEX );
+            RtlSetLastWin32Error( ERROR_INVALID_INDEX );
             return 0;
         }
         retval = get_win_data( (char *)win->wExtra + offset, size );
-
-        /* Special case for dialog window procedure */
-        if ((offset == DWLP_DLGPROC) && (size == sizeof(LONG_PTR)) && win->dlgInfo)
-            retval = (LONG_PTR)get_winproc( (WNDPROC)retval, ansi );
         release_win_ptr( win );
         return retval;
     }
@@ -1083,7 +1079,7 @@ static LONG_PTR get_window_long_size( HWND hwnd, INT offset, UINT size, BOOL ans
         break;
     default:
         WARN("Unknown offset %d\n", offset );
-        SetLastError( ERROR_INVALID_INDEX );
+        RtlSetLastWin32Error( ERROR_INVALID_INDEX );
         break;
     }
     release_win_ptr( win );
@@ -1115,7 +1111,7 @@ static WORD get_window_word( HWND hwnd, INT offset )
         if (offset < 0)
         {
             WARN("Invalid offset %d\n", offset );
-            SetLastError( ERROR_INVALID_INDEX );
+            RtlSetLastWin32Error( ERROR_INVALID_INDEX );
             return 0;
         }
         break;
@@ -1226,31 +1222,31 @@ LONG_PTR set_window_long( HWND hwnd, INT offset, UINT size, LONG_PTR newval, BOO
 
     if (is_broadcast(hwnd))
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return FALSE;
     }
 
     if (!(win = get_win_ptr( hwnd )))
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return 0;
     }
     if (win == WND_DESKTOP)
     {
         /* can't change anything on the desktop window */
-        SetLastError( ERROR_ACCESS_DENIED );
+        RtlSetLastWin32Error( ERROR_ACCESS_DENIED );
         return 0;
     }
     if (win == WND_OTHER_PROCESS)
     {
         if (offset == GWLP_WNDPROC)
         {
-            SetLastError( ERROR_ACCESS_DENIED );
+            RtlSetLastWin32Error( ERROR_ACCESS_DENIED );
             return 0;
         }
         if (offset > 32767 || offset < -32767)
         {
-            SetLastError( ERROR_INVALID_INDEX );
+            RtlSetLastWin32Error( ERROR_INVALID_INDEX );
             return 0;
         }
         return send_message( hwnd, WM_WINE_SETWINDOWLONG, MAKEWPARAM( offset, size ), newval );
@@ -1313,23 +1309,12 @@ LONG_PTR set_window_long( HWND hwnd, INT offset, UINT size, LONG_PTR newval, BOO
     case GWLP_HINSTANCE:
     case GWLP_USERDATA:
         break;
-    case DWLP_DLGPROC:
-        if ((win->cbWndExtra - sizeof(LONG_PTR) >= DWLP_DLGPROC) &&
-            (size == sizeof(LONG_PTR)) && win->dlgInfo)
-        {
-            WNDPROC *ptr = (WNDPROC *)((char *)win->wExtra + DWLP_DLGPROC);
-            retval = (ULONG_PTR)get_winproc( *ptr, ansi );
-            *ptr = alloc_winproc( (WNDPROC)newval, ansi );
-            release_win_ptr( win );
-            return retval;
-        }
-        /* fall through */
     default:
         if (offset < 0 || offset > (int)(win->cbWndExtra - size))
         {
             WARN("Invalid offset %d\n", offset );
             release_win_ptr( win );
-            SetLastError( ERROR_INVALID_INDEX );
+            RtlSetLastWin32Error( ERROR_INVALID_INDEX );
             return 0;
         }
         else if (get_win_data( (char *)win->wExtra + offset, size ) == newval)
@@ -1451,7 +1436,7 @@ WORD WINAPI NtUserSetWindowWord( HWND hwnd, INT offset, WORD newval )
         if (offset < 0)
         {
             WARN("Invalid offset %d\n", offset );
-            SetLastError( ERROR_INVALID_INDEX );
+            RtlSetLastWin32Error( ERROR_INVALID_INDEX );
             return 0;
         }
         break;
@@ -1578,7 +1563,7 @@ BOOL get_window_rects( HWND hwnd, enum coords_relative relative, RECT *window_re
 
     if (!win)
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return FALSE;
     }
     if (win == WND_DESKTOP)
@@ -1971,7 +1956,7 @@ int WINAPI NtUserGetWindowRgnEx( HWND hwnd, HRGN hrgn, UINT unk )
     {
         if (!(data = malloc( sizeof(*data) + size - 1 )))
         {
-            SetLastError( ERROR_OUTOFMEMORY );
+            RtlSetLastWin32Error( ERROR_OUTOFMEMORY );
             return ERROR;
         }
         SERVER_START_REQ( get_window_region )
@@ -2137,7 +2122,7 @@ BOOL WINAPI NtUserUpdateLayeredWindow( HWND hwnd, HDC hdc_dst, const POINT *pts_
         !(get_window_long( hwnd, GWL_EXSTYLE ) & WS_EX_LAYERED) ||
         NtUserGetLayeredWindowAttributes( hwnd, NULL, NULL, NULL ))
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return FALSE;
     }
 
@@ -2157,12 +2142,12 @@ BOOL WINAPI NtUserUpdateLayeredWindow( HWND hwnd, HDC hdc_dst, const POINT *pts_
         offset.cy = size->cy - (window_rect.bottom - window_rect.top);
         if (size->cx <= 0 || size->cy <= 0)
         {
-            SetLastError( ERROR_INVALID_PARAMETER );
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
             return FALSE;
         }
         if ((flags & ULW_EX_NORESIZE) && (offset.cx || offset.cy))
         {
-            SetLastError( ERROR_INCORRECT_SIZE );
+            RtlSetLastWin32Error( ERROR_INCORRECT_SIZE );
             return FALSE;
         }
         client_rect.right  += offset.cx;
@@ -2747,7 +2732,7 @@ static BOOL get_windows_offset( HWND hwnd_from, HWND hwnd_to, UINT dpi, BOOL *mi
     {
         if (!(win = get_win_ptr( hwnd_from )))
         {
-            SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+            RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
             return FALSE;
         }
         if (win == WND_OTHER_PROCESS) goto other_process;
@@ -2783,7 +2768,7 @@ static BOOL get_windows_offset( HWND hwnd_from, HWND hwnd_to, UINT dpi, BOOL *mi
     {
         if (!(win = get_win_ptr( hwnd_to )))
         {
-            SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+            RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
             return FALSE;
         }
         if (win == WND_OTHER_PROCESS) goto other_process;
@@ -2847,7 +2832,7 @@ BOOL client_to_screen( HWND hwnd, POINT *pt )
 
     if (!hwnd)
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return FALSE;
     }
 
@@ -2866,7 +2851,7 @@ BOOL screen_to_client( HWND hwnd, POINT *pt )
 
     if (!hwnd)
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return FALSE;
     }
     if (!get_windows_offset( 0, hwnd, get_thread_dpi(), &mirrored, &offset )) return FALSE;
@@ -3195,7 +3180,7 @@ static BOOL fixup_swp_flags( WINDOWPOS *winpos, const RECT *old_window_rect, int
 
     if (!win || win == WND_OTHER_PROCESS)
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return FALSE;
     }
     winpos->hwnd = win->obj.handle;  /* make it a full handle */
@@ -3496,7 +3481,7 @@ BOOL WINAPI NtUserSetWindowPos( HWND hwnd, HWND after, INT x, INT y, INT cx, INT
 
     if (is_broadcast( hwnd ))
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return FALSE;
     }
 
@@ -3539,7 +3524,7 @@ HDWP begin_defer_window_pos( INT count )
 
     if (count < 0)
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return 0;
     }
     /* Windows allows zero count, in which case it allocates context for 8 moves */
@@ -3580,7 +3565,7 @@ HDWP WINAPI NtUserDeferWindowPosAndBand( HDWP hdwp, HWND hwnd, HWND after,
     winpos.hwnd = get_full_window_handle( hwnd );
     if (is_desktop_window( winpos.hwnd ) || !is_window( winpos.hwnd ))
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return 0;
     }
 
@@ -4040,7 +4025,7 @@ static UINT window_min_maximize( HWND hwnd, UINT cmd, RECT *rect )
     wpl.length = sizeof(wpl);
     NtUserGetWindowPlacement( hwnd, &wpl );
 
-    if (call_hooks( WH_CBT, HCBT_MINMAX, (WPARAM)hwnd, cmd, TRUE ))
+    if (call_hooks( WH_CBT, HCBT_MINMAX, (WPARAM)hwnd, cmd, 0 ))
         return SWP_NOSIZE | SWP_NOMOVE;
 
     if (is_iconic( hwnd ))
@@ -4393,7 +4378,7 @@ BOOL WINAPI NtUserShowWindowAsync( HWND hwnd, INT cmd )
 
     if (is_broadcast(hwnd))
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return FALSE;
     }
 
@@ -4413,7 +4398,7 @@ BOOL WINAPI NtUserShowWindow( HWND hwnd, INT cmd )
 
     if (is_broadcast(hwnd))
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return FALSE;
     }
     if ((full_handle = is_current_thread_window( hwnd )))
@@ -4475,13 +4460,13 @@ BOOL WINAPI NtUserFlashWindowEx( FLASHWINFO *info )
 
     if (!info)
     {
-        SetLastError( ERROR_NOACCESS );
+        RtlSetLastWin32Error( ERROR_NOACCESS );
         return FALSE;
     }
 
     if (!info->hwnd || info->cbSize != sizeof(FLASHWINFO) || !is_window( info->hwnd ))
     {
-        SetLastError( ERROR_INVALID_PARAMETER );
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return FALSE;
     }
     FIXME( "%p - semi-stub\n", info );
@@ -4566,7 +4551,7 @@ HICON WINAPI NtUserInternalGetWindowIcon( HWND hwnd, UINT type )
 
     if (!win)
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return 0;
     }
     if (win == WND_OTHER_PROCESS || win == WND_DESKTOP)
@@ -4590,7 +4575,7 @@ HICON WINAPI NtUserInternalGetWindowIcon( HWND hwnd, UINT type )
             break;
 
         default:
-            SetLastError( ERROR_INVALID_PARAMETER );
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
             release_win_ptr( win );
             return 0;
     }
@@ -4746,13 +4731,13 @@ BOOL WINAPI NtUserDestroyWindow( HWND hwnd )
 
     if (!(hwnd = is_current_thread_window( hwnd )) || is_desktop_window( hwnd ))
     {
-        SetLastError( ERROR_ACCESS_DENIED );
+        RtlSetLastWin32Error( ERROR_ACCESS_DENIED );
         return FALSE;
     }
 
     TRACE( "(%p)\n", hwnd );
 
-    if (call_hooks( WH_CBT, HCBT_DESTROYWND, (WPARAM)hwnd, 0, TRUE )) return FALSE;
+    if (call_hooks( WH_CBT, HCBT_DESTROYWND, (WPARAM)hwnd, 0, 0 )) return FALSE;
 
     if (is_menu_active() == hwnd) NtUserEndMenu();
 
@@ -4765,7 +4750,7 @@ BOOL WINAPI NtUserDestroyWindow( HWND hwnd )
     }
     else if (!get_window_relative( hwnd, GW_OWNER ))
     {
-        call_hooks( WH_SHELL, HSHELL_WINDOWDESTROYED, (WPARAM)hwnd, 0L, TRUE );
+        call_hooks( WH_SHELL, HSHELL_WINDOWDESTROYED, (WPARAM)hwnd, 0, 0 );
         /* FIXME: clean up palette - see "Internals" p.352 */
     }
 
@@ -4920,7 +4905,7 @@ static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
             wine_server_call( req );
         }
         SERVER_END_REQ;
-        SetLastError( ERROR_NOT_ENOUGH_MEMORY );
+        RtlSetLastWin32Error( ERROR_NOT_ENOUGH_MEMORY );
         return NULL;
     }
 
@@ -4930,15 +4915,18 @@ static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
 
         if (name->Buffer == (const WCHAR *)DESKTOP_CLASS_ATOM)
         {
-            if (!thread_info->top_window) thread_info->top_window = full_parent ? full_parent : handle;
-            else assert( full_parent == thread_info->top_window );
-            if (full_parent && !user_driver->pCreateDesktopWindow( thread_info->top_window ))
+            if (!thread_info->top_window)
+                thread_info->top_window = HandleToUlong( full_parent ? full_parent : handle );
+            else assert( full_parent == UlongToHandle( thread_info->top_window ));
+            if (full_parent &&
+                !user_driver->pCreateDesktopWindow( UlongToHandle( thread_info->top_window )))
                 ERR( "failed to create desktop window\n" );
             register_builtin_classes();
         }
         else  /* HWND_MESSAGE parent */
         {
-            if (!thread_info->msg_window && !full_parent) thread_info->msg_window = handle;
+            if (!thread_info->msg_window && !full_parent)
+                thread_info->msg_window = HandleToUlong( handle );
         }
     }
 
@@ -5047,41 +5035,27 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
                                   UNICODE_STRING *version, UNICODE_STRING *window_name,
                                   DWORD style, INT x, INT y, INT cx, INT cy,
                                   HWND parent, HMENU menu, HINSTANCE instance, void *params,
-                                  DWORD flags, CBT_CREATEWNDW *cbtc, DWORD unk, BOOL ansi )
+                                  DWORD flags, CBT_CREATEWNDW *client_cbtc, DWORD unk, BOOL ansi )
 {
-    CREATESTRUCTW cs, *client_cs, cs_buf;
     UINT win_dpi, thread_dpi = get_thread_dpi();
     DPI_AWARENESS_CONTEXT context;
-    CBT_CREATEWNDW cbtc_buf;
+    CBT_CREATEWNDW cbtc;
     HWND hwnd, owner = 0;
+    CREATESTRUCTW cs;
     INT sw = SW_SHOW;
     RECT rect;
     WND *win;
 
     static const WCHAR messageW[] = {'M','e','s','s','a','g','e'};
 
-    /* FIXME: We should pass a packed struct to client instead of using client_cs */
-    if (cbtc)
-    {
-        client_cs = cbtc->lpcs;
-        cs.lpszName  = client_cs->lpszName;
-        cs.lpszClass = client_cs->lpszClass;
-        cs.hInstance = client_cs->hInstance; /* may be different than instance for win16 */
-    }
-    else
-    {
-        cbtc = &cbtc_buf;
-        client_cs = cbtc->lpcs = &cs_buf;
-        cs.lpszName = window_name ? window_name->Buffer : NULL;
-        cs.lpszClass = class_name->Buffer;
-        cs.hInstance = instance;
-    }
-
     cs.lpCreateParams = params;
+    cs.hInstance  = instance;
     cs.hMenu      = menu;
     cs.hwndParent = parent;
     cs.style      = style;
     cs.dwExStyle  = ex_style;
+    cs.lpszName   = window_name ? window_name->Buffer : NULL;
+    cs.lpszClass  = class_name ? class_name->Buffer : NULL;
     cs.x  = x;
     cs.y  = y;
     cs.cx = cx;
@@ -5111,7 +5085,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
         if ((cs.style & (WS_CHILD|WS_POPUP)) == WS_CHILD)
         {
             WARN( "No parent for child window\n" );
-            SetLastError( ERROR_TLW_WITH_WSCHILD );
+            RtlSetLastWin32Error( ERROR_TLW_WITH_WSCHILD );
             return 0;  /* WS_CHILD needs a parent, but WS_POPUP doesn't */
         }
 
@@ -5120,7 +5094,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
             (class_name->Length != sizeof(messageW) ||
              wcsnicmp( class_name->Buffer, messageW, ARRAYSIZE(messageW) )))
         {
-            if (process_layout & LAYOUT_RTL) cs.dwExStyle |= WS_EX_LAYOUTRTL;
+            if (get_process_layout() & LAYOUT_RTL) cs.dwExStyle |= WS_EX_LAYOUTRTL;
             parent = get_desktop_window();
         }
     }
@@ -5163,9 +5137,9 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
     /* call the WH_CBT hook */
 
     release_win_ptr( win );
-    *client_cs = cs;
-    cbtc->hwndInsertAfter = HWND_TOP;
-    if (call_hooks( WH_CBT, HCBT_CREATEWND, (WPARAM)hwnd, (LPARAM)cbtc, !ansi ))
+    cbtc.hwndInsertAfter = HWND_TOP;
+    cbtc.lpcs = &cs;
+    if (call_hooks( WH_CBT, HCBT_CREATEWND, (WPARAM)hwnd, (LPARAM)&cbtc, sizeof(cbtc) ))
     {
         free_window_handle( hwnd );
         return 0;
@@ -5247,8 +5221,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
     /* send WM_NCCREATE */
 
     TRACE( "hwnd %p cs %d,%d %dx%d %s\n", hwnd, cs.x, cs.y, cs.cx, cs.cy, wine_dbgstr_rect(&rect) );
-    *client_cs = cs;
-    if (!NtUserMessageCall( hwnd, WM_NCCREATE, 0, (LPARAM)client_cs, NULL, NtUserSendMessage, ansi ))
+    if (!send_message_timeout( hwnd, WM_NCCREATE, 0, (LPARAM)&cs, SMTO_NORMAL, 0, ansi ))
     {
         WARN( "%p: aborted by WM_NCCREATE\n", hwnd );
         goto failed;
@@ -5280,9 +5253,8 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
     else goto failed;
 
     /* send WM_CREATE */
-    if (NtUserMessageCall( hwnd, WM_CREATE, 0, (LPARAM)client_cs, 0, NtUserSendMessage, ansi ) == -1)
+    if (send_message_timeout( hwnd, WM_CREATE, 0, (LPARAM)&cs, SMTO_NORMAL, 0, ansi ) == -1)
         goto failed;
-    cs = *client_cs;
 
     /* call the driver */
 
@@ -5347,7 +5319,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
     /* Call WH_SHELL hook */
 
     if (!(get_window_long( hwnd, GWL_STYLE ) & WS_CHILD) && !get_window_relative( hwnd, GW_OWNER ))
-        call_hooks( WH_SHELL, HSHELL_WINDOWCREATED, (WPARAM)hwnd, 0, TRUE );
+        call_hooks( WH_SHELL, HSHELL_WINDOWCREATED, (WPARAM)hwnd, 0, 0 );
 
     TRACE( "created window %p\n", hwnd );
     SetThreadDpiAwarenessContext( context );
@@ -5366,7 +5338,7 @@ static void *get_dialog_info( HWND hwnd )
 
     if (!(win = get_win_ptr( hwnd )) || win == WND_OTHER_PROCESS || win == WND_DESKTOP)
     {
-        SetLastError( ERROR_INVALID_WINDOW_HANDLE );
+        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
         return NULL;
     }
 
@@ -5392,6 +5364,10 @@ ULONG_PTR WINAPI NtUserCallHwnd( HWND hwnd, DWORD code )
 {
     switch (code)
     {
+    case NtUserCallHwnd_ActivateOtherWindow:
+        activate_other_window( hwnd );
+        return 0;
+
     case NtUserCallHwnd_ArrangeIconicWindows:
         return arrange_iconic_windows( hwnd );
 
@@ -5410,6 +5386,10 @@ ULONG_PTR WINAPI NtUserCallHwnd( HWND hwnd, DWORD code )
     case NtUserCallHwnd_GetDialogInfo:
         return (ULONG_PTR)get_dialog_info( hwnd );
 
+    case NtUserCallHwnd_GetMDIClientInfo:
+        if (!(win_get_flags( hwnd ) & WIN_ISMDICLIENT)) return 0;
+        return get_window_long_ptr( hwnd, sizeof(void *), FALSE );
+
     case NtUserCallHwnd_GetWindowContextHelpId:
         return get_window_context_help_id( hwnd );
 
@@ -5418,6 +5398,9 @@ ULONG_PTR WINAPI NtUserCallHwnd( HWND hwnd, DWORD code )
 
     case NtUserCallHwnd_GetWindowInputContext:
         return HandleToUlong( get_window_input_context( hwnd ));
+
+    case NtUserCallHwnd_GetWindowSysSubMenu:
+        return HandleToUlong( get_window_sys_sub_menu( hwnd ));
 
     case NtUserCallHwnd_GetWindowTextLength:
         return get_server_window_text( hwnd, NULL, 0 );
@@ -5466,6 +5449,9 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
     case NtUserCallHwndParam_EnableWindow:
         return enable_window( hwnd, param );
 
+    case NtUserCallHwndParam_GetChildRect:
+        return get_window_rects( hwnd, COORDS_PARENT, (RECT *)param, NULL, get_thread_dpi() );
+
     case NtUserCallHwndParam_GetClassLongA:
         return get_class_long( hwnd, param, TRUE );
 
@@ -5483,9 +5469,6 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
 
     case NtUserCallHwndParam_GetClientRect:
         return get_client_rect( hwnd, (RECT *)param );
-
-    case NtUserCallHwndParam_GetDialogProc:
-        return (ULONG_PTR)get_dialog_proc( hwnd, param );
 
     case NtUserCallHwndParam_GetScrollInfo:
         {
@@ -5545,6 +5528,10 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
     case NtUserCallHwndParam_SetDialogInfo:
         return set_dialog_info( hwnd, (void *)param );
 
+    case NtUserCallHwndParam_SetMDIClientInfo:
+        NtUserSetWindowLongPtr( hwnd, sizeof(void *), param, FALSE );
+        return win_set_flags( hwnd, WIN_ISMDICLIENT, 0 );
+
     case NtUserCallHwndParam_SetWindowContextHelpId:
         return set_window_context_help_id( hwnd, param );
 
@@ -5560,9 +5547,6 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
             STYLESTRUCT *style = (void *)param;
             return set_window_style( hwnd, style->styleNew, style->styleOld );
         }
-
-    case NtUserSpyGetMsgName:
-        return (UINT_PTR)debugstr_msg_name( param, hwnd );
 
     default:
         FIXME( "invalid code %u\n", code );

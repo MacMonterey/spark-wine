@@ -371,7 +371,7 @@ static void disable_xinput2(void)
  */
 static BOOL grab_clipping_window( const RECT *clip )
 {
-#if HAVE_X11_EXTENSIONS_XINPUT2_H
+#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
     static const WCHAR messageW[] = {'M','e','s','s','a','g','e',0};
     struct x11drv_thread_data *data = x11drv_thread_data();
     UNICODE_STRING class_name;
@@ -1503,7 +1503,8 @@ void X11DRV_SetCursor( HCURSOR handle )
         NtGetTickCount() - last_cursor_change > 100)
     {
         last_cursor_change = NtGetTickCount();
-        if (cursor_window) send_notify_message( cursor_window, WM_X11DRV_SET_CURSOR, 0, (LPARAM)handle );
+        if (cursor_window) send_notify_message( cursor_window, WM_X11DRV_SET_CURSOR,
+                                                GetCurrentThreadId(), (LPARAM)handle );
     }
 }
 

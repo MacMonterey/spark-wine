@@ -260,12 +260,11 @@ static BOOL CDECL ANDROID_DeleteDC( PHYSDEV dev )
 
 
 /***********************************************************************
- *           ANDROID_ChangeDisplaySettingsEx
+ *           ANDROID_ChangeDisplaySettings
  */
-LONG ANDROID_ChangeDisplaySettingsEx( LPCWSTR devname, LPDEVMODEW devmode,
-                                      HWND hwnd, DWORD flags, LPVOID lpvoid )
+LONG ANDROID_ChangeDisplaySettings( LPDEVMODEW displays, HWND hwnd, DWORD flags, LPVOID lpvoid )
 {
-    FIXME( "(%s,%p,%p,0x%08x,%p)\n", debugstr_w( devname ), devmode, hwnd, flags, lpvoid );
+    FIXME( "(%p,%p,0x%08x,%p)\n", displays, hwnd, flags, lpvoid );
     return DISP_CHANGE_SUCCESSFUL;
 }
 
@@ -309,29 +308,51 @@ BOOL ANDROID_UpdateDisplayDevices( const struct gdi_device_manager *device_manag
  */
 BOOL ANDROID_EnumDisplaySettingsEx( LPCWSTR name, DWORD n, LPDEVMODEW devmode, DWORD flags )
 {
+    if (n > 0)
+    {
+        TRACE( "mode %d -- not present\n", n );
+        RtlSetLastWin32Error( ERROR_NO_MORE_FILES );
+        return FALSE;
+    }
+
     devmode->u2.dmDisplayFlags = 0;
-    devmode->dmDisplayFrequency = 0;
     devmode->u1.s2.dmPosition.x = 0;
     devmode->u1.s2.dmPosition.y = 0;
     devmode->u1.s2.dmDisplayOrientation = 0;
     devmode->u1.s2.dmDisplayFixedOutput = 0;
+    devmode->dmPelsWidth = screen_width;
+    devmode->dmPelsHeight = screen_height;
+    devmode->dmBitsPerPel = screen_bpp;
+    devmode->dmDisplayFrequency = 60;
+    devmode->dmFields = DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL |
+                        DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY;
+    TRACE( "mode %d -- %dx%d %d bpp @%d Hz\n", n,
+           devmode->dmPelsWidth, devmode->dmPelsHeight,
+           devmode->dmBitsPerPel, devmode->dmDisplayFrequency );
+    return TRUE;
+}
 
-    if (n == ENUM_CURRENT_SETTINGS) n = 0;
-    if (n == 0)
-    {
-        devmode->dmPelsWidth = screen_width;
-        devmode->dmPelsHeight = screen_height;
-        devmode->dmBitsPerPel = screen_bpp;
-        devmode->dmDisplayFrequency = 60;
-        devmode->dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY;
-        TRACE( "mode %d -- %dx%d %d bpp @%d Hz\n", n,
-               devmode->dmPelsWidth, devmode->dmPelsHeight,
-               devmode->dmBitsPerPel, devmode->dmDisplayFrequency );
-        return TRUE;
-    }
-    TRACE( "mode %d -- not present\n", n );
-    SetLastError( ERROR_NO_MORE_FILES );
-    return FALSE;
+
+/***********************************************************************
+ *           ANDROID_GetCurrentDisplaySettings
+ */
+BOOL ANDROID_GetCurrentDisplaySettings( LPCWSTR name, LPDEVMODEW devmode )
+{
+    devmode->u2.dmDisplayFlags = 0;
+    devmode->u1.s2.dmPosition.x = 0;
+    devmode->u1.s2.dmPosition.y = 0;
+    devmode->u1.s2.dmDisplayOrientation = 0;
+    devmode->u1.s2.dmDisplayFixedOutput = 0;
+    devmode->dmPelsWidth = screen_width;
+    devmode->dmPelsHeight = screen_height;
+    devmode->dmBitsPerPel = screen_bpp;
+    devmode->dmDisplayFrequency = 60;
+    devmode->dmFields = DM_POSITION | DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT |
+                        DM_BITSPERPEL | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY;
+    TRACE( "current mode -- %dx%d %d bpp @%d Hz\n",
+           devmode->dmPelsWidth, devmode->dmPelsHeight,
+           devmode->dmBitsPerPel, devmode->dmDisplayFrequency );
+    return TRUE;
 }
 
 
@@ -355,8 +376,9 @@ static const struct user_driver_funcs android_drv_funcs =
     .pMapVirtualKeyEx = ANDROID_MapVirtualKeyEx,
     .pVkKeyScanEx = ANDROID_VkKeyScanEx,
     .pSetCursor = ANDROID_SetCursor,
-    .pChangeDisplaySettingsEx = ANDROID_ChangeDisplaySettingsEx,
+    .pChangeDisplaySettings = ANDROID_ChangeDisplaySettings,
     .pEnumDisplaySettingsEx = ANDROID_EnumDisplaySettingsEx,
+    .pGetCurrentDisplaySettings = ANDROID_GetCurrentDisplaySettings,
     .pUpdateDisplayDevices = ANDROID_UpdateDisplayDevices,
     .pCreateWindow = ANDROID_CreateWindow,
     .pDesktopWindowProc = ANDROID_DesktopWindowProc,

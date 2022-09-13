@@ -251,7 +251,8 @@ extern LRESULT handle_nc_hit_test( HWND hwnd, POINT pt ) DECLSPEC_HIDDEN;
 
 /* hook.c */
 extern LRESULT call_current_hook( HHOOK hhook, INT code, WPARAM wparam, LPARAM lparam ) DECLSPEC_HIDDEN;
-extern LRESULT call_hooks( INT id, INT code, WPARAM wparam, LPARAM lparam, BOOL unicode ) DECLSPEC_HIDDEN;
+extern LRESULT call_hooks( INT id, INT code, WPARAM wparam, LPARAM lparam,
+                           size_t lparam_size ) DECLSPEC_HIDDEN;
 extern BOOL is_hooked( INT id ) DECLSPEC_HIDDEN;
 extern BOOL unhook_windows_hook( INT id, HOOKPROC proc ) DECLSPEC_HIDDEN;
 
@@ -289,6 +290,7 @@ extern UINT get_menu_bar_height( HWND hwnd, UINT width, INT org_x, INT org_y ) D
 extern BOOL get_menu_info( HMENU handle, MENUINFO *info ) DECLSPEC_HIDDEN;
 extern INT get_menu_item_count( HMENU handle ) DECLSPEC_HIDDEN;
 extern UINT get_menu_state( HMENU handle, UINT item_id, UINT flags ) DECLSPEC_HIDDEN;
+extern HMENU get_window_sys_sub_menu( HWND hwnd ) DECLSPEC_HIDDEN;
 extern BOOL is_menu( HMENU handle ) DECLSPEC_HIDDEN;
 extern HWND is_menu_active(void) DECLSPEC_HIDDEN;
 extern LRESULT popup_menu_window_proc( HWND hwnd, UINT message, WPARAM wparam,
@@ -299,7 +301,7 @@ extern void track_mouse_menu_bar( HWND hwnd, INT ht, int x, int y ) DECLSPEC_HID
 
 /* message.c */
 extern BOOL kill_system_timer( HWND hwnd, UINT_PTR id ) DECLSPEC_HIDDEN;
-extern BOOL reply_message_result( LRESULT result, MSG *msg ) DECLSPEC_HIDDEN;
+extern BOOL reply_message_result( LRESULT result ) DECLSPEC_HIDDEN;
 extern NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *rawinput,
                                        UINT flags ) DECLSPEC_HIDDEN;
 extern LRESULT send_internal_message_timeout( DWORD dest_pid, DWORD dest_tid, UINT msg, WPARAM wparam,
@@ -307,7 +309,7 @@ extern LRESULT send_internal_message_timeout( DWORD dest_pid, DWORD dest_tid, UI
                                               PDWORD_PTR res_ptr ) DECLSPEC_HIDDEN;
 extern LRESULT send_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam ) DECLSPEC_HIDDEN;
 extern LRESULT send_message_timeout( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
-                                     UINT flags, UINT timeout, PDWORD_PTR res_ptr, BOOL ansi );
+                                     UINT flags, UINT timeout, BOOL ansi );
 
 /* rawinput.c */
 extern BOOL process_rawinput_message( MSG *msg, UINT hw_id, const struct hardware_msg_data *msg_data ) DECLSPEC_HIDDEN;
@@ -324,7 +326,6 @@ extern void track_scroll_bar( HWND hwnd, int scrollbar, POINT pt ) DECLSPEC_HIDD
 
 /* sysparams.c */
 extern BOOL enable_thunk_lock DECLSPEC_HIDDEN;
-extern DWORD process_layout DECLSPEC_HIDDEN;
 extern HBRUSH get_55aa_brush(void) DECLSPEC_HIDDEN;
 extern DWORD get_dialog_base_units(void) DECLSPEC_HIDDEN;
 extern LONG get_char_dimensions( HDC hdc, TEXTMETRICW *metric, LONG *height ) DECLSPEC_HIDDEN;
@@ -333,6 +334,7 @@ extern UINT get_monitor_dpi( HMONITOR monitor ) DECLSPEC_HIDDEN;
 extern BOOL get_monitor_info( HMONITOR handle, MONITORINFO *info ) DECLSPEC_HIDDEN;
 extern UINT get_win_monitor_dpi( HWND hwnd ) DECLSPEC_HIDDEN;
 extern RECT get_primary_monitor_rect( UINT dpi ) DECLSPEC_HIDDEN;
+extern DWORD get_process_layout(void) DECLSPEC_HIDDEN;
 extern COLORREF get_sys_color( int index ) DECLSPEC_HIDDEN;
 extern HBRUSH get_sys_color_brush( unsigned int index ) DECLSPEC_HIDDEN;
 extern HPEN get_sys_color_pen( unsigned int index ) DECLSPEC_HIDDEN;
@@ -409,7 +411,7 @@ static inline void release_win_ptr( struct tagWND *ptr )
 }
 
 extern void wrappers_init( unixlib_handle_t handle ) DECLSPEC_HIDDEN;
-extern NTSTATUS gdi_init(void) DECLSPEC_HIDDEN;
+extern void gdi_init(void) DECLSPEC_HIDDEN;
 extern NTSTATUS callbacks_init( void *args ) DECLSPEC_HIDDEN;
 extern void winstation_init(void) DECLSPEC_HIDDEN;
 extern void sysparams_init(void) DECLSPEC_HIDDEN;
@@ -431,16 +433,11 @@ extern void reg_delete_value( HKEY hkey, const WCHAR *name ) DECLSPEC_HIDDEN;
 
 extern HKEY hkcu_key DECLSPEC_HIDDEN;
 
-static inline struct user_thread_info *get_user_thread_info(void)
-{
-    return (struct user_thread_info *)NtCurrentTeb()->Win32ClientInfo;
-}
-
 extern const struct user_driver_funcs *user_driver DECLSPEC_HIDDEN;
 
 static inline BOOL set_ntstatus( NTSTATUS status )
 {
-    if (status) SetLastError( RtlNtStatusToDosError( status ));
+    if (status) RtlSetLastWin32Error( RtlNtStatusToDosError( status ));
     return !status;
 }
 
@@ -491,6 +488,15 @@ static inline UINT asciiz_to_unicode( WCHAR *dst, const char *src )
 static inline BOOL is_win9x(void)
 {
     return NtCurrentTeb()->Peb->OSPlatformId == VER_PLATFORM_WIN32s;
+}
+
+static inline ULONG_PTR zero_bits(void)
+{
+#ifdef _WIN64
+    return !NtCurrentTeb()->WowTebOffset ? 0 : 0x7fffffff;
+#else
+    return 0;
+#endif
 }
 
 static inline const char *debugstr_us( const UNICODE_STRING *us )

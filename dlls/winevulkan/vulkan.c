@@ -23,7 +23,6 @@
 
 #include "config.h"
 #include <time.h>
-#include <stdlib.h>
 
 #include "vulkan_private.h"
 #include "wine/vulkan_driver.h"
@@ -62,11 +61,11 @@ static uint32_t wine_vk_count_struct_(void *s, VkStructureType t)
 
 static const struct vulkan_funcs *vk_funcs;
 
-#define WINE_VK_ADD_DISPATCHABLE_MAPPING(instance, object, native_handle) \
-    wine_vk_add_handle_mapping((instance), (uint64_t) (uintptr_t) (object), (uint64_t) (uintptr_t) (native_handle), &(object)->mapping)
-#define WINE_VK_ADD_NON_DISPATCHABLE_MAPPING(instance, object, native_handle) \
-    wine_vk_add_handle_mapping((instance), (uint64_t) (uintptr_t) (object), (uint64_t) (native_handle), &(object)->mapping)
-static void  wine_vk_add_handle_mapping(struct VkInstance_T *instance, uint64_t wrapped_handle,
+#define WINE_VK_ADD_DISPATCHABLE_MAPPING(instance, client_handle, native_handle, object) \
+    wine_vk_add_handle_mapping((instance), (uintptr_t)(client_handle), (uintptr_t)(native_handle), &(object)->mapping)
+#define WINE_VK_ADD_NON_DISPATCHABLE_MAPPING(instance, client_handle, native_handle, object) \
+    wine_vk_add_handle_mapping((instance), (uintptr_t)(client_handle), (native_handle), &(object)->mapping)
+static void  wine_vk_add_handle_mapping(struct wine_instance *instance, uint64_t wrapped_handle,
         uint64_t native_handle, struct wine_vk_mapping *mapping)
 {
     if (instance->enable_wrapper_list)
@@ -81,7 +80,7 @@ static void  wine_vk_add_handle_mapping(struct VkInstance_T *instance, uint64_t 
 
 #define WINE_VK_REMOVE_HANDLE_MAPPING(instance, object) \
     wine_vk_remove_handle_mapping((instance), &(object)->mapping)
-static void wine_vk_remove_handle_mapping(struct VkInstance_T *instance, struct wine_vk_mapping *mapping)
+static void wine_vk_remove_handle_mapping(struct wine_instance *instance, struct wine_vk_mapping *mapping)
 {
     if (instance->enable_wrapper_list)
     {
@@ -91,7 +90,7 @@ static void wine_vk_remove_handle_mapping(struct VkInstance_T *instance, struct 
     }
 }
 
-static uint64_t wine_vk_get_wrapper(struct VkInstance_T *instance, uint64_t native_handle)
+static uint64_t wine_vk_get_wrapper(struct wine_instance *instance, uint64_t native_handle)
 {
     struct wine_vk_mapping *mapping;
     uint64_t result = 0;
@@ -212,7 +211,7 @@ static VkBool32 debug_report_callback_conversion(VkDebugReportFlagsEXT flags, Vk
                                &ret_ptr, &ret_len );
 }
 
-static void wine_vk_physical_device_free(struct VkPhysicalDevice_T *phys_dev)
+static void wine_vk_physical_device_free(struct wine_phys_dev *phys_dev)
 {
     if (!phys_dev)
         return;
@@ -222,10 +221,10 @@ static void wine_vk_physical_device_free(struct VkPhysicalDevice_T *phys_dev)
     free(phys_dev);
 }
 
-static struct VkPhysicalDevice_T *wine_vk_physical_device_alloc(struct VkInstance_T *instance,
-        VkPhysicalDevice phys_dev)
+static struct wine_phys_dev *wine_vk_physical_device_alloc(struct wine_instance *instance,
+        VkPhysicalDevice phys_dev, VkPhysicalDevice handle)
 {
-    struct VkPhysicalDevice_T *object;
+    struct wine_phys_dev *object;
     uint32_t num_host_properties, num_properties = 0;
     VkExtensionProperties *host_properties = NULL;
     VkResult res;
@@ -234,11 +233,12 @@ static struct VkPhysicalDevice_T *wine_vk_physical_device_alloc(struct VkInstanc
     if (!(object = calloc(1, sizeof(*object))))
         return NULL;
 
-    object->base.loader_magic = VULKAN_ICD_MAGIC_VALUE;
     object->instance = instance;
+    object->handle = handle;
     object->phys_dev = phys_dev;
 
-    WINE_VK_ADD_DISPATCHABLE_MAPPING(instance, object, phys_dev);
+    handle->base.unix_handle = (uintptr_t)object;
+    WINE_VK_ADD_DISPATCHABLE_MAPPING(instance, handle, phys_dev, object);
 
     res = instance->funcs.p_vkEnumerateDeviceExtensionProperties(phys_dev,
             NULL, &num_host_properties, NULL);
@@ -306,36 +306,38 @@ err:
     return NULL;
 }
 
-static void wine_vk_free_command_buffers(struct VkDevice_T *device,
+static void wine_vk_free_command_buffers(struct wine_device *device,
         struct wine_cmd_pool *pool, uint32_t count, const VkCommandBuffer *buffers)
 {
     unsigned int i;
 
     for (i = 0; i < count; i++)
     {
-        if (!buffers[i])
+        struct wine_cmd_buffer *buffer = wine_cmd_buffer_from_handle(buffers[i]);
+
+        if (!buffer)
             continue;
 
-        device->funcs.p_vkFreeCommandBuffers(device->device, pool->command_pool, 1, &buffers[i]->command_buffer);
-        list_remove(&buffers[i]->pool_link);
-        WINE_VK_REMOVE_HANDLE_MAPPING(device->phys_dev->instance, buffers[i]);
-        free(buffers[i]);
+        device->funcs.p_vkFreeCommandBuffers(device->device, pool->command_pool, 1, &buffer->command_buffer);
+        WINE_VK_REMOVE_HANDLE_MAPPING(device->phys_dev->instance, buffer);
+        buffer->handle->base.unix_handle = 0;
+        free(buffer);
     }
 }
 
-static void wine_vk_device_get_queues(struct VkDevice_T *device,
+static void wine_vk_device_get_queues(struct wine_device *device,
         uint32_t family_index, uint32_t queue_count, VkDeviceQueueCreateFlags flags,
-        struct VkQueue_T* queues)
+        struct wine_queue *queues, VkQueue *handles)
 {
     VkDeviceQueueInfo2 queue_info;
     unsigned int i;
 
     for (i = 0; i < queue_count; i++)
     {
-        struct VkQueue_T *queue = &queues[i];
+        struct wine_queue *queue = &queues[i];
 
-        queue->base.loader_magic = VULKAN_ICD_MAGIC_VALUE;
         queue->device = device;
+        queue->handle = (*handles)++;
         queue->family_index = family_index;
         queue->queue_index = i;
         queue->flags = flags;
@@ -359,7 +361,8 @@ static void wine_vk_device_get_queues(struct VkDevice_T *device,
             device->funcs.p_vkGetDeviceQueue(device->device, family_index, i, &queue->queue);
         }
 
-        WINE_VK_ADD_DISPATCHABLE_MAPPING(device->phys_dev->instance, queue, queue->queue);
+        queue->handle->base.unix_handle = (uintptr_t)queue;
+        WINE_VK_ADD_DISPATCHABLE_MAPPING(device->phys_dev->instance, queue->handle, queue->queue, queue);
     }
 }
 
@@ -405,9 +408,9 @@ static VkResult wine_vk_device_convert_create_info(const VkDeviceCreateInfo *src
 /* Helper function used for freeing a device structure. This function supports full
  * and partial object cleanups and can thus be used for vkCreateDevice failures.
  */
-static void wine_vk_device_free(struct VkDevice_T *device)
+static void wine_vk_device_free(struct wine_device *device)
 {
-    struct VkQueue_T *queue;
+    struct wine_queue *queue;
 
     if (!device)
         return;
@@ -444,7 +447,7 @@ NTSTATUS init_vulkan(void *args)
     }
 
 
-    *(const struct unix_funcs **)args = &loader_funcs;
+    *(void **)args = vk_direct_unix_call;
     return STATUS_SUCCESS;
 }
 
@@ -453,7 +456,7 @@ NTSTATUS init_vulkan(void *args)
  * driver is responsible for handling e.g. surface extensions.
  */
 static VkResult wine_vk_instance_convert_create_info(const VkInstanceCreateInfo *src,
-        VkInstanceCreateInfo *dst, struct VkInstance_T *object)
+        VkInstanceCreateInfo *dst, struct wine_instance *object)
 {
     VkDebugUtilsMessengerCreateInfoEXT *debug_utils_messenger;
     VkDebugReportCallbackCreateInfoEXT *debug_report_callback;
@@ -534,7 +537,7 @@ static VkResult wine_vk_instance_convert_create_info(const VkInstanceCreateInfo 
 }
 
 /* Helper function which stores wrapped physical devices in the instance object. */
-static VkResult wine_vk_instance_load_physical_devices(struct VkInstance_T *instance)
+static VkResult wine_vk_instance_load_physical_devices(struct wine_instance *instance)
 {
     VkPhysicalDevice *tmp_phys_devs;
     uint32_t phys_dev_count;
@@ -549,6 +552,13 @@ static VkResult wine_vk_instance_load_physical_devices(struct VkInstance_T *inst
     }
     if (!phys_dev_count)
         return res;
+
+    if (phys_dev_count > instance->handle->phys_dev_count)
+    {
+        instance->handle->phys_dev_count = phys_dev_count;
+        return VK_ERROR_OUT_OF_POOL_MEMORY;
+    }
+    instance->handle->phys_dev_count = phys_dev_count;
 
     if (!(tmp_phys_devs = calloc(phys_dev_count, sizeof(*tmp_phys_devs))))
         return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -570,7 +580,8 @@ static VkResult wine_vk_instance_load_physical_devices(struct VkInstance_T *inst
     /* Wrap each native physical device handle into a dispatchable object for the ICD loader. */
     for (i = 0; i < phys_dev_count; i++)
     {
-        struct VkPhysicalDevice_T *phys_dev = wine_vk_physical_device_alloc(instance, tmp_phys_devs[i]);
+        struct wine_phys_dev *phys_dev = wine_vk_physical_device_alloc(instance, tmp_phys_devs[i],
+                                                                       &instance->handle->phys_devs[i]);
         if (!phys_dev)
         {
             ERR("Unable to allocate memory for physical device!\n");
@@ -587,14 +598,14 @@ static VkResult wine_vk_instance_load_physical_devices(struct VkInstance_T *inst
     return VK_SUCCESS;
 }
 
-static struct VkPhysicalDevice_T *wine_vk_instance_wrap_physical_device(struct VkInstance_T *instance,
+static struct wine_phys_dev *wine_vk_instance_wrap_physical_device(struct wine_instance *instance,
         VkPhysicalDevice physical_device)
 {
     unsigned int i;
 
     for (i = 0; i < instance->phys_dev_count; ++i)
     {
-        struct VkPhysicalDevice_T *current = instance->phys_devs[i];
+        struct wine_phys_dev *current = instance->phys_devs[i];
         if (current->phys_dev == physical_device)
             return current;
     }
@@ -606,7 +617,7 @@ static struct VkPhysicalDevice_T *wine_vk_instance_wrap_physical_device(struct V
 /* Helper function used for freeing an instance structure. This function supports full
  * and partial object cleanups and can thus be used for vkCreateInstance failures.
  */
-static void wine_vk_instance_free(struct VkInstance_T *instance)
+static void wine_vk_instance_free(struct wine_instance *instance)
 {
     if (!instance)
         return;
@@ -637,9 +648,10 @@ static void wine_vk_instance_free(struct VkInstance_T *instance)
 NTSTATUS wine_vkAllocateCommandBuffers(void *args)
 {
     struct vkAllocateCommandBuffers_params *params = args;
-    VkDevice device = params->device;
+    struct wine_device *device = wine_device_from_handle(params->device);
     const VkCommandBufferAllocateInfo *allocate_info = params->pAllocateInfo;
     VkCommandBuffer *buffers = params->pCommandBuffers;
+    struct wine_cmd_buffer *buffer;
     struct wine_cmd_pool *pool;
     VkResult res = VK_SUCCESS;
     unsigned int i;
@@ -647,8 +659,6 @@ NTSTATUS wine_vkAllocateCommandBuffers(void *args)
     TRACE("%p, %p, %p\n", device, allocate_info, buffers);
 
     pool = wine_cmd_pool_from_handle(allocate_info->commandPool);
-
-    memset(buffers, 0, allocate_info->commandBufferCount * sizeof(*buffers));
 
     for (i = 0; i < allocate_info->commandBufferCount; i++)
     {
@@ -664,31 +674,29 @@ NTSTATUS wine_vkAllocateCommandBuffers(void *args)
         TRACE("Allocating command buffer %u from pool 0x%s.\n",
                 i, wine_dbgstr_longlong(allocate_info_host.commandPool));
 
-        if (!(buffers[i] = calloc(1, sizeof(**buffers))))
+        if (!(buffer = calloc(1, sizeof(*buffer))))
         {
             res = VK_ERROR_OUT_OF_HOST_MEMORY;
             break;
         }
 
-        buffers[i]->base.loader_magic = VULKAN_ICD_MAGIC_VALUE;
-        buffers[i]->device = device;
-        list_add_tail(&pool->command_buffers, &buffers[i]->pool_link);
+        buffer->handle = buffers[i];
+        buffer->device = device;
         res = device->funcs.p_vkAllocateCommandBuffers(device->device,
-                &allocate_info_host, &buffers[i]->command_buffer);
-        WINE_VK_ADD_DISPATCHABLE_MAPPING(device->phys_dev->instance, buffers[i], buffers[i]->command_buffer);
+                &allocate_info_host, &buffer->command_buffer);
+        buffer->handle->base.unix_handle = (uintptr_t)buffer;
+        WINE_VK_ADD_DISPATCHABLE_MAPPING(device->phys_dev->instance, buffer->handle,
+                                         buffer->command_buffer, buffer);
         if (res != VK_SUCCESS)
         {
             ERR("Failed to allocate command buffer, res=%d.\n", res);
-            buffers[i]->command_buffer = VK_NULL_HANDLE;
+            buffer->command_buffer = VK_NULL_HANDLE;
             break;
         }
     }
 
     if (res != VK_SUCCESS)
-    {
         wine_vk_free_command_buffers(device, pool, i + 1, buffers);
-        memset(buffers, 0, allocate_info->commandBufferCount * sizeof(*buffers));
-    }
 
     return res;
 }
@@ -696,17 +704,19 @@ NTSTATUS wine_vkAllocateCommandBuffers(void *args)
 NTSTATUS wine_vkCreateDevice(void *args)
 {
     struct vkCreateDevice_params *params = args;
-    VkPhysicalDevice phys_dev = params->physicalDevice;
+    struct wine_phys_dev *phys_dev = wine_phys_dev_from_handle(params->physicalDevice);
     const VkDeviceCreateInfo *create_info = params->pCreateInfo;
     const VkAllocationCallbacks *allocator = params->pAllocator;
-    VkDevice *device = params->pDevice;
+    VkDevice *ret_device = params->pDevice;
+    VkDevice device_handle = params->client_ptr;
     VkDeviceCreateInfo create_info_host;
-    struct VkQueue_T *next_queue;
-    struct VkDevice_T *object;
+    struct VkQueue_T *queue_handles;
+    struct wine_queue *next_queue;
+    struct wine_device *object;
     unsigned int i;
     VkResult res;
 
-    TRACE("%p, %p, %p, %p\n", phys_dev, create_info, allocator, device);
+    TRACE("%p, %p, %p, %p\n", phys_dev, create_info, allocator, ret_device);
 
     if (allocator)
         FIXME("Support for allocation callbacks not implemented yet\n");
@@ -725,7 +735,6 @@ NTSTATUS wine_vkCreateDevice(void *args)
     if (!(object = calloc(1, sizeof(*object))))
         return VK_ERROR_OUT_OF_HOST_MEMORY;
 
-    object->base.base.loader_magic = VULKAN_ICD_MAGIC_VALUE;
     object->phys_dev = phys_dev;
 
     res = wine_vk_device_convert_create_info(create_info, &create_info_host);
@@ -735,7 +744,7 @@ NTSTATUS wine_vkCreateDevice(void *args)
     res = phys_dev->instance->funcs.p_vkCreateDevice(phys_dev->phys_dev,
             &create_info_host, NULL /* allocator */, &object->device);
     wine_vk_device_free_create_info(&create_info_host);
-    WINE_VK_ADD_DISPATCHABLE_MAPPING(phys_dev->instance, object, object->device);
+    WINE_VK_ADD_DISPATCHABLE_MAPPING(phys_dev->instance, device_handle, object->device, object);
     if (res != VK_SUCCESS)
     {
         WARN("Failed to create device, res=%d.\n", res);
@@ -768,6 +777,7 @@ NTSTATUS wine_vkCreateDevice(void *args)
     }
 
     next_queue = object->queues;
+    queue_handles = device_handle->queues;
     for (i = 0; i < create_info_host.queueCreateInfoCount; i++)
     {
         uint32_t flags = create_info_host.pQueueCreateInfos[i].flags;
@@ -776,13 +786,13 @@ NTSTATUS wine_vkCreateDevice(void *args)
 
         TRACE("Queue family index %u, queue count %u.\n", family_index, queue_count);
 
-        wine_vk_device_get_queues(object, family_index, queue_count, flags, next_queue);
+        wine_vk_device_get_queues(object, family_index, queue_count, flags, next_queue, &queue_handles);
         next_queue += queue_count;
     }
 
-    object->base.quirks = phys_dev->instance->quirks;
-
-    *device = object;
+    device_handle->quirks = phys_dev->instance->quirks;
+    device_handle->base.unix_handle = (uintptr_t)object;
+    *ret_device = device_handle;
     TRACE("Created device %p (native device %p).\n", object, object->device);
     return VK_SUCCESS;
 
@@ -797,9 +807,10 @@ NTSTATUS wine_vkCreateInstance(void *args)
     const VkInstanceCreateInfo *create_info = params->pCreateInfo;
     const VkAllocationCallbacks *allocator = params->pAllocator;
     VkInstance *instance = params->pInstance;
+    VkInstance client_instance = params->client_ptr;
     VkInstanceCreateInfo create_info_host;
     const VkApplicationInfo *app_info;
-    struct VkInstance_T *object;
+    struct wine_instance *object;
     VkResult res;
 
     if (allocator)
@@ -810,7 +821,6 @@ NTSTATUS wine_vkCreateInstance(void *args)
         ERR("Failed to allocate memory for instance\n");
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
-    object->base.loader_magic = VULKAN_ICD_MAGIC_VALUE;
     list_init(&object->wrappers);
     pthread_rwlock_init(&object->wrapper_lock, NULL);
 
@@ -830,7 +840,8 @@ NTSTATUS wine_vkCreateInstance(void *args)
         return res;
     }
 
-    WINE_VK_ADD_DISPATCHABLE_MAPPING(object, object, object->instance);
+    object->handle = client_instance;
+    WINE_VK_ADD_DISPATCHABLE_MAPPING(object, object->handle, object->instance, object);
 
     /* Load all instance functions we are aware of. Note the loader takes care
      * of any filtering for extensions which were not requested, but which the
@@ -868,7 +879,8 @@ NTSTATUS wine_vkCreateInstance(void *args)
 
     object->quirks |= WINEVULKAN_QUIRK_ADJUST_MAX_IMAGE_COUNT;
 
-    *instance = object;
+    client_instance->base.unix_handle = (uintptr_t)object;
+    *instance = client_instance;
     TRACE("Created instance %p (native instance %p).\n", object, object->instance);
     return VK_SUCCESS;
 }
@@ -876,7 +888,7 @@ NTSTATUS wine_vkCreateInstance(void *args)
 NTSTATUS wine_vkDestroyDevice(void *args)
 {
     struct vkDestroyDevice_params *params = args;
-    VkDevice device = params->device;
+    struct wine_device *device = wine_device_from_handle(params->device);
     const VkAllocationCallbacks *allocator = params->pAllocator;
 
     TRACE("%p %p\n", device, allocator);
@@ -891,7 +903,7 @@ NTSTATUS wine_vkDestroyDevice(void *args)
 NTSTATUS wine_vkDestroyInstance(void *args)
 {
     struct vkDestroyInstance_params *params = args;
-    VkInstance instance = params->instance;
+    struct wine_instance *instance = wine_instance_from_handle(params->instance);
     const VkAllocationCallbacks *allocator = params->pAllocator;
 
     TRACE("%p, %p\n", instance, allocator);
@@ -906,7 +918,7 @@ NTSTATUS wine_vkDestroyInstance(void *args)
 NTSTATUS wine_vkEnumerateDeviceExtensionProperties(void *args)
 {
     struct vkEnumerateDeviceExtensionProperties_params *params = args;
-    VkPhysicalDevice phys_dev = params->physicalDevice;
+    struct wine_phys_dev *phys_dev = wine_phys_dev_from_handle(params->physicalDevice);
     const char *layer_name = params->pLayerName;
     uint32_t *count = params->pPropertyCount;
     VkExtensionProperties *properties = params->pProperties;
@@ -1032,7 +1044,7 @@ NTSTATUS wine_vkEnumerateInstanceVersion(void *args)
 NTSTATUS wine_vkEnumeratePhysicalDevices(void *args)
 {
     struct vkEnumeratePhysicalDevices_params *params = args;
-    VkInstance instance = params->instance;
+    struct wine_instance *instance = wine_instance_from_handle(params->instance);
     uint32_t *count = params->pPhysicalDeviceCount;
     VkPhysicalDevice *devices = params->pPhysicalDevices;
     unsigned int i;
@@ -1048,7 +1060,7 @@ NTSTATUS wine_vkEnumeratePhysicalDevices(void *args)
     *count = min(*count, instance->phys_dev_count);
     for (i = 0; i < *count; i++)
     {
-        devices[i] = instance->phys_devs[i];
+        devices[i] = instance->phys_devs[i]->handle;
     }
 
     TRACE("Returning %u devices.\n", *count);
@@ -1058,7 +1070,7 @@ NTSTATUS wine_vkEnumeratePhysicalDevices(void *args)
 NTSTATUS wine_vkFreeCommandBuffers(void *args)
 {
     struct vkFreeCommandBuffers_params *params = args;
-    VkDevice device = params->device;
+    struct wine_device *device = wine_device_from_handle(params->device);
     struct wine_cmd_pool *pool = wine_cmd_pool_from_handle(params->commandPool);
     uint32_t count = params->commandBufferCount;
     const VkCommandBuffer *buffers = params->pCommandBuffers;
@@ -1069,9 +1081,10 @@ NTSTATUS wine_vkFreeCommandBuffers(void *args)
     return STATUS_SUCCESS;
 }
 
-static VkQueue wine_vk_device_find_queue(VkDevice device, const VkDeviceQueueInfo2 *info)
+static VkQueue wine_vk_device_find_queue(VkDevice handle, const VkDeviceQueueInfo2 *info)
 {
-    struct VkQueue_T* queue;
+    struct wine_device *device = wine_device_from_handle(handle);
+    struct wine_queue *queue;
     uint32_t i;
 
     for (i = 0; i < device->queue_count; i++)
@@ -1081,7 +1094,7 @@ static VkQueue wine_vk_device_find_queue(VkDevice device, const VkDeviceQueueInf
                 && queue->queue_index == info->queueIndex
                 && queue->flags == info->flags)
         {
-            return queue;
+            return queue->handle;
         }
     }
 
@@ -1129,10 +1142,11 @@ NTSTATUS wine_vkGetDeviceQueue2(void *args)
 NTSTATUS wine_vkCreateCommandPool(void *args)
 {
     struct vkCreateCommandPool_params *params = args;
-    VkDevice device = params->device;
+    struct wine_device *device = wine_device_from_handle(params->device);
     const VkCommandPoolCreateInfo *info = params->pCreateInfo;
     const VkAllocationCallbacks *allocator = params->pAllocator;
     VkCommandPool *command_pool = params->pCommandPool;
+    struct vk_command_pool *handle = params->client_ptr;
     struct wine_cmd_pool *object;
     VkResult res;
 
@@ -1144,14 +1158,15 @@ NTSTATUS wine_vkCreateCommandPool(void *args)
     if (!(object = calloc(1, sizeof(*object))))
         return VK_ERROR_OUT_OF_HOST_MEMORY;
 
-    list_init(&object->command_buffers);
-
     res = device->funcs.p_vkCreateCommandPool(device->device, info, NULL, &object->command_pool);
 
     if (res == VK_SUCCESS)
     {
-        WINE_VK_ADD_NON_DISPATCHABLE_MAPPING(device->phys_dev->instance, object, object->command_pool);
-        *command_pool = wine_cmd_pool_to_handle(object);
+        object->handle = (uintptr_t)handle;
+        handle->unix_handle = (uintptr_t)object;
+        WINE_VK_ADD_NON_DISPATCHABLE_MAPPING(device->phys_dev->instance, object->handle,
+                                             object->command_pool, object);
+        *command_pool = object->handle;
     }
     else
     {
@@ -1164,29 +1179,15 @@ NTSTATUS wine_vkCreateCommandPool(void *args)
 NTSTATUS wine_vkDestroyCommandPool(void *args)
 {
     struct vkDestroyCommandPool_params *params = args;
-    VkDevice device = params->device;
+    struct wine_device *device = wine_device_from_handle(params->device);
     VkCommandPool handle = params->commandPool;
     const VkAllocationCallbacks *allocator = params->pAllocator;
     struct wine_cmd_pool *pool = wine_cmd_pool_from_handle(handle);
-    struct VkCommandBuffer_T *buffer, *cursor;
 
     TRACE("%p, 0x%s, %p\n", device, wine_dbgstr_longlong(handle), allocator);
 
-    if (!handle)
-        return STATUS_SUCCESS;
-
     if (allocator)
         FIXME("Support for allocation callbacks not implemented yet\n");
-
-    /* The Vulkan spec says:
-     *
-     * "When a pool is destroyed, all command buffers allocated from the pool are freed."
-     */
-    LIST_FOR_EACH_ENTRY_SAFE(buffer, cursor, &pool->command_buffers, struct VkCommandBuffer_T, pool_link)
-    {
-        WINE_VK_REMOVE_HANDLE_MAPPING(device->phys_dev->instance, buffer);
-        free(buffer);
-    }
 
     WINE_VK_REMOVE_HANDLE_MAPPING(device->phys_dev->instance, pool);
 
@@ -1195,7 +1196,7 @@ NTSTATUS wine_vkDestroyCommandPool(void *args)
     return STATUS_SUCCESS;
 }
 
-static VkResult wine_vk_enumerate_physical_device_groups(struct VkInstance_T *instance,
+static VkResult wine_vk_enumerate_physical_device_groups(struct wine_instance *instance,
         VkResult (*p_vkEnumeratePhysicalDeviceGroups)(VkInstance, uint32_t *, VkPhysicalDeviceGroupProperties *),
         uint32_t *count, VkPhysicalDeviceGroupProperties *properties)
 {
@@ -1212,8 +1213,10 @@ static VkResult wine_vk_enumerate_physical_device_groups(struct VkInstance_T *in
         for (j = 0; j < current->physicalDeviceCount; ++j)
         {
             VkPhysicalDevice dev = current->physicalDevices[j];
-            if (!(current->physicalDevices[j] = wine_vk_instance_wrap_physical_device(instance, dev)))
+            struct wine_phys_dev *phys_dev = wine_vk_instance_wrap_physical_device(instance, dev);
+            if (!phys_dev)
                 return VK_ERROR_INITIALIZATION_FAILED;
+            current->physicalDevices[j] = phys_dev->handle;
         }
     }
 
@@ -1223,7 +1226,7 @@ static VkResult wine_vk_enumerate_physical_device_groups(struct VkInstance_T *in
 NTSTATUS wine_vkEnumeratePhysicalDeviceGroups(void *args)
 {
     struct vkEnumeratePhysicalDeviceGroups_params *params = args;
-    VkInstance instance = params->instance;
+    struct wine_instance *instance = wine_instance_from_handle(params->instance);
     uint32_t *count = params->pPhysicalDeviceGroupCount;
     VkPhysicalDeviceGroupProperties *properties = params->pPhysicalDeviceGroupProperties;
 
@@ -1235,7 +1238,7 @@ NTSTATUS wine_vkEnumeratePhysicalDeviceGroups(void *args)
 NTSTATUS wine_vkEnumeratePhysicalDeviceGroupsKHR(void *args)
 {
     struct vkEnumeratePhysicalDeviceGroupsKHR_params *params = args;
-    VkInstance instance = params->instance;
+    struct wine_instance *instance = wine_instance_from_handle(params->instance);
     uint32_t *count = params->pPhysicalDeviceGroupCount;
     VkPhysicalDeviceGroupProperties *properties = params->pPhysicalDeviceGroupProperties;
 
@@ -1393,7 +1396,7 @@ static inline uint64_t convert_timestamp(VkTimeDomainEXT host_domain, VkTimeDoma
 NTSTATUS wine_vkGetCalibratedTimestampsEXT(void *args)
 {
     struct vkGetCalibratedTimestampsEXT_params *params = args;
-    VkDevice device = params->device;
+    struct wine_device *device = wine_device_from_handle(params->device);
     uint32_t timestamp_count = params->timestampCount;
     const VkCalibratedTimestampInfoEXT *timestamp_infos = params->pTimestampInfos;
     uint64_t *timestamps = params->pTimestamps;
@@ -1428,7 +1431,7 @@ NTSTATUS wine_vkGetCalibratedTimestampsEXT(void *args)
 NTSTATUS wine_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(void *args)
 {
     struct vkGetPhysicalDeviceCalibrateableTimeDomainsEXT_params *params = args;
-    VkPhysicalDevice phys_dev = params->physicalDevice;
+    struct wine_phys_dev *phys_dev = wine_phys_dev_from_handle(params->physicalDevice);
     uint32_t *time_domain_count = params->pTimeDomainCount;
     VkTimeDomainEXT *time_domains = params->pTimeDomains;
     BOOL supports_device = FALSE, supports_monotonic = FALSE, supports_monotonic_raw = FALSE;
@@ -1531,7 +1534,7 @@ NTSTATUS wine_vkGetPhysicalDeviceExternalSemaphorePropertiesKHR(void *args)
 NTSTATUS wine_vkCreateWin32SurfaceKHR(void *args)
 {
     struct vkCreateWin32SurfaceKHR_params *params = args;
-    VkInstance instance = params->instance;
+    struct wine_instance *instance = wine_instance_from_handle(params->instance);
     const VkWin32SurfaceCreateInfoKHR *createInfo = params->pCreateInfo;
     const VkAllocationCallbacks *allocator = params->pAllocator;
     VkSurfaceKHR *surface = params->pSurface;
@@ -1558,7 +1561,7 @@ NTSTATUS wine_vkCreateWin32SurfaceKHR(void *args)
 
     object->surface = vk_funcs->p_wine_get_native_surface(object->driver_surface);
 
-    WINE_VK_ADD_NON_DISPATCHABLE_MAPPING(instance, object, object->surface);
+    WINE_VK_ADD_NON_DISPATCHABLE_MAPPING(instance, object, object->surface, object);
 
     *surface = wine_surface_to_handle(object);
 
@@ -1568,7 +1571,7 @@ NTSTATUS wine_vkCreateWin32SurfaceKHR(void *args)
 NTSTATUS wine_vkDestroySurfaceKHR(void *args)
 {
     struct vkDestroySurfaceKHR_params *params = args;
-    VkInstance instance = params->instance;
+    struct wine_instance *instance = wine_instance_from_handle(params->instance);
     VkSurfaceKHR surface = params->surface;
     const VkAllocationCallbacks *allocator = params->pAllocator;
     struct wine_surface *object = wine_surface_from_handle(surface);
@@ -1585,7 +1588,7 @@ NTSTATUS wine_vkDestroySurfaceKHR(void *args)
     return STATUS_SUCCESS;
 }
 
-static inline void adjust_max_image_count(VkPhysicalDevice phys_dev, VkSurfaceCapabilitiesKHR* capabilities)
+static inline void adjust_max_image_count(struct wine_phys_dev *phys_dev, VkSurfaceCapabilitiesKHR* capabilities)
 {
     /* Many Windows games, for example Strange Brigade, No Man's Sky, Path of Exile
      * and World War Z, do not expect that maxImageCount can be set to 0.
@@ -1603,14 +1606,14 @@ static inline void adjust_max_image_count(VkPhysicalDevice phys_dev, VkSurfaceCa
 NTSTATUS wine_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(void *args)
 {
     struct vkGetPhysicalDeviceSurfaceCapabilitiesKHR_params *params = args;
-    VkPhysicalDevice phys_dev = params->physicalDevice;
+    struct wine_phys_dev *phys_dev = wine_phys_dev_from_handle(params->physicalDevice);
     VkSurfaceKHR surface = params->surface;
     VkSurfaceCapabilitiesKHR *capabilities = params->pSurfaceCapabilities;
     VkResult res;
 
     TRACE("%p, 0x%s, %p\n", phys_dev, wine_dbgstr_longlong(surface), capabilities);
 
-    res = thunk_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys_dev, surface, capabilities);
+    res = thunk_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys_dev->handle, surface, capabilities);
 
     if (res == VK_SUCCESS)
         adjust_max_image_count(phys_dev, capabilities);
@@ -1621,14 +1624,14 @@ NTSTATUS wine_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(void *args)
 NTSTATUS wine_vkGetPhysicalDeviceSurfaceCapabilities2KHR(void *args)
 {
     struct vkGetPhysicalDeviceSurfaceCapabilities2KHR_params *params = args;
-    VkPhysicalDevice phys_dev = params->physicalDevice;
+    struct wine_phys_dev *phys_dev = wine_phys_dev_from_handle(params->physicalDevice);
     const VkPhysicalDeviceSurfaceInfo2KHR *surface_info = params->pSurfaceInfo;
     VkSurfaceCapabilities2KHR *capabilities = params->pSurfaceCapabilities;
     VkResult res;
 
     TRACE("%p, %p, %p\n", phys_dev, surface_info, capabilities);
 
-    res = thunk_vkGetPhysicalDeviceSurfaceCapabilities2KHR(phys_dev, surface_info, capabilities);
+    res = thunk_vkGetPhysicalDeviceSurfaceCapabilities2KHR(phys_dev->handle, surface_info, capabilities);
 
     if (res == VK_SUCCESS)
         adjust_max_image_count(phys_dev, &capabilities->surfaceCapabilities);
@@ -1639,7 +1642,7 @@ NTSTATUS wine_vkGetPhysicalDeviceSurfaceCapabilities2KHR(void *args)
 NTSTATUS wine_vkCreateDebugUtilsMessengerEXT(void *args)
 {
     struct vkCreateDebugUtilsMessengerEXT_params *params = args;
-    VkInstance instance = params->instance;
+    struct wine_instance *instance = wine_instance_from_handle(params->instance);
     const VkDebugUtilsMessengerCreateInfoEXT *create_info = params->pCreateInfo;
     const VkAllocationCallbacks *allocator = params->pAllocator;
     VkDebugUtilsMessengerEXT *messenger = params->pMessenger;
@@ -1672,7 +1675,7 @@ NTSTATUS wine_vkCreateDebugUtilsMessengerEXT(void *args)
         return res;
     }
 
-    WINE_VK_ADD_NON_DISPATCHABLE_MAPPING(instance, object, object->debug_messenger);
+    WINE_VK_ADD_NON_DISPATCHABLE_MAPPING(instance, object, object->debug_messenger, object);
     *messenger = wine_debug_utils_messenger_to_handle(object);
 
     return VK_SUCCESS;
@@ -1681,7 +1684,7 @@ NTSTATUS wine_vkCreateDebugUtilsMessengerEXT(void *args)
 NTSTATUS wine_vkDestroyDebugUtilsMessengerEXT(void *args)
 {
     struct vkDestroyDebugUtilsMessengerEXT_params *params = args;
-    VkInstance instance = params->instance;
+    struct wine_instance *instance = wine_instance_from_handle(params->instance);
     VkDebugUtilsMessengerEXT messenger = params->messenger;
     const VkAllocationCallbacks *allocator = params->pAllocator;
     struct wine_debug_utils_messenger *object;
@@ -1703,7 +1706,7 @@ NTSTATUS wine_vkDestroyDebugUtilsMessengerEXT(void *args)
 NTSTATUS wine_vkCreateDebugReportCallbackEXT(void *args)
 {
     struct vkCreateDebugReportCallbackEXT_params *params = args;
-    VkInstance instance = params->instance;
+    struct wine_instance *instance = wine_instance_from_handle(params->instance);
     const VkDebugReportCallbackCreateInfoEXT *create_info = params->pCreateInfo;
     const VkAllocationCallbacks *allocator = params->pAllocator;
     VkDebugReportCallbackEXT *callback = params->pCallback;
@@ -1736,7 +1739,7 @@ NTSTATUS wine_vkCreateDebugReportCallbackEXT(void *args)
         return res;
     }
 
-    WINE_VK_ADD_NON_DISPATCHABLE_MAPPING(instance, object, object->debug_callback);
+    WINE_VK_ADD_NON_DISPATCHABLE_MAPPING(instance, object, object->debug_callback, object);
     *callback = wine_debug_report_callback_to_handle(object);
 
     return VK_SUCCESS;
@@ -1745,7 +1748,7 @@ NTSTATUS wine_vkCreateDebugReportCallbackEXT(void *args)
 NTSTATUS wine_vkDestroyDebugReportCallbackEXT(void *args)
 {
     struct vkDestroyDebugReportCallbackEXT_params *params = args;
-    VkInstance instance = params->instance;
+    struct wine_instance *instance = wine_instance_from_handle(params->instance);
     VkDebugReportCallbackEXT callback = params->callback;
     const VkAllocationCallbacks *allocator = params->pAllocator;
     struct wine_debug_report_callback *object;
@@ -1872,12 +1875,16 @@ NTSTATUS wine_vkCreateRayTracingPipelinesNV(void *args)
     return res;
 }
 
-BOOL WINAPI wine_vk_is_available_instance_function(VkInstance instance, const char *name)
+NTSTATUS vk_is_available_instance_function(void *arg)
 {
-    return !!vk_funcs->p_vkGetInstanceProcAddr(instance->instance, name);
+    struct is_available_instance_function_params *params = arg;
+    struct wine_instance *instance = wine_instance_from_handle(params->instance);
+    return !!vk_funcs->p_vkGetInstanceProcAddr(instance->instance, params->name);
 }
 
-BOOL WINAPI wine_vk_is_available_device_function(VkDevice device, const char *name)
+NTSTATUS vk_is_available_device_function(void *arg)
 {
-    return !!vk_funcs->p_vkGetDeviceProcAddr(device->device, name);
+    struct is_available_device_function_params *params = arg;
+    struct wine_device *device = wine_device_from_handle(params->device);
+    return !!vk_funcs->p_vkGetDeviceProcAddr(device->device, params->name);
 }

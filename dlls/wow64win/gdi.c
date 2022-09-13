@@ -27,6 +27,35 @@
 #include "ntgdi.h"
 #include "wow64win_private.h"
 
+typedef struct
+{
+    INT   bmType;
+    INT   bmWidth;
+    INT   bmHeight;
+    INT   bmWidthBytes;
+    WORD  bmPlanes;
+    WORD  bmBitsPixel;
+    ULONG bmBits;
+} BITMAP32;
+
+typedef struct
+{
+    DWORD    elpPenStyle;
+    DWORD    elpWidth;
+    UINT     elpBrushStyle;
+    COLORREF elpColor;
+    ULONG    elpHatch;
+    DWORD    elpNumEntries;
+    DWORD    elpStyleEntry[1];
+} EXTLOGPEN32;
+
+
+static DWORD gdi_handle_type( HGDIOBJ obj )
+{
+    unsigned int handle = HandleToUlong( obj );
+    return handle & NTGDI_HANDLE_TYPE_MASK;
+}
+
 NTSTATUS WINAPI wow64_NtGdiAddFontMemResourceEx( UINT *args )
 {
     void *ptr = get_ptr( &args );
@@ -107,7 +136,7 @@ NTSTATUS WINAPI wow64_NtGdiCreateDIBSection( UINT *args )
 
     ret = NtGdiCreateDIBSection( hdc, section, offset, bmi, usage, header_size,
                                  flags, color_space, addr_32to64( &bits, bits32 ));
-    if (ret) put_addr( bits32, bits );
+    put_addr( bits32, bits );
     return HandleToUlong( ret );
 }
 
@@ -210,23 +239,20 @@ NTSTATUS WINAPI wow64_NtGdiDdDDICreateDevice( UINT *args )
         UINT PatchLocationListSize;
     } *desc32 = get_ptr( &args );
 
-    D3DKMT_CREATEDEVICE desc =
-    {
-        { desc32->hAdapter },
-        desc32->Flags
-    };
+    D3DKMT_CREATEDEVICE desc;
     NTSTATUS status;
 
+    if (!desc32) return STATUS_INVALID_PARAMETER;
+    desc.hAdapter = desc32->hAdapter;
+    desc.Flags = desc32->Flags;
+    desc.pCommandBuffer = UlongToPtr( desc32->pCommandBuffer );
+    desc.CommandBufferSize = desc32->CommandBufferSize;
+    desc.pAllocationList = UlongToPtr( desc32->pAllocationList );
+    desc.AllocationListSize = desc32->AllocationListSize;
+    desc.pPatchLocationList = UlongToPtr( desc32->pPatchLocationList );
+    desc.PatchLocationListSize = desc32->PatchLocationListSize;
     if (!(status = NtGdiDdDDICreateDevice( &desc )))
-    {
         desc32->hDevice = desc.hDevice;
-        desc32->pCommandBuffer = PtrToUlong( desc.pCommandBuffer );
-        desc32->CommandBufferSize = desc.CommandBufferSize;
-        desc32->pAllocationList = PtrToUlong( desc.pAllocationList );
-        desc32->AllocationListSize = desc.AllocationListSize;
-        desc32->pPatchLocationList = PtrToUlong( desc.pPatchLocationList );
-        desc32->PatchLocationListSize = desc.PatchLocationListSize;
-    }
     return status;
 }
 
@@ -334,7 +360,91 @@ NTSTATUS WINAPI wow64_NtGdiExtGetObjectW( UINT *args )
     INT count = get_ulong( &args );
     void *buffer = get_ptr( &args );
 
-    return NtGdiExtGetObjectW( handle, count, buffer );
+    switch (gdi_handle_type( handle ))
+    {
+    case NTGDI_OBJ_BITMAP:
+        {
+            BITMAP32 *bitmap32 = buffer;
+            struct
+            {
+                BITMAP32 dsBm;
+                BITMAPINFOHEADER dsBmih;
+                DWORD  dsBitfields[3];
+                ULONG  dshSection;
+                DWORD  dsOffset;
+            } *dib32 = buffer;
+            DIBSECTION dib;
+            int ret;
+
+            if (buffer)
+            {
+                if (count < sizeof(*bitmap32)) return 0;
+                count = count < sizeof(*dib32) ? sizeof(BITMAP) : sizeof(DIBSECTION);
+            }
+
+            if (!(ret = NtGdiExtGetObjectW( handle, count, buffer ? &dib : NULL ))) return 0;
+
+            if (bitmap32)
+            {
+                bitmap32->bmType = dib.dsBm.bmType;
+                bitmap32->bmWidth = dib.dsBm.bmWidth;
+                bitmap32->bmHeight = dib.dsBm.bmHeight;
+                bitmap32->bmWidthBytes = dib.dsBm.bmWidthBytes;
+                bitmap32->bmPlanes = dib.dsBm.bmPlanes;
+                bitmap32->bmBitsPixel = dib.dsBm.bmBitsPixel;
+                bitmap32->bmBits = PtrToUlong( dib.dsBm.bmBits );
+            }
+            if (ret != sizeof(dib)) return sizeof(*bitmap32);
+
+            if (dib32)
+            {
+                dib32->dsBmih = dib.dsBmih;
+                dib32->dsBitfields[0] = dib.dsBitfields[0];
+                dib32->dsBitfields[1] = dib.dsBitfields[1];
+                dib32->dsBitfields[2] = dib.dsBitfields[2];
+                dib32->dshSection = HandleToUlong( dib.dshSection );
+                dib32->dsOffset = dib.dsOffset;
+            }
+            return sizeof(*dib32);
+        }
+
+    case NTGDI_OBJ_PEN:
+    case NTGDI_OBJ_EXTPEN:
+        {
+            EXTLOGPEN32 *pen32 = buffer;
+            EXTLOGPEN *pen = NULL;
+
+            if (count == sizeof(LOGPEN) || (buffer && !HIWORD( buffer )))
+                return NtGdiExtGetObjectW( handle, count, buffer );
+
+            if (pen32 && count && !(pen = Wow64AllocateTemp( count + sizeof(ULONG) ))) return 0;
+            count = NtGdiExtGetObjectW( handle, count + sizeof(ULONG), pen );
+
+            if (count == sizeof(LOGPEN))
+            {
+                if (buffer) memcpy( buffer, pen, count );
+            }
+            else if (count)
+            {
+                if (pen32)
+                {
+                    pen32->elpPenStyle = pen->elpPenStyle;
+                    pen32->elpWidth = pen->elpWidth;
+                    pen32->elpBrushStyle = pen->elpBrushStyle;
+                    pen32->elpColor = pen->elpColor;
+                    pen32->elpHatch = pen->elpHatch;
+                    pen32->elpNumEntries = pen->elpNumEntries;
+                }
+                count -= FIELD_OFFSET( EXTLOGPEN, elpStyleEntry );
+                if (count && pen32) memcpy( pen32->elpStyleEntry, pen->elpStyleEntry, count );
+                count += FIELD_OFFSET( EXTLOGPEN32, elpStyleEntry );
+            }
+            return count;
+        }
+
+    default:
+        return NtGdiExtGetObjectW( handle, count, buffer );
+    }
 }
 
 NTSTATUS WINAPI wow64_NtGdiFlattenPath( UINT *args )
