@@ -1,5 +1,5 @@
 # spark-wine
-spark商店定制的wine
-spark商店定制的wine 此处只提供修改过的部分
-此版本为spark-wine7-devel
-暂不支持手工编译安装
+spark store customized wine
+The customized wine of the spark store only provides the modified part here
+This version is spark-wine7-devel
+Manual compilation and installation are not currently supported
