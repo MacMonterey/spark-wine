@@ -467,6 +467,17 @@ HWND WINAPI DECLSPEC_HOTPATCH CreateWindowExW( DWORD exStyle, LPCWSTR className,
     cs.lpszClass      = className;
     cs.dwExStyle      = exStyle;
 
+    if (exStyle == 0x080800a0) // WeChat/WxWork shadow hwnd
+    {
+        FIXME("hack %x\n", cs.dwExStyle);
+        return NULL;
+    }
+    if (exStyle == 0x000800a0) // Netease Cloudmusic shadow wnd
+    {
+        FIXME("hack %x\n", cs.dwExStyle);
+        return NULL;
+    }
+
     return wow_handlers.create_window( &cs, className, instance, TRUE );
 }
 
