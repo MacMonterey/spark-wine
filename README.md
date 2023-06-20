@@ -1,5 +1,5 @@
 # spark-wine
-spark商店定制的wine
-此处只提供修改过的部分
+spark store customized wine
+Only the modified part is provided here
 
-主分支只提供安装程序，请前往其他分支获取相关源码
+The main branch only provides the installer, please go to other branches to get the relevant source code
