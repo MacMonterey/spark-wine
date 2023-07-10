@@ -1,6 +1,0 @@
-MODULE    = systeminfo.exe
-
-EXTRADLLFLAGS = -mconsole -municode
-
-C_SRCS = \
-	main.c

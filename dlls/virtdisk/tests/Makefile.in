@@ -1,4 +1,0 @@
-TESTDLL = virtdisk.dll
-
-C_SRCS = \
-	virtdisk.c

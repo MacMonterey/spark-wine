@@ -1,5 +1,0 @@
-TESTDLL   = ndis.sys
-IMPORTS   = iphlpapi advapi32 ole32
-
-C_SRCS = \
-	ndis.c

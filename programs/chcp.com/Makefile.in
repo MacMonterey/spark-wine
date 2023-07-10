@@ -1,9 +1,0 @@
-MODULE    = chcp.com
-IMPORTS   = kernelbase
-
-EXTRADLLFLAGS = -mconsole -municode
-
-C_SRCS = \
-	main.c
-
-RC_SRCS = chcp.rc

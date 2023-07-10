@@ -1,4 +1,0 @@
-TESTDLL   = msvcr71.dll
-
-C_SRCS = \
-	msvcr71.c

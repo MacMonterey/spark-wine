@@ -1,5 +1,0 @@
-TESTDLL = xactengine3_7.dll
-IMPORTS = ole32
-
-C_SRCS = \
-	xact3.c

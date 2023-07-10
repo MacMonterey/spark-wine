@@ -1,4 +1,0 @@
-TESTDLL   = msvcrtd.dll
-
-C_SRCS = \
-	debug.c

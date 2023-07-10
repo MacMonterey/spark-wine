@@ -1,3 +1,0 @@
-MODULE    = icmp.dll
-
-EXTRADLLFLAGS = -Wb,--data-only

@@ -1,5 +1,0 @@
-MODULE = xpsprint.dll
-
-EXTRADLLFLAGS = -Wb,--prefer-native
-
-RC_SRCS = xpsprint.rc

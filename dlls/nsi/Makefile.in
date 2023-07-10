@@ -1,5 +1,0 @@
-MODULE    = nsi.dll
-IMPORTLIB = nsi
-
-C_SRCS = \
-	nsi.c

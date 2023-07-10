@@ -1,6 +1,0 @@
-TESTDLL   = comsvcs.dll
-IMPORTS   = uuid oleaut32 ole32
-
-C_SRCS = \
-	comsvcs.c \
-	property.c

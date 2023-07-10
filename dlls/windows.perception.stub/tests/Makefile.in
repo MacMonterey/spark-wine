@@ -1,5 +1,0 @@
-TESTDLL = windows.perception.stub.dll
-IMPORTS = combase
-
-C_SRCS = \
-	perception.c

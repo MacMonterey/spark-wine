@@ -1,5 +1,0 @@
-TESTDLL   = ncrypt.dll
-IMPORTS   = ncrypt
-
-C_SRCS = \
-	ncrypt.c

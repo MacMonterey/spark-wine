@@ -1,5 +1,0 @@
-TESTDLL = wintypes.dll
-IMPORTS = combase uuid
-
-C_SRCS = \
-	wintypes.c

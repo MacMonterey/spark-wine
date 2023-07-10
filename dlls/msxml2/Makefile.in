@@ -1,3 +1,0 @@
-MODULE = msxml2.dll
-
-IDL_SRCS = msxml2_tlb.idl

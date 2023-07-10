@@ -1,8 +1,0 @@
-MODULE = dsquery.dll
-IMPORTS = uuid
-
-C_SRCS = \
-	main.c
-
-IDL_SRCS = \
-	dsquery.idl

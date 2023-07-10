@@ -1,4 +1,0 @@
-STATICLIB = libwmcodecdspuuid.a
-
-C_SRCS = \
-	wmcodecdspuuid.c

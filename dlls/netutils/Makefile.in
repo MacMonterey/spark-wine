@@ -1,3 +1,0 @@
-MODULE    = netutils.dll
-
-EXTRADLLFLAGS = -Wb,--prefer-native

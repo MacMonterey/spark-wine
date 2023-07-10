@@ -1,5 +1,0 @@
-TESTDLL   = msvcp60.dll
-
-C_SRCS = \
-	ios.c \
-	string.c

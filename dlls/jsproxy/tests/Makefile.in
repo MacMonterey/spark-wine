@@ -1,5 +1,0 @@
-TESTDLL   = jsproxy.dll
-IMPORTS   = jsproxy
-
-C_SRCS = \
-	jsproxy.c

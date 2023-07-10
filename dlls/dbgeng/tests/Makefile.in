@@ -1,5 +1,0 @@
-TESTDLL   = dbgeng.dll
-IMPORTS   = dbgeng
-
-C_SRCS = \
-	dbgeng.c
