@@ -23,6 +23,8 @@
 #include "wine/unixlib.h"
 
 BOOL CNG_ImportPubKey(CERT_PUBLIC_KEY_INFO *pubKeyInfo, BCRYPT_KEY_HANDLE *key) DECLSPEC_HIDDEN;
+BOOL cng_prepare_signature(const char *alg_oid, BYTE *encoded_sig, DWORD encoded_sig_len,
+    BYTE **sig_value, DWORD *sig_len) DECLSPEC_HIDDEN;
 
 /* a few asn.1 tags we need */
 #define ASN_BOOL            (ASN_UNIVERSAL | ASN_PRIMITIVE | 0x01)
@@ -46,7 +48,7 @@ BOOL CNG_ImportPubKey(CERT_PUBLIC_KEY_INFO *pubKeyInfo, BCRYPT_KEY_HANDLE *key) 
 /* Copies `len` bytes from `src` to `dst`,
  * reversing the order of the bytes
  */
-void CRYPT_CopyReversed(BYTE *dst, const BYTE *src, size_t len);
+void CRYPT_CopyReversed(BYTE *dst, const BYTE *src, size_t len) DECLSPEC_HIDDEN;
 
 BOOL CRYPT_EncodeLen(DWORD len, BYTE *pbEncoded, DWORD *pcbEncoded) DECLSPEC_HIDDEN;
 

@@ -1116,12 +1116,17 @@ static NTSTATUS pulse_create_stream(void *args)
     struct pulse_stream *stream;
     unsigned int i, bufsize_bytes;
     HRESULT hr;
-    char *name = wstr_to_str(params->name);
+    char *name;
+
+    if (params->share == AUDCLNT_SHAREMODE_EXCLUSIVE) {
+        params->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
+        return STATUS_SUCCESS;
+    }
 
     pulse_lock();
 
+    name = wstr_to_str(params->name);
     params->result = pulse_connect(name);
-
     free(name);
 
     if (FAILED(params->result))
@@ -2489,31 +2494,30 @@ static NTSTATUS pulse_get_prop_value(void *args)
     struct list *list = (params->flow == eRender) ? &g_phys_speakers : &g_phys_sources;
     PhysDevice *dev;
 
-    params->result = S_OK;
     LIST_FOR_EACH_ENTRY(dev, list, PhysDevice, entry) {
         if (strcmp(params->device, dev->pulse_name))
             continue;
         if (IsEqualPropertyKey(*params->prop, devicepath_key)) {
-            if (!get_device_path(dev, params))
-                break;
+            get_device_path(dev, params);
             return STATUS_SUCCESS;
         } else if (IsEqualGUID(&params->prop->fmtid, &PKEY_AudioEndpoint_GUID)) {
             switch (params->prop->pid) {
             case 0:   /* FormFactor */
                 params->value->vt = VT_UI4;
                 params->value->ulVal = dev->form;
+                params->result = S_OK;
                 return STATUS_SUCCESS;
             case 3:   /* PhysicalSpeakers */
                 if (!dev->channel_mask)
                     goto fail;
                 params->value->vt = VT_UI4;
                 params->value->ulVal = dev->channel_mask;
+                params->result = S_OK;
                 return STATUS_SUCCESS;
-            default:
-                params->result = E_NOTIMPL;
             }
         }
 
+        params->result = E_NOTIMPL;
         return STATUS_SUCCESS;
     }
 

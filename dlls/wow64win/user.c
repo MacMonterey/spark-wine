@@ -1186,11 +1186,12 @@ NTSTATUS WINAPI wow64_NtUserBuildHimcList( UINT *args )
     UINT32 *buffer32 = get_ptr( &args );
     UINT *size = get_ptr( &args );
 
-    HIMC *buffer;
+    HIMC *buffer = NULL;
     ULONG i;
     NTSTATUS status;
 
-    if (!(buffer = Wow64AllocateTemp( count * sizeof(*buffer) ))) return STATUS_NO_MEMORY;
+    if (buffer32 && !(buffer = Wow64AllocateTemp( count * sizeof(*buffer) )))
+        return STATUS_NO_MEMORY;
 
     if ((status = NtUserBuildHimcList( thread_id, count, buffer, size ))) return status;
 
@@ -3318,6 +3319,18 @@ NTSTATUS WINAPI wow64_NtUserPrintWindow( UINT *args )
     return NtUserPrintWindow( hwnd, hdc, flags );
 }
 
+NTSTATUS WINAPI wow64_NtUserQueryDisplayConfig( UINT *args )
+{
+    UINT32 flags = get_ulong( &args );
+    UINT32 *paths_count = get_ptr( &args );
+    DISPLAYCONFIG_PATH_INFO *paths = get_ptr( &args );
+    UINT32 *modes_count = get_ptr( &args );
+    DISPLAYCONFIG_MODE_INFO *modes = get_ptr( &args );
+    DISPLAYCONFIG_TOPOLOGY_ID *topology_id = get_ptr( &args );
+
+    return NtUserQueryDisplayConfig( flags, paths_count, paths, modes_count, modes, topology_id );
+}
+
 NTSTATUS WINAPI wow64_NtUserQueryInputContext( UINT *args )
 {
     HIMC handle = get_handle( &args );
@@ -4345,6 +4358,6 @@ NTSTATUS WINAPI wow64_NtUserDisplayConfigGetDeviceInfo( UINT *args )
 
 NTSTATUS WINAPI wow64___wine_send_input( UINT *args )
 {
-    ERR( "not supported\n ");
+    ERR( "not supported\n" );
     return 0;
 }

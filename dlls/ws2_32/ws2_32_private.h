@@ -26,8 +26,6 @@
 #include <string.h>
 #include <limits.h>
 
-#define NONAMELESSUNION
-#define NONAMELESSSTRUCT
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "windef.h"
@@ -90,7 +88,7 @@ struct per_thread_data
     char ntoa_buffer[16]; /* 4*3 digits + 3 '.' + 1 '\0' */
 };
 
-extern int num_startup;
+extern int num_startup DECLSPEC_HIDDEN;
 
 struct per_thread_data *get_per_thread_data(void) DECLSPEC_HIDDEN;
 

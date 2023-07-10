@@ -526,7 +526,7 @@
 @ stdcall KdRefreshDebuggerNotPresent()
 @ stub Ke386CallBios
 @ stdcall Ke386IoSetAccessProcess(ptr long)
-@ stub Ke386QueryIoAccessMap
+@ stdcall Ke386QueryIoAccessMap(long ptr)
 @ stdcall Ke386SetIoAccessMap(long ptr)
 @ stub KeAcquireInterruptSpinLock
 @ stdcall KeAcquireSpinLockAtDpcLevel(ptr)
@@ -967,6 +967,7 @@
 @ stub PsSetJobUIRestrictionsClass
 @ stub PsSetLegoNotifyRoutine
 @ stdcall PsSetLoadImageNotifyRoutine(ptr)
+@ stdcall PsSetLoadImageNotifyRoutineEx(ptr long)
 @ stub PsSetProcessPriorityByClass
 @ stub PsSetProcessPriorityClass
 @ stub PsSetProcessSecurityPort

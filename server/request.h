@@ -186,6 +186,7 @@ DECL_HANDLER(get_mapping_info);
 DECL_HANDLER(map_view);
 DECL_HANDLER(map_image_view);
 DECL_HANDLER(map_builtin_view);
+DECL_HANDLER(get_image_view_info);
 DECL_HANDLER(unmap_view);
 DECL_HANDLER(get_mapping_committed_range);
 DECL_HANDLER(add_mapping_committed_range);
@@ -472,6 +473,7 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_map_view,
     (req_handler)req_map_image_view,
     (req_handler)req_map_builtin_view,
+    (req_handler)req_get_image_view_info,
     (req_handler)req_unmap_view,
     (req_handler)req_get_mapping_committed_range,
     (req_handler)req_add_mapping_committed_range,
@@ -689,13 +691,17 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
 
 C_ASSERT( sizeof(abstime_t) == 8 );
 C_ASSERT( sizeof(affinity_t) == 8 );
+C_ASSERT( sizeof(apc_call_t) == 64 );
 C_ASSERT( sizeof(apc_param_t) == 8 );
 C_ASSERT( sizeof(apc_result_t) == 40 );
 C_ASSERT( sizeof(async_data_t) == 40 );
 C_ASSERT( sizeof(atom_t) == 4 );
 C_ASSERT( sizeof(char) == 1 );
 C_ASSERT( sizeof(client_ptr_t) == 8 );
+C_ASSERT( sizeof(context_t) == 1720 );
+C_ASSERT( sizeof(cursor_pos_t) == 24 );
 C_ASSERT( sizeof(data_size_t) == 4 );
+C_ASSERT( sizeof(debug_event_t) == 160 );
 C_ASSERT( sizeof(file_pos_t) == 8 );
 C_ASSERT( sizeof(generic_map_t) == 16 );
 C_ASSERT( sizeof(hw_input_t) == 40 );
@@ -704,17 +710,31 @@ C_ASSERT( sizeof(ioctl_code_t) == 4 );
 C_ASSERT( sizeof(irp_params_t) == 32 );
 C_ASSERT( sizeof(lparam_t) == 8 );
 C_ASSERT( sizeof(mem_size_t) == 8 );
+C_ASSERT( sizeof(message_data_t) == 56 );
 C_ASSERT( sizeof(mod_handle_t) == 8 );
 C_ASSERT( sizeof(obj_handle_t) == 4 );
+C_ASSERT( sizeof(pe_image_info_t) == 80 );
 C_ASSERT( sizeof(process_id_t) == 4 );
+C_ASSERT( sizeof(property_data_t) == 16 );
 C_ASSERT( sizeof(rectangle_t) == 16 );
+C_ASSERT( sizeof(select_op_t) == 264 );
 C_ASSERT( sizeof(short int) == 2 );
+C_ASSERT( sizeof(startup_info_t) == 92 );
+C_ASSERT( sizeof(struct filesystem_event) == 12 );
+C_ASSERT( sizeof(struct handle_info) == 20 );
 C_ASSERT( sizeof(struct luid) == 8 );
+C_ASSERT( sizeof(struct luid_attr) == 12 );
+C_ASSERT( sizeof(struct object_attributes) == 16 );
+C_ASSERT( sizeof(struct object_type_info) == 44 );
+C_ASSERT( sizeof(struct process_info) == 40 );
+C_ASSERT( sizeof(struct rawinput_device) == 12 );
+C_ASSERT( sizeof(struct thread_info) == 40 );
 C_ASSERT( sizeof(thread_id_t) == 4 );
 C_ASSERT( sizeof(timeout_t) == 8 );
 C_ASSERT( sizeof(unsigned char) == 1 );
 C_ASSERT( sizeof(unsigned int) == 4 );
 C_ASSERT( sizeof(unsigned short) == 2 );
+C_ASSERT( sizeof(user_apc_t) == 40 );
 C_ASSERT( sizeof(user_handle_t) == 4 );
 C_ASSERT( FIELD_OFFSET(struct new_process_request, token) == 12 );
 C_ASSERT( FIELD_OFFSET(struct new_process_request, debug) == 16 );
@@ -1127,6 +1147,12 @@ C_ASSERT( FIELD_OFFSET(struct map_image_view_request, entry) == 32 );
 C_ASSERT( FIELD_OFFSET(struct map_image_view_request, machine) == 36 );
 C_ASSERT( sizeof(struct map_image_view_request) == 40 );
 C_ASSERT( sizeof(struct map_builtin_view_request) == 16 );
+C_ASSERT( FIELD_OFFSET(struct get_image_view_info_request, process) == 12 );
+C_ASSERT( FIELD_OFFSET(struct get_image_view_info_request, addr) == 16 );
+C_ASSERT( sizeof(struct get_image_view_info_request) == 24 );
+C_ASSERT( FIELD_OFFSET(struct get_image_view_info_reply, base) == 8 );
+C_ASSERT( FIELD_OFFSET(struct get_image_view_info_reply, size) == 16 );
+C_ASSERT( sizeof(struct get_image_view_info_reply) == 24 );
 C_ASSERT( FIELD_OFFSET(struct unmap_view_request, base) == 16 );
 C_ASSERT( sizeof(struct unmap_view_request) == 24 );
 C_ASSERT( FIELD_OFFSET(struct get_mapping_committed_range_request, base) == 16 );
@@ -2189,7 +2215,7 @@ C_ASSERT( FIELD_OFFSET(struct set_fd_completion_mode_request, handle) == 12 );
 C_ASSERT( FIELD_OFFSET(struct set_fd_completion_mode_request, flags) == 16 );
 C_ASSERT( sizeof(struct set_fd_completion_mode_request) == 24 );
 C_ASSERT( FIELD_OFFSET(struct set_fd_disp_info_request, handle) == 12 );
-C_ASSERT( FIELD_OFFSET(struct set_fd_disp_info_request, unlink) == 16 );
+C_ASSERT( FIELD_OFFSET(struct set_fd_disp_info_request, flags) == 16 );
 C_ASSERT( sizeof(struct set_fd_disp_info_request) == 24 );
 C_ASSERT( FIELD_OFFSET(struct set_fd_name_info_request, handle) == 12 );
 C_ASSERT( FIELD_OFFSET(struct set_fd_name_info_request, rootdir) == 16 );

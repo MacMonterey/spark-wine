@@ -44,6 +44,9 @@ extern WORD native_machine DECLSPEC_HIDDEN;
 
 static const BOOL is_win64 = (sizeof(void *) > sizeof(int));
 
+static const ULONG_PTR limit_2g = (ULONG_PTR)1 << 31;
+static const ULONG_PTR limit_4g = (ULONG_PTR)((ULONGLONG)1 << 32);
+
 static inline BOOL is_machine_64bit( WORD machine )
 {
     return (machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_ARM64);
@@ -169,12 +172,12 @@ extern struct ldt_copy __wine_ldt_copy DECLSPEC_HIDDEN;
 extern void init_environment( int argc, char *argv[], char *envp[] ) DECLSPEC_HIDDEN;
 extern void init_startup_info(void) DECLSPEC_HIDDEN;
 extern void *create_startup_info( const UNICODE_STRING *nt_image, const RTL_USER_PROCESS_PARAMETERS *params,
-                                  DWORD *info_size ) DECLSPEC_HIDDEN;
+                                  const pe_image_info_t *pe_info, DWORD *info_size ) DECLSPEC_HIDDEN;
 extern char **build_envp( const WCHAR *envW ) DECLSPEC_HIDDEN;
 extern char *get_alternate_wineloader( WORD machine ) DECLSPEC_HIDDEN;
 extern NTSTATUS exec_wineloader( char **argv, int socketfd, const pe_image_info_t *pe_info ) DECLSPEC_HIDDEN;
 extern NTSTATUS load_builtin( const pe_image_info_t *image_info, WCHAR *filename, USHORT machine,
-                              void **addr_ptr, SIZE_T *size_ptr, ULONG_PTR limit ) DECLSPEC_HIDDEN;
+                              void **addr_ptr, SIZE_T *size_ptr, ULONG_PTR limit_low, ULONG_PTR limit_high ) DECLSPEC_HIDDEN;
 extern BOOL is_builtin_path( const UNICODE_STRING *path, WORD *machine ) DECLSPEC_HIDDEN;
 extern NTSTATUS load_main_exe( const WCHAR *name, const char *unix_name, const WCHAR *curdir,
                                USHORT load_machine, WCHAR **image, void **module ) DECLSPEC_HIDDEN;
@@ -220,18 +223,20 @@ extern void *anon_mmap_alloc( size_t size, int prot ) DECLSPEC_HIDDEN;
 extern void virtual_init(void) DECLSPEC_HIDDEN;
 extern ULONG_PTR get_system_affinity_mask(void) DECLSPEC_HIDDEN;
 extern void virtual_get_system_info( SYSTEM_BASIC_INFORMATION *info, BOOL wow64 ) DECLSPEC_HIDDEN;
-extern NTSTATUS virtual_map_builtin_module( HANDLE mapping, void **module, SIZE_T *size, SECTION_IMAGE_INFORMATION *info,
-                                            ULONG_PTR limit, WORD machine, BOOL prefer_native ) DECLSPEC_HIDDEN;
-extern NTSTATUS virtual_map_module( HANDLE mapping, void **module, SIZE_T *size, SECTION_IMAGE_INFORMATION *info,
-                                    ULONG_PTR limit, USHORT machine ) DECLSPEC_HIDDEN;
+extern NTSTATUS virtual_map_builtin_module( HANDLE mapping, void **module, SIZE_T *size,
+                                            SECTION_IMAGE_INFORMATION *info, ULONG_PTR limit_low,
+                                            ULONG_PTR limit_high, WORD machine, BOOL prefer_native ) DECLSPEC_HIDDEN;
+extern NTSTATUS virtual_map_module( HANDLE mapping, void **module, SIZE_T *size,
+                                    SECTION_IMAGE_INFORMATION *info, ULONG_PTR limit_low,
+                                    ULONG_PTR limit_high, USHORT machine ) DECLSPEC_HIDDEN;
 extern NTSTATUS virtual_create_builtin_view( void *module, const UNICODE_STRING *nt_name,
                                              pe_image_info_t *info, void *so_handle ) DECLSPEC_HIDDEN;
 extern TEB *virtual_alloc_first_teb(void) DECLSPEC_HIDDEN;
 extern NTSTATUS virtual_alloc_teb( TEB **ret_teb ) DECLSPEC_HIDDEN;
 extern void virtual_free_teb( TEB *teb ) DECLSPEC_HIDDEN;
 extern NTSTATUS virtual_clear_tls_index( ULONG index ) DECLSPEC_HIDDEN;
-extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit, SIZE_T reserve_size,
-                                            SIZE_T commit_size, BOOL guard_page ) DECLSPEC_HIDDEN;
+extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, ULONG_PTR limit_high,
+                                            SIZE_T reserve_size, SIZE_T commit_size, BOOL guard_page ) DECLSPEC_HIDDEN;
 extern void virtual_map_user_shared_data(void) DECLSPEC_HIDDEN;
 extern NTSTATUS virtual_handle_fault( void *addr, DWORD err, void *stack ) DECLSPEC_HIDDEN;
 extern unsigned int virtual_locked_server_call( void *req_ptr ) DECLSPEC_HIDDEN;
@@ -511,7 +516,7 @@ static inline NTSTATUS map_section( HANDLE mapping, void **ptr, SIZE_T *size, UL
 {
     *ptr = NULL;
     *size = 0;
-    return NtMapViewOfSection( mapping, NtCurrentProcess(), ptr, is_win64 && wow_peb ? 0x7fffffff : 0,
+    return NtMapViewOfSection( mapping, NtCurrentProcess(), ptr, is_win64 && wow_peb ? limit_2g - 1 : 0,
                                0, NULL, size, ViewShare, 0, protect );
 }
 

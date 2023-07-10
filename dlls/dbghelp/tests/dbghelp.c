@@ -300,6 +300,12 @@ static BOOL CALLBACK count_module_cb(const char* name, DWORD64 base, void* usr)
     return TRUE;
 }
 
+static BOOL CALLBACK count_native_module_cb(const char* name, DWORD64 base, void* usr)
+{
+    if (strstr(name, ".so") || strchr(name, '<')) (*(unsigned*)usr)++;
+    return TRUE;
+}
+
 static unsigned get_module_count(HANDLE proc)
 {
     unsigned count = 0;
@@ -307,6 +313,26 @@ static unsigned get_module_count(HANDLE proc)
 
     ret = SymEnumerateModules64(proc, count_module_cb, &count);
     ok(ret, "SymEnumerateModules64 failed: %lu\n", GetLastError());
+    return count;
+}
+
+static unsigned get_native_module_count(HANDLE proc)
+{
+    static BOOL (*WINAPI pSymSetExtendedOption)(IMAGEHLP_EXTENDED_OPTIONS option, BOOL value);
+    unsigned count = 0;
+    BOOL old, ret;
+
+    if (!pSymSetExtendedOption)
+    {
+        pSymSetExtendedOption = (void*)GetProcAddress(GetModuleHandleA("dbghelp.dll"), "SymSetExtendedOption");
+        ok(pSymSetExtendedOption != NULL, "SymSetExtendedOption should be present on Wine\n");
+    }
+
+    old = pSymSetExtendedOption(SYMOPT_EX_WINE_NATIVE_MODULES, TRUE);
+    ret = SymEnumerateModules64(proc, count_native_module_cb, &count);
+    ok(ret, "SymEnumerateModules64 failed: %lu\n", GetLastError());
+    pSymSetExtendedOption(SYMOPT_EX_WINE_NATIVE_MODULES, old);
+
     return count;
 }
 
@@ -681,6 +707,7 @@ static void test_loaded_modules(void)
     PROCESS_INFORMATION pi = {0};
     STARTUPINFOA si = {0};
     struct loaded_module_aggregation aggregation = {0};
+    enum process_kind pcskind;
 
     ret = GetSystemDirectoryA(buffer, sizeof(buffer));
     ok(ret, "got error %lu\n", GetLastError());
@@ -701,6 +728,7 @@ static void test_loaded_modules(void)
     ret = wrapper_EnumerateLoadedModulesW64(pi.hProcess, aggregate_cb, &aggregation);
     ok(ret, "EnumerateLoadedModulesW64 failed: %lu\n", GetLastError());
 
+    pcskind = get_process_kind(pi.hProcess);
     if (is_win64)
     {
         ok(!aggregation.count_32bit && aggregation.count_64bit, "Wrong bitness aggregation count %u %u\n",
@@ -720,7 +748,7 @@ static void test_loaded_modules(void)
            aggregation.count_32bit, aggregation.count_64bit);
         ok(aggregation.count_exe == 1 && aggregation.count_ntdll == 1, "Wrong kind aggregation count %u %u\n",
            aggregation.count_exe, aggregation.count_ntdll);
-        switch (get_process_kind(pi.hProcess))
+        switch (pcskind)
         {
         case PCSKIND_ERROR:
             ok(0, "Unknown process kind\n");
@@ -742,8 +770,18 @@ static void test_loaded_modules(void)
         }
     }
 
+    pcskind = get_process_kind(pi.hProcess);
+
     ret = SymRefreshModuleList(pi.hProcess);
+    todo_wine_if(pcskind == PCSKIND_WOW64)
     ok(ret || broken(GetLastError() == STATUS_PARTIAL_COPY /* Win11 in some cases */), "SymRefreshModuleList failed: %lu\n", GetLastError());
+
+    if (!strcmp(winetest_platform, "wine"))
+    {
+        unsigned count = get_native_module_count(pi.hProcess);
+        todo_wine_if(pcskind == PCSKIND_WOW64)
+        ok(count > 0, "Didn't find any native (ELF/Macho) modules\n");
+    }
 
     SymCleanup(pi.hProcess);
     TerminateProcess(pi.hProcess, 0);
@@ -770,7 +808,8 @@ static void test_loaded_modules(void)
             ret = wrapper_EnumerateLoadedModulesW64(pi.hProcess, aggregate_cb, &aggregation);
             ok(ret, "EnumerateLoadedModulesW64 failed: %lu\n", GetLastError());
 
-            switch (get_process_kind(pi.hProcess))
+            pcskind = get_process_kind(pi.hProcess);
+            switch (pcskind)
             {
             default:
                 ok(0, "Unknown process kind\n");
@@ -795,6 +834,12 @@ static void test_loaded_modules(void)
             }
             ret = SymRefreshModuleList(pi.hProcess);
             ok(ret, "SymRefreshModuleList failed: %lu\n", GetLastError());
+
+            if (!strcmp(winetest_platform, "wine"))
+            {
+                unsigned count = get_native_module_count(pi.hProcess);
+                ok(count > 0, "Didn't find any native (ELF/Macho) modules\n");
+            }
 
             SymCleanup(pi.hProcess);
             TerminateProcess(pi.hProcess, 0);
@@ -824,7 +869,8 @@ static void test_loaded_modules(void)
             ret = wrapper_EnumerateLoadedModulesW64(pi.hProcess, aggregate_cb, &aggregation2);
             ok(ret, "EnumerateLoadedModulesW64 failed: %lu\n", GetLastError());
 
-            switch (get_process_kind(pi.hProcess))
+            pcskind = get_process_kind(pi.hProcess);
+            switch (pcskind)
             {
             case PCSKIND_ERROR:
                 break;
@@ -850,6 +896,12 @@ static void test_loaded_modules(void)
 
             ret = SymRefreshModuleList(pi.hProcess);
             ok(ret, "SymRefreshModuleList failed: %lu\n", GetLastError());
+
+            if (!strcmp(winetest_platform, "wine"))
+            {
+                unsigned count = get_native_module_count(pi.hProcess);
+                ok(count > 0, "Didn't find any native (ELF/Macho) modules\n");
+            }
 
             SymCleanup(pi.hProcess);
             TerminateProcess(pi.hProcess, 0);

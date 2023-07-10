@@ -472,6 +472,7 @@ typedef union
     {
         enum select_op  op;      /* SELECT_WAIT or SELECT_WAIT_ALL */
         obj_handle_t    handles[MAXIMUM_WAIT_OBJECTS];
+        int             __pad;
     } wait;
     struct
     {
@@ -542,7 +543,8 @@ typedef union
         unsigned int     op_type;      /* type of operation */
         client_ptr_t     addr;         /* requested address */
         mem_size_t       size;         /* allocation size */
-        mem_size_t       limit;        /* allocation address limit */
+        mem_size_t       limit_low;    /* allocation address limits */
+        mem_size_t       limit_high;
         mem_size_t       align;        /* allocation alignment */
         unsigned int     prot;         /* memory protection flags */
         unsigned int     attributes;   /* memory extended attributes */
@@ -606,10 +608,12 @@ typedef union
         client_ptr_t     addr;         /* requested address */
         mem_size_t       size;         /* allocation size */
         file_pos_t       offset;       /* file offset */
-        mem_size_t       limit;        /* allocation address limit */
+        mem_size_t       limit_low;    /* allocation address limits */
+        mem_size_t       limit_high;
         unsigned int     alloc_type;   /* allocation type */
-        unsigned short   prot;         /* memory protection flags */
+        unsigned int     prot;         /* memory protection flags */
         unsigned short   machine;      /* requested machine for image mappings */
+        unsigned short   __pad[3];
     } map_view_ex;
     struct
     {
@@ -1621,6 +1625,16 @@ enum server_fd_type
 @REQ(map_builtin_view)
     VARARG(image,pe_image_info);/* image info */
     VARARG(name,unicode_str);   /* image filename */
+@END
+
+
+/* Get information about a mapped image view */
+@REQ(get_image_view_info)
+    obj_handle_t process;       /* process handle */
+    client_ptr_t addr;          /* address inside mapped view (in process address space) */
+@REPLY
+    client_ptr_t base;          /* view base address */
+    mem_size_t   size;          /* view size */
 @END
 
 
@@ -3637,7 +3651,7 @@ struct handle_info
 /* set fd disposition information */
 @REQ(set_fd_disp_info)
     obj_handle_t handle;          /* handle to a file or directory */
-    int          unlink;          /* whether to unlink file on close */
+    unsigned int flags;           /* what actions should be taken when deleting a file */
 @END
 
 
@@ -3715,6 +3729,7 @@ struct handle_info
 #define SET_CURSOR_POS    0x04
 #define SET_CURSOR_CLIP   0x08
 #define SET_CURSOR_NOCLIP 0x10
+#define SET_CURSOR_FSCLIP 0x20
 
 /* Get the history of the 64 last cursor positions */
 @REQ(get_cursor_history)

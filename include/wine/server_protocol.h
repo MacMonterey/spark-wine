@@ -456,6 +456,7 @@ typedef union
     {
         enum select_op  op;
         obj_handle_t    handles[MAXIMUM_WAIT_OBJECTS];
+        int             __pad;
     } wait;
     struct
     {
@@ -526,7 +527,8 @@ typedef union
         unsigned int     op_type;
         client_ptr_t     addr;
         mem_size_t       size;
-        mem_size_t       limit;
+        mem_size_t       limit_low;
+        mem_size_t       limit_high;
         mem_size_t       align;
         unsigned int     prot;
         unsigned int     attributes;
@@ -590,10 +592,12 @@ typedef union
         client_ptr_t     addr;
         mem_size_t       size;
         file_pos_t       offset;
-        mem_size_t       limit;
+        mem_size_t       limit_low;
+        mem_size_t       limit_high;
         unsigned int     alloc_type;
-        unsigned short   prot;
+        unsigned int     prot;
         unsigned short   machine;
+        unsigned short   __pad[3];
     } map_view_ex;
     struct
     {
@@ -2019,6 +2023,21 @@ struct map_builtin_view_request
 struct map_builtin_view_reply
 {
     struct reply_header __header;
+};
+
+
+
+struct get_image_view_info_request
+{
+    struct request_header __header;
+    obj_handle_t process;
+    client_ptr_t addr;
+};
+struct get_image_view_info_reply
+{
+    struct reply_header __header;
+    client_ptr_t base;
+    mem_size_t   size;
 };
 
 
@@ -5226,7 +5245,7 @@ struct set_fd_disp_info_request
 {
     struct request_header __header;
     obj_handle_t handle;
-    int          unlink;
+    unsigned int flags;
     char __pad_20[4];
 };
 struct set_fd_disp_info_reply
@@ -5353,6 +5372,7 @@ struct set_cursor_reply
 #define SET_CURSOR_POS    0x04
 #define SET_CURSOR_CLIP   0x08
 #define SET_CURSOR_NOCLIP 0x10
+#define SET_CURSOR_FSCLIP 0x20
 
 
 struct get_cursor_history_request
@@ -5624,6 +5644,7 @@ enum request
     REQ_map_view,
     REQ_map_image_view,
     REQ_map_builtin_view,
+    REQ_get_image_view_info,
     REQ_unmap_view,
     REQ_get_mapping_committed_range,
     REQ_add_mapping_committed_range,
@@ -5911,6 +5932,7 @@ union generic_request
     struct map_view_request map_view_request;
     struct map_image_view_request map_image_view_request;
     struct map_builtin_view_request map_builtin_view_request;
+    struct get_image_view_info_request get_image_view_info_request;
     struct unmap_view_request unmap_view_request;
     struct get_mapping_committed_range_request get_mapping_committed_range_request;
     struct add_mapping_committed_range_request add_mapping_committed_range_request;
@@ -6196,6 +6218,7 @@ union generic_reply
     struct map_view_reply map_view_reply;
     struct map_image_view_reply map_image_view_reply;
     struct map_builtin_view_reply map_builtin_view_reply;
+    struct get_image_view_info_reply get_image_view_info_reply;
     struct unmap_view_reply unmap_view_reply;
     struct get_mapping_committed_range_reply get_mapping_committed_range_reply;
     struct add_mapping_committed_range_reply add_mapping_committed_range_reply;
@@ -6413,7 +6436,7 @@ union generic_reply
 
 /* ### protocol_version begin ### */
 
-#define SERVER_PROTOCOL_VERSION 774
+#define SERVER_PROTOCOL_VERSION 779
 
 /* ### protocol_version end ### */
 

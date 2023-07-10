@@ -98,6 +98,206 @@ HRESULT get_interface_in_git(REFIID riid, DWORD git_cookie, IUnknown **ret_iface
     return S_OK;
 }
 
+#define UIA_RUNTIME_ID_PREFIX 42
+HRESULT write_runtime_id_base(SAFEARRAY *sa, HWND hwnd)
+{
+    const int rt_id[2] = { UIA_RUNTIME_ID_PREFIX, HandleToUlong(hwnd) };
+    HRESULT hr;
+    LONG idx;
+
+    for (idx = 0; idx < ARRAY_SIZE(rt_id); idx++)
+    {
+        hr = SafeArrayPutElement(sa, &idx, (void *)&rt_id[idx]);
+        if (FAILED(hr))
+            return hr;
+    }
+
+    return S_OK;
+}
+
+/*
+ * UiaCondition cloning functions.
+ */
+static void uia_condition_destroy(struct UiaCondition *cond)
+{
+    if (!cond)
+        return;
+
+    switch (cond->ConditionType)
+    {
+    case ConditionType_Property:
+    {
+        struct UiaPropertyCondition *prop_cond = (struct UiaPropertyCondition *)cond;
+
+        VariantClear(&prop_cond->Value);
+        break;
+    }
+
+    case ConditionType_Not:
+    {
+        struct UiaNotCondition *not_cond = (struct UiaNotCondition *)cond;
+
+        uia_condition_destroy(not_cond->pConditions);
+        break;
+    }
+
+    case ConditionType_And:
+    case ConditionType_Or:
+    {
+        struct UiaAndOrCondition *and_or_cond = (struct UiaAndOrCondition *)cond;
+        int i;
+
+        for (i = 0; i < and_or_cond->cConditions; i++)
+            uia_condition_destroy(and_or_cond->ppConditions[i]);
+        heap_free(and_or_cond->ppConditions);
+        break;
+    }
+
+    default:
+        break;
+    }
+
+    heap_free(cond);
+}
+
+static HRESULT uia_condition_clone(struct UiaCondition **dst, struct UiaCondition *src)
+{
+    HRESULT hr = S_OK;
+
+    *dst = NULL;
+    switch (src->ConditionType)
+    {
+    case ConditionType_True:
+    case ConditionType_False:
+        if (!(*dst = heap_alloc_zero(sizeof(*dst))))
+            return E_OUTOFMEMORY;
+
+        (*dst)->ConditionType = src->ConditionType;
+        break;
+
+    case ConditionType_Property:
+    {
+        struct UiaPropertyCondition *prop_cond = heap_alloc_zero(sizeof(*prop_cond));
+        struct UiaPropertyCondition *src_cond = (struct UiaPropertyCondition *)src;
+
+        if (!prop_cond)
+            return E_OUTOFMEMORY;
+
+        *dst = (struct UiaCondition *)prop_cond;
+        prop_cond->ConditionType = ConditionType_Property;
+        prop_cond->PropertyId = src_cond->PropertyId;
+        prop_cond->Flags = src_cond->Flags;
+        VariantInit(&prop_cond->Value);
+        hr = VariantCopy(&prop_cond->Value, &src_cond->Value);
+        break;
+    }
+
+    case ConditionType_Not:
+    {
+        struct UiaNotCondition *not_cond = heap_alloc_zero(sizeof(*not_cond));
+        struct UiaNotCondition *src_cond = (struct UiaNotCondition *)src;
+
+        if (!not_cond)
+            return E_OUTOFMEMORY;
+
+        *dst = (struct UiaCondition *)not_cond;
+        not_cond->ConditionType = ConditionType_Not;
+        hr = uia_condition_clone(&not_cond->pConditions, src_cond->pConditions);
+        break;
+    }
+
+    case ConditionType_And:
+    case ConditionType_Or:
+    {
+        struct UiaAndOrCondition *and_or_cond = heap_alloc_zero(sizeof(*and_or_cond));
+        struct UiaAndOrCondition *src_cond = (struct UiaAndOrCondition *)src;
+        int i;
+
+        if (!and_or_cond)
+            return E_OUTOFMEMORY;
+
+        *dst = (struct UiaCondition *)and_or_cond;
+        and_or_cond->ConditionType = src_cond->ConditionType;
+        and_or_cond->ppConditions = heap_alloc_zero(sizeof(*and_or_cond->ppConditions) * src_cond->cConditions);
+        if (!and_or_cond->ppConditions)
+        {
+            hr = E_OUTOFMEMORY;
+            goto exit;
+        }
+
+        and_or_cond->cConditions = src_cond->cConditions;
+        for (i = 0; i < src_cond->cConditions; i++)
+        {
+            hr = uia_condition_clone(&and_or_cond->ppConditions[i], src_cond->ppConditions[i]);
+            if (FAILED(hr))
+                goto exit;
+        }
+
+        break;
+    }
+
+    default:
+        WARN("Tried to clone condition with invalid type %d\n", src->ConditionType);
+        return E_INVALIDARG;
+    }
+
+exit:
+    if (FAILED(hr))
+    {
+        uia_condition_destroy(*dst);
+        *dst = NULL;
+    }
+
+    return hr;
+}
+
+/*
+ * UiaCacheRequest cloning functions.
+ */
+void uia_cache_request_destroy(struct UiaCacheRequest *cache_req)
+{
+    uia_condition_destroy(cache_req->pViewCondition);
+    heap_free(cache_req->pProperties);
+    heap_free(cache_req->pPatterns);
+}
+
+HRESULT uia_cache_request_clone(struct UiaCacheRequest *dst, struct UiaCacheRequest *src)
+{
+    HRESULT hr;
+
+    hr = uia_condition_clone(&dst->pViewCondition, src->pViewCondition);
+    if (FAILED(hr))
+        return hr;
+
+    dst->Scope = src->Scope;
+    dst->automationElementMode = src->automationElementMode;
+    if (src->cProperties)
+    {
+        if (!(dst->pProperties = heap_alloc_zero(sizeof(*dst->pProperties) * src->cProperties)))
+        {
+            uia_cache_request_destroy(dst);
+            return E_OUTOFMEMORY;
+        }
+
+        dst->cProperties = src->cProperties;
+        memcpy(dst->pProperties, src->pProperties, sizeof(*dst->pProperties) * dst->cProperties);
+    }
+
+    if (src->cPatterns)
+    {
+        if (!(dst->pPatterns = heap_alloc_zero(sizeof(*dst->pPatterns) * src->cPatterns)))
+        {
+            uia_cache_request_destroy(dst);
+            return E_OUTOFMEMORY;
+        }
+
+        dst->cPatterns = src->cPatterns;
+        memcpy(dst->pPatterns, src->pPatterns, sizeof(*dst->pPatterns) * dst->cPatterns);
+    }
+
+    return S_OK;
+}
+
 HRESULT get_safearray_dim_bounds(SAFEARRAY *sa, UINT dim, LONG *lbound, LONG *elems)
 {
     LONG ubound;

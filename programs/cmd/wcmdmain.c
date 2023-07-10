@@ -1135,6 +1135,12 @@ void WCMD_run_program (WCHAR *command, BOOL called)
         else
             lstrcpyW(temp, thisDir + 1);
 
+        /* When temp is an empty string, skip over it. This needs
+           to be done before the expansion, because WCMD_get_fullpath
+           fails when given an empty string                         */
+        if (*temp == '\0')
+            continue;
+
         /* Since you can have eg. ..\.. on the path, need to expand
            to full information                                      */
         if (!WCMD_get_fullpath(temp, ARRAY_SIZE(thisDir), thisDir, NULL)) return;
@@ -2064,9 +2070,9 @@ WCHAR *WCMD_ReadAndParseLine(const WCHAR *optionalcmd, CMD_LIST **output, HANDLE
                 /* See if 1>, 2> etc, in which case we have some patching up
                    to do (provided there's a preceding whitespace, and enough
                    chars read so far) */
-                if (curStringLen > 2
-                        && (*(curPos-1)>='1') && (*(curPos-1)<='9')
-                        && ((*(curPos-2)==' ') || (*(curPos-2)=='\t'))) {
+                if (curPos[-1] >= '1' && curPos[-1] <= '9'
+                        && (curStringLen == 1 ||
+                            curPos[-2] == ' ' || curPos[-2] == '\t')) {
                     curStringLen--;
                     curString[curStringLen] = 0x00;
                     curCopyTo[(*curLen)++] = *(curPos-1);

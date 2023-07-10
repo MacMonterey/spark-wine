@@ -463,6 +463,24 @@ TEB_ACTIVE_FRAME * WINAPI RtlGetFrame(void)
 }
 
 
+/******************************************************************************
+ *              RtlIsCurrentThread  (NTDLL.@)
+ */
+BOOLEAN WINAPI RtlIsCurrentThread( HANDLE handle )
+{
+    return handle == NtCurrentThread() || !NtCompareObjects( handle, NtCurrentThread() );
+}
+
+
+/***********************************************************************
+ *           _errno  (NTDLL.@)
+ */
+int * CDECL _errno(void)
+{
+    return (int *)&NtCurrentTeb()->TlsSlots[NTDLL_TLS_ERRNO];
+}
+
+
 /***********************************************************************
  * Fibers
  ***********************************************************************/

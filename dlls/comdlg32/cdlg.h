@@ -27,6 +27,7 @@
 #define COMDLG32_Atom   MAKEINTATOM(0xa000)     /* MS uses this one to identify props */
 
 extern HINSTANCE	COMDLG32_hInstance DECLSPEC_HIDDEN;
+extern HANDLE	COMDLG32_hActCtx DECLSPEC_HIDDEN;
 
 void	COMDLG32_SetCommDlgExtendedError(DWORD err) DECLSPEC_HIDDEN;
 LPVOID	COMDLG32_AllocMem(int size) __WINE_ALLOC_SIZE(1) DECLSPEC_HIDDEN;
@@ -181,9 +182,6 @@ void FILEDLG95_OnOpenMessage(HWND hwnd, int idCaption, int idText) DECLSPEC_HIDD
 
 extern BOOL GetFileName31A( OPENFILENAMEA *lpofn, UINT dlgType ) DECLSPEC_HIDDEN;
 extern BOOL GetFileName31W( OPENFILENAMEW *lpofn, UINT dlgType ) DECLSPEC_HIDDEN;
-
-/* SHELL */
-extern LPITEMIDLIST (WINAPI *COMDLG32_SHSimpleIDListFromPathAW)(LPCVOID);
 
 #define ONOPEN_BROWSE 1
 #define ONOPEN_OPEN   2
