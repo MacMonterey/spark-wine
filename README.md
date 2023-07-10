@@ -1,5 +1,3 @@
-# spark-wine
-spark store customized wine
-Only the modified part is provided here
+# spark-wine-installer
 
-The main branch only provides the installer, please go to other branches to get the relevant source code
+clone from https://github.com/gfdgd-xi/deep-wine-runner/blob/main/wine%20install
