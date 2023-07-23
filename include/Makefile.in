@@ -376,6 +376,7 @@ SOURCES = \
 	inspectable.idl \
 	interactioncontext.h \
 	intshcut.h \
+	ioringapi.h \
 	ip2string.h \
 	ipexport.h \
 	iphlpapi.h \
@@ -575,6 +576,7 @@ SOURCES = \
 	ntdef.h \
 	ntdsapi.h \
 	ntgdi.h \
+	ntioring_x.h \
 	ntlsa.h \
 	ntquery.h \
 	ntsecapi.h \
@@ -807,6 +809,7 @@ SOURCES = \
 	windef.h \
 	windns.h \
 	windot11.h \
+	windows.applicationmodel.idl \
 	windows.devices.bluetooth.idl \
 	windows.devices.enumeration.idl \
 	windows.devices.geolocation.idl \
@@ -840,6 +843,7 @@ SOURCES = \
 	windows.perception.spatial.surfaces.idl \
 	windows.security.credentials.idl \
 	windows.security.cryptography.idl \
+	windows.storage.idl \
 	windows.storage.streams.idl \
 	windows.system.idl \
 	windows.system.power.idl \
