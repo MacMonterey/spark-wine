@@ -1293,7 +1293,7 @@ static BOOL write_desktop_entry(const WCHAR *link, const WCHAR *location, const 
         fprintf(file, "env WINEPREFIX=\"%s\" ", path);
         heap_free( path );
     }
-    fprintf(file, "spark-wine8-wow %s", escape(path));
+    fprintf(file, "spark-wine9-wow %s", escape(path));
     if (args) fprintf(file, " %s", escape(args) );
     fputc( '\n', file );
     fprintf(file, "Type=Application\n");
@@ -2003,11 +2003,11 @@ static BOOL write_freedesktop_association_entry(const WCHAR *desktopPath, const 
         if (prefix)
         {
             char *path = wine_get_unix_file_name( prefix );
-            fprintf(desktop, "Exec=env WINEPREFIX=\"%s\" spark-wine8-wow start /ProgIDOpen %s %%f\n", path, escape(progId));
+            fprintf(desktop, "Exec=env WINEPREFIX=\"%s\" spark-wine9-wow start /ProgIDOpen %s %%f\n", path, escape(progId));
             heap_free( path );
         }
         else
-            fprintf(desktop, "Exec=spark-wine8-wow start /ProgIDOpen %s %%f\n", escape(progId));
+            fprintf(desktop, "Exec=spark-wine9-wow start /ProgIDOpen %s %%f\n", escape(progId));
         fprintf(desktop, "NoDisplay=true\n");
         fprintf(desktop, "StartupNotify=true\n");
         if (openWithIcon)
