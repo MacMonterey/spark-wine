@@ -1,5 +1,0 @@
-TESTDLL = tapi32.dll
-IMPORTS = tapi32
-
-C_SRCS = \
-	tapi.c

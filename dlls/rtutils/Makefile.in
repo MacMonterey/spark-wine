@@ -1,7 +1,0 @@
-MODULE    = rtutils.dll
-IMPORTLIB = rtutils
-
-EXTRADLLFLAGS = -Wb,--prefer-native
-
-C_SRCS = \
-	tracing.c

@@ -1,5 +1,0 @@
-TESTDLL   = dhcpcsvc.dll
-IMPORTS   = dhcpcsvc iphlpapi
-
-C_SRCS = \
-	dhcpcsvc.c

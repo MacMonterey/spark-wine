@@ -1,5 +1,0 @@
-TESTDLL   = find.exe
-IMPORTS   = user32
-
-C_SRCS = \
-	find.c

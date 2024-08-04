@@ -1,5 +1,0 @@
-TESTDLL  = msado15.dll
-IMPORTS  = oleaut32 ole32
-
-C_SRCS = \
-	msado15.c

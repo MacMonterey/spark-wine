@@ -1,5 +1,0 @@
-TESTDLL   = psapi.dll
-IMPORTS   = psapi user32
-
-C_SRCS = \
-	psapi_main.c

@@ -1,5 +1,0 @@
-TESTDLL = threadpoolwinrt.dll
-IMPORTS = combase uuid
-
-C_SRCS = \
-	threadpool.c

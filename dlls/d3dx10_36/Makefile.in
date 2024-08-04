@@ -1,9 +1,0 @@
-MODULE    = d3dx10_36.dll
-IMPORTLIB = d3dx10_36
-
-EXTRADLLFLAGS = -Wb,--prefer-native
-
-C_SRCS = \
-	d3dx10_36_main.c
-
-RC_SRCS = version.rc

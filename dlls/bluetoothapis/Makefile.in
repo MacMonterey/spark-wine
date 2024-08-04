@@ -1,7 +1,0 @@
-MODULE    = bluetoothapis.dll
-IMPORTLIB = bluetoothapis
-
-EXTRADLLFLAGS = -Wb,--prefer-native
-
-C_SRCS = \
-	main.c

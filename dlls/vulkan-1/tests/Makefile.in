@@ -1,5 +1,0 @@
-TESTDLL = vulkan-1.dll
-IMPORTS = vulkan-1
-
-C_SRCS = \
-	vulkan.c

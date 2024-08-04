@@ -1,5 +1,0 @@
-MODULE = windows.networking.dll
-IMPORTS = combase
-
-C_SRCS = \
-	main.c

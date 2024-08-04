@@ -1,7 +1,0 @@
-MODULE    = clusapi.dll
-IMPORTLIB = clusapi
-
-EXTRADLLFLAGS = -Wb,--prefer-native
-
-C_SRCS = \
-	clusapi.c

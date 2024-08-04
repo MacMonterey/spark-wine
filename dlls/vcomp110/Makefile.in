@@ -1,5 +1,0 @@
-MODULE    = vcomp110.dll
-PARENTSRC = ../vcomp
-
-C_SRCS = \
-	main.c

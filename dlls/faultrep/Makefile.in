@@ -1,7 +1,0 @@
-MODULE    = faultrep.dll
-IMPORTLIB = faultrep
-IMPORTS   = advapi32
-
-EXTRADLLFLAGS = -Wb,--prefer-native
-
-C_SRCS = faultrep.c

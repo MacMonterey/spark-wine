@@ -1,5 +1,0 @@
-TESTDLL = windows.gaming.ui.gamebar.dll
-IMPORTS = combase
-
-C_SRCS = \
-	gamebar.c

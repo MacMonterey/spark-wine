@@ -1,5 +1,0 @@
-TESTDLL = shcore.dll
-IMPORTS = advapi32
-
-C_SRCS = \
-	shcore.c

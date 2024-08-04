@@ -1,4 +1,0 @@
-MODULE    = msvcrt20.dll
-IMPORTS   = msvcrt
-
-C_SRCS = msvcrt20.c

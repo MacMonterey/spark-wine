@@ -1,5 +1,0 @@
-TESTDLL   = qwave.dll
-IMPORTS   = qwave
-
-C_SRCS = \
-	qos.c

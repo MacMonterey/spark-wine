@@ -1,4 +1,0 @@
-STATICLIB = libdmoguids.a
-
-C_SRCS = \
-	dmoguids.c

@@ -1,8 +1,0 @@
-MODULE    = dcomp.dll
-
-EXTRADLLFLAGS = -Wb,--prefer-native
-
-C_SRCS = \
-	device.c
-
-RC_SRCS = version.rc

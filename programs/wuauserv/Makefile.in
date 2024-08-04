@@ -1,7 +1,0 @@
-MODULE    = wuauserv.exe
-IMPORTS   = advapi32
-
-EXTRADLLFLAGS = -mconsole
-
-C_SRCS = \
-	main.c

@@ -1,3 +1,0 @@
-MODULE    = ksproxy.ax
-
-RC_SRCS = version.rc

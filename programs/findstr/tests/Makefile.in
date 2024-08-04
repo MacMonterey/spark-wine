@@ -1,4 +1,0 @@
-TESTDLL   = findstr.exe
-
-C_SRCS = \
-	findstr.c

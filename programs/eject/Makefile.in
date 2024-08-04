@@ -1,5 +1,0 @@
-MODULE    = eject.exe
-
-EXTRADLLFLAGS = -mconsole
-
-C_SRCS = eject.c

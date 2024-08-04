@@ -1,5 +1,0 @@
-TESTDLL = windows.devices.bluetooth.dll
-IMPORTS = combase
-
-C_SRCS = \
-	bluetooth.c
