@@ -77,48 +77,27 @@ struct xml_encoding_data
     UINT cp;
 };
 
-static const WCHAR iso_8859_1W[] = {'i','s','o','-','8','8','5','9','-','1',0};
-static const WCHAR iso_8859_2W[] = {'i','s','o','-','8','8','5','9','-','2',0};
-static const WCHAR iso_8859_3W[] = {'i','s','o','-','8','8','5','9','-','3',0};
-static const WCHAR iso_8859_4W[] = {'i','s','o','-','8','8','5','9','-','4',0};
-static const WCHAR iso_8859_5W[] = {'i','s','o','-','8','8','5','9','-','5',0};
-static const WCHAR iso_8859_7W[] = {'i','s','o','-','8','8','5','9','-','7',0};
-static const WCHAR iso_8859_9W[] = {'i','s','o','-','8','8','5','9','-','9',0};
-static const WCHAR iso_8859_13W[] = {'i','s','o','-','8','8','5','9','-','1','3',0};
-static const WCHAR iso_8859_15W[] = {'i','s','o','-','8','8','5','9','-','1','5',0};
-static const WCHAR utf16W[] = {'U','T','F','-','1','6',0};
-static const WCHAR utf8W[] = {'U','T','F','-','8',0};
-static const WCHAR windows_1250W[] = {'w','i','n','d','o','w','s','-','1','2','5','0',0};
-static const WCHAR windows_1251W[] = {'w','i','n','d','o','w','s','-','1','2','5','1',0};
-static const WCHAR windows_1252W[] = {'w','i','n','d','o','w','s','-','1','2','5','2',0};
-static const WCHAR windows_1253W[] = {'w','i','n','d','o','w','s','-','1','2','5','3',0};
-static const WCHAR windows_1254W[] = {'w','i','n','d','o','w','s','-','1','2','5','4',0};
-static const WCHAR windows_1255W[] = {'w','i','n','d','o','w','s','-','1','2','5','5',0};
-static const WCHAR windows_1256W[] = {'w','i','n','d','o','w','s','-','1','2','5','6',0};
-static const WCHAR windows_1257W[] = {'w','i','n','d','o','w','s','-','1','2','5','7',0};
-static const WCHAR windows_1258W[] = {'w','i','n','d','o','w','s','-','1','2','5','8',0};
-
 static const struct xml_encoding_data xml_encoding_map[] = {
-    { iso_8859_1W,  XmlEncoding_ISO_8859_1,  28591 },
-    { iso_8859_13W, XmlEncoding_ISO_8859_13, 28603 },
-    { iso_8859_15W, XmlEncoding_ISO_8859_15, 28605 },
-    { iso_8859_2W,  XmlEncoding_ISO_8859_2,  28592 },
-    { iso_8859_3W,  XmlEncoding_ISO_8859_3,  28593 },
-    { iso_8859_4W,  XmlEncoding_ISO_8859_4,  28594 },
-    { iso_8859_5W,  XmlEncoding_ISO_8859_5,  28595 },
-    { iso_8859_7W,  XmlEncoding_ISO_8859_7,  28597 },
-    { iso_8859_9W,  XmlEncoding_ISO_8859_9,  28599 },
-    { utf16W,       XmlEncoding_UTF16,          ~0 },
-    { utf8W,        XmlEncoding_UTF8,      CP_UTF8 },
-    { windows_1250W,XmlEncoding_windows_1250, 1250 },
-    { windows_1251W,XmlEncoding_windows_1251, 1251 },
-    { windows_1252W,XmlEncoding_windows_1252, 1252 },
-    { windows_1253W,XmlEncoding_windows_1253, 1253 },
-    { windows_1254W,XmlEncoding_windows_1254, 1254 },
-    { windows_1255W,XmlEncoding_windows_1255, 1255 },
-    { windows_1256W,XmlEncoding_windows_1256, 1256 },
-    { windows_1257W,XmlEncoding_windows_1257, 1257 },
-    { windows_1258W,XmlEncoding_windows_1258, 1258 }
+    { L"iso-8859-1",   XmlEncoding_ISO_8859_1,  28591 },
+    { L"iso-8859-13",  XmlEncoding_ISO_8859_13, 28603 },
+    { L"iso-8859-15",  XmlEncoding_ISO_8859_15, 28605 },
+    { L"iso-8859-2",   XmlEncoding_ISO_8859_2,  28592 },
+    { L"iso-8859-3",   XmlEncoding_ISO_8859_3,  28593 },
+    { L"iso-8859-4",   XmlEncoding_ISO_8859_4,  28594 },
+    { L"iso-8859-5",   XmlEncoding_ISO_8859_5,  28595 },
+    { L"iso-8859-7",   XmlEncoding_ISO_8859_7,  28597 },
+    { L"iso-8859-9",   XmlEncoding_ISO_8859_9,  28599 },
+    { L"UTF-16",       XmlEncoding_UTF16,          ~0 },
+    { L"UTF-8",        XmlEncoding_UTF8,      CP_UTF8 },
+    { L"windows-1250", XmlEncoding_windows_1250, 1250 },
+    { L"windows-1251", XmlEncoding_windows_1251, 1251 },
+    { L"windows-1252", XmlEncoding_windows_1252, 1252 },
+    { L"windows-1253", XmlEncoding_windows_1253, 1253 },
+    { L"windows-1254", XmlEncoding_windows_1254, 1254 },
+    { L"windows-1255", XmlEncoding_windows_1255, 1255 },
+    { L"windows-1256", XmlEncoding_windows_1256, 1256 },
+    { L"windows-1257", XmlEncoding_windows_1257, 1257 },
+    { L"windows-1258", XmlEncoding_windows_1258, 1258 }
 };
 
 typedef enum
@@ -237,7 +216,7 @@ static HRESULT mxattributes_grow(mxattributes *This)
     if (This->length < This->allocated) return S_OK;
 
     This->allocated *= 2;
-    This->attr = heap_realloc(This->attr, This->allocated*sizeof(mxattribute));
+    This->attr = realloc(This->attr, This->allocated * sizeof(mxattribute));
 
     return This->attr ? S_OK : E_OUTOFMEMORY;
 }
@@ -269,7 +248,7 @@ static xml_encoding parse_encoding_name(const WCHAR *encoding)
 static HRESULT init_encoded_buffer(encoded_buffer *buffer)
 {
     const int initial_len = 0x1000;
-    buffer->data = heap_alloc(initial_len);
+    buffer->data = malloc(initial_len);
     if (!buffer->data) return E_OUTOFMEMORY;
 
     memset(buffer->data, 0, 4);
@@ -281,7 +260,7 @@ static HRESULT init_encoded_buffer(encoded_buffer *buffer)
 
 static void free_encoded_buffer(encoded_buffer *buffer)
 {
-    heap_free(buffer->data);
+    free(buffer->data);
 }
 
 static HRESULT get_code_page(xml_encoding encoding, UINT *cp)
@@ -328,7 +307,7 @@ static void free_output_buffer(output_buffer *buffer)
     {
         list_remove(&cur->entry);
         free_encoded_buffer(cur);
-        heap_free(cur);
+        free(cur);
     }
 }
 
@@ -408,13 +387,13 @@ static HRESULT write_output_buffer(mxwriter *writer, const WCHAR *data, int len)
                     char *mb;
 
                     /* if current chunk is larger than total buffer size, convert it at once using temporary allocated buffer */
-                    mb = heap_alloc(length);
+                    mb = malloc(length);
                     if (!mb)
                         return E_OUTOFMEMORY;
 
                     length = WideCharToMultiByte(buffer->code_page, 0, data, src_len, mb, length, NULL, NULL);
                     IStream_Write(writer->dest, mb, length, &written);
-                    heap_free(mb);
+                    free(mb);
                 }
             }
         }
@@ -452,11 +431,11 @@ static HRESULT write_output_buffer(mxwriter *writer, const WCHAR *data, int len)
             /* alloc new block if needed and retry */
             if (src_len)
             {
-                encoded_buffer *next = heap_alloc(sizeof(*next));
+                encoded_buffer *next = malloc(sizeof(*next));
                 HRESULT hr;
 
                 if (FAILED(hr = init_encoded_buffer(next))) {
-                    heap_free(next);
+                    free(next);
                     return hr;
                 }
 
@@ -483,13 +462,13 @@ static void close_output_buffer(mxwriter *writer)
 {
     encoded_buffer *cur, *cur2;
 
-    heap_free(writer->buffer.encoded.data);
+    free(writer->buffer.encoded.data);
 
     LIST_FOR_EACH_ENTRY_SAFE(cur, cur2, &writer->buffer.blocks, encoded_buffer, entry)
     {
         list_remove(&cur->entry);
         free_encoded_buffer(cur);
-        heap_free(cur);
+        free(cur);
     }
 
     init_encoded_buffer(&writer->buffer.encoded);
@@ -521,7 +500,7 @@ static WCHAR *get_escaped_string(const WCHAR *str, escape_mode mode, int *len)
 
     /* default buffer size to something if length is unknown */
     conv_len = max(2**len, default_alloc);
-    ptr = ret = heap_alloc(conv_len*sizeof(WCHAR));
+    ptr = ret = malloc(conv_len * sizeof(WCHAR));
 
     while (p)
     {
@@ -529,7 +508,7 @@ static WCHAR *get_escaped_string(const WCHAR *str, escape_mode mode, int *len)
         {
             int written = ptr - ret;
             conv_len *= 2;
-            ptr = ret = heap_realloc(ret, conv_len*sizeof(WCHAR));
+            ptr = ret = realloc(ret, conv_len * sizeof(WCHAR));
             ptr += written;
         }
 
@@ -588,7 +567,7 @@ static void write_prolog_buffer(mxwriter *writer)
     if (writer->dest)
         write_output_buffer(writer, writer->encoding, -1);
     else
-        write_output_buffer(writer, utf16W, ARRAY_SIZE(utf16W) - 1);
+        write_output_buffer(writer, L"UTF-16", ARRAY_SIZE(L"UTF-16") - 1);
     write_output_buffer(writer, quotW, 1);
 
     /* standalone */
@@ -854,7 +833,7 @@ static ULONG WINAPI mxwriter_Release(IMXWriter *iface)
         SysFreeString(This->encoding);
 
         SysFreeString(This->element);
-        heap_free(This);
+        free(This);
     }
 
     return ref;
@@ -1281,7 +1260,7 @@ static void mxwriter_write_attribute(mxwriter *writer, const WCHAR *qname, int q
     {
         WCHAR *escaped = get_escaped_string(value, EscapeValue, &value_len);
         write_output_buffer_quoted(writer, escaped, value_len);
-        heap_free(escaped);
+        free(escaped);
     }
     else
         write_output_buffer_quoted(writer, value, value_len);
@@ -1420,7 +1399,7 @@ static HRESULT WINAPI SAXContentHandler_characters(
 
             escaped = get_escaped_string(chars, EscapeText, &len);
             write_output_buffer(This, escaped, len);
-            heap_free(escaped);
+            free(escaped);
         }
     }
 
@@ -2589,13 +2568,12 @@ static dispex_static_data_t mxwriter_dispex = {
 
 HRESULT MXWriter_create(MSXML_VERSION version, void **ppObj)
 {
-    static const WCHAR version10W[] = {'1','.','0',0};
     mxwriter *This;
     HRESULT hr;
 
     TRACE("(%p)\n", ppObj);
 
-    This = heap_alloc( sizeof (*This) );
+    This = malloc(sizeof(*This));
     if(!This)
         return E_OUTOFMEMORY;
 
@@ -2619,8 +2597,8 @@ HRESULT MXWriter_create(MSXML_VERSION version, void **ppObj)
     This->props[MXWriter_OmitXmlDecl] = VARIANT_FALSE;
     This->props[MXWriter_Standalone] = VARIANT_FALSE;
     This->prop_changed = FALSE;
-    This->encoding = SysAllocString(utf16W);
-    This->version  = SysAllocString(version10W);
+    This->encoding = SysAllocString(L"UTF-16");
+    This->version  = SysAllocString(L"1.0");
     This->xml_enc  = XmlEncoding_UTF16;
 
     This->element = NULL;
@@ -2635,7 +2613,7 @@ HRESULT MXWriter_create(MSXML_VERSION version, void **ppObj)
     if (hr != S_OK) {
         SysFreeString(This->encoding);
         SysFreeString(This->version);
-        heap_free(This);
+        free(This);
         return hr;
     }
 
@@ -2713,8 +2691,8 @@ static ULONG WINAPI MXAttributes_Release(IMXAttributes *iface)
             SysFreeString(This->attr[i].value);
         }
 
-        heap_free(This->attr);
-        heap_free(This);
+        free(This->attr);
+        free(This);
     }
 
     return ref;
@@ -3559,7 +3537,7 @@ HRESULT SAXAttributes_create(MSXML_VERSION version, void **ppObj)
 
     TRACE("(%p)\n", ppObj);
 
-    This = heap_alloc( sizeof (*This) );
+    This = malloc(sizeof(*This));
     if( !This )
         return E_OUTOFMEMORY;
 
@@ -3570,7 +3548,7 @@ HRESULT SAXAttributes_create(MSXML_VERSION version, void **ppObj)
 
     This->class_version = version;
 
-    This->attr = heap_alloc(default_count*sizeof(mxattribute));
+    This->attr = malloc(default_count * sizeof(mxattribute));
     This->length = 0;
     This->allocated = default_count;
 

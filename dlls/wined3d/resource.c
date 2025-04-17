@@ -22,6 +22,8 @@
  */
 
 #include "wined3d_private.h"
+#include "wined3d_gl.h"
+#include "wined3d_vk.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(d3d);
 WINE_DECLARE_DEBUG_CHANNEL(d3d_perf);
@@ -33,7 +35,7 @@ static void resource_check_usage(uint32_t usage, unsigned int access)
             | WINED3DUSAGE_OVERLAY
             | WINED3DUSAGE_SCRATCH
             | WINED3DUSAGE_MANAGED
-            | WINED3DUSAGE_PRIVATE
+            | WINED3DUSAGE_CS
             | WINED3DUSAGE_LEGACY_CUBEMAP
             | ~WINED3DUSAGE_MASK;
 
@@ -56,11 +58,8 @@ HRESULT resource_init(struct wined3d_resource *resource, struct wined3d_device *
         unsigned int size, void *parent, const struct wined3d_parent_ops *parent_ops,
         const struct wined3d_resource_ops *resource_ops)
 {
-    const struct wined3d_d3d_info *d3d_info = &device->adapter->d3d_info;
     enum wined3d_gl_resource_type base_type = WINED3D_GL_RES_TYPE_COUNT;
     enum wined3d_gl_resource_type gl_type = WINED3D_GL_RES_TYPE_COUNT;
-    const struct wined3d_gl_info *gl_info = &device->adapter->gl_info;
-    BOOL tex_2d_ok = FALSE;
     unsigned int i;
 
     static const struct
@@ -74,7 +73,6 @@ HRESULT resource_init(struct wined3d_resource *resource, struct wined3d_device *
         {WINED3D_RTYPE_BUFFER,      0,                              WINED3D_GL_RES_TYPE_BUFFER},
         {WINED3D_RTYPE_TEXTURE_1D,  0,                              WINED3D_GL_RES_TYPE_TEX_1D},
         {WINED3D_RTYPE_TEXTURE_2D,  0,                              WINED3D_GL_RES_TYPE_TEX_2D},
-        {WINED3D_RTYPE_TEXTURE_2D,  0,                              WINED3D_GL_RES_TYPE_TEX_RECT},
         {WINED3D_RTYPE_TEXTURE_2D,  0,                              WINED3D_GL_RES_TYPE_RB},
         {WINED3D_RTYPE_TEXTURE_2D,  WINED3DUSAGE_LEGACY_CUBEMAP,    WINED3D_GL_RES_TYPE_TEX_CUBE},
         {WINED3D_RTYPE_TEXTURE_3D,  0,                              WINED3D_GL_RES_TYPE_TEX_3D},
@@ -141,27 +139,12 @@ HRESULT resource_init(struct wined3d_resource *resource, struct wined3d_device *
             WARN("Format %s cannot be used for texturing.\n", debug_d3dformat(format->id));
             continue;
         }
-        if (((width & (width - 1)) || (height & (height - 1)))
-                && !d3d_info->texture_npot
-                && !gl_info->supported[WINED3D_GL_NORMALIZED_TEXRECT]
-                && gl_type == WINED3D_GL_RES_TYPE_TEX_2D)
-        {
-            TRACE("Skipping 2D texture type to try texture rectangle.\n");
-            tex_2d_ok = TRUE;
-            continue;
-        }
         break;
     }
 
     if (base_type != WINED3D_GL_RES_TYPE_COUNT && i == ARRAY_SIZE(resource_types))
     {
-        if (tex_2d_ok)
-        {
-            /* Non power of 2 texture and rectangle textures or renderbuffers do not work.
-             * Use 2D textures, the texture code will pad to a power of 2 size. */
-            gl_type = WINED3D_GL_RES_TYPE_TEX_2D;
-        }
-        else if (usage & WINED3DUSAGE_SCRATCH)
+        if (usage & WINED3DUSAGE_SCRATCH)
         {
             /* Needed for proper format information. */
             gl_type = base_type;
@@ -208,6 +191,7 @@ HRESULT resource_init(struct wined3d_resource *resource, struct wined3d_device *
     resource->parent_ops = parent_ops;
     resource->resource_ops = resource_ops;
     resource->map_binding = WINED3D_LOCATION_SYSMEM;
+    resource->heap_pointer = NULL;
     resource->heap_memory = NULL;
 
     /* Check that we have enough video ram left */
@@ -221,7 +205,7 @@ HRESULT resource_init(struct wined3d_resource *resource, struct wined3d_device *
         adapter_adjust_memory(device->adapter, size);
     }
 
-    if (!(usage & WINED3DUSAGE_PRIVATE))
+    if (!(usage & WINED3DUSAGE_CS))
         device_resource_add(device, resource);
 
     return WINED3D_OK;
@@ -247,7 +231,7 @@ void resource_cleanup(struct wined3d_resource *resource)
         adapter_adjust_memory(resource->device->adapter, (INT64)0 - resource->size);
     }
 
-    if (!(resource->usage & WINED3DUSAGE_PRIVATE))
+    if (!(resource->usage & WINED3DUSAGE_CS))
         device_resource_released(resource->device, resource);
 
     wined3d_resource_reference(resource);
@@ -331,20 +315,21 @@ void CDECL wined3d_resource_preload(struct wined3d_resource *resource)
 
 static BOOL wined3d_resource_allocate_sysmem(struct wined3d_resource *resource)
 {
-    void **p;
-    SIZE_T align = RESOURCE_ALIGNMENT - 1 + sizeof(*p);
+    /* Overallocate and add padding to the allocated pointer, to guard against
+     * games (for instance Railroad Tycoon 2) writing before the locked resource
+     * memory pointer.
+     */
+    static const SIZE_T align = RESOURCE_ALIGNMENT;
     void *mem;
 
-    if (!(mem = heap_alloc_zero(resource->size + align)))
+    if (!(mem = calloc(1, resource->size + align)))
     {
         ERR("Failed to allocate system memory.\n");
         return FALSE;
     }
 
-    p = (void **)(((ULONG_PTR)mem + align) & ~(RESOURCE_ALIGNMENT - 1)) - 1;
-    *p = mem;
-
-    resource->heap_memory = ++p;
+    resource->heap_memory = (void *)(((ULONG_PTR)mem + align) & ~(RESOURCE_ALIGNMENT - 1));
+    resource->heap_pointer = mem;
 
     return TRUE;
 }
@@ -359,13 +344,12 @@ BOOL wined3d_resource_prepare_sysmem(struct wined3d_resource *resource)
 
 void wined3d_resource_free_sysmem(struct wined3d_resource *resource)
 {
-    void **p = resource->heap_memory;
-
-    if (!p)
+    if (!resource->heap_memory)
         return;
-
-    heap_free(*(--p));
     resource->heap_memory = NULL;
+
+    free(resource->heap_pointer);
+    resource->heap_pointer = NULL;
 }
 
 GLbitfield wined3d_resource_gl_storage_flags(const struct wined3d_resource *resource)
@@ -435,16 +419,14 @@ BOOL wined3d_resource_is_offscreen(struct wined3d_resource *resource)
     if (resource == &swapchain->front_buffer->resource)
         return FALSE;
 
-    /* If the swapchain is rendered to an FBO, the backbuffer is
-     * offscreen, otherwise onscreen */
-    return wined3d_settings.offscreen_rendering_mode == ORM_FBO;
+    return TRUE;
 }
 
 void wined3d_resource_update_draw_binding(struct wined3d_resource *resource)
 {
     const struct wined3d_d3d_info *d3d_info = &resource->device->adapter->d3d_info;
 
-    if (!wined3d_resource_is_offscreen(resource) || wined3d_settings.offscreen_rendering_mode != ORM_FBO)
+    if (!wined3d_resource_is_offscreen(resource))
     {
         resource->draw_binding = WINED3D_LOCATION_DRAWABLE;
     }
@@ -520,14 +502,22 @@ HRESULT wined3d_resource_check_box_dimensions(struct wined3d_resource *resource,
         return WINEDDERR_INVALIDRECT;
     }
 
-    if (resource->format_attrs & WINED3D_FORMAT_ATTR_BLOCKS)
+    if (resource->format_attrs & (WINED3D_FORMAT_ATTR_BLOCKS | WINED3D_FORMAT_ATTR_PLANAR))
     {
         /* This assumes power of two block sizes, but NPOT block sizes would
          * be silly anyway.
          *
          * This also assumes that the format's block depth is 1. */
-        width_mask = format->block_width - 1;
-        height_mask = format->block_height - 1;
+        if (resource->format_attrs & WINED3D_FORMAT_ATTR_BLOCKS)
+        {
+            width_mask = format->block_width - 1;
+            height_mask = format->block_height - 1;
+        }
+        else
+        {
+            width_mask = format->uv_width - 1;
+            height_mask = format->uv_height - 1;
+        }
 
         if ((box->left & width_mask) || (box->top & height_mask)
                 || (box->right & width_mask && box->right != desc.width)

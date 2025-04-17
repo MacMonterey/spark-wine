@@ -54,9 +54,6 @@ WINE_DEFAULT_DEBUG_CHANNEL(pulse);
 
 #define MAX_PULSE_NAME_LEN 256
 
-#define NULL_PTR_ERR MAKE_HRESULT(SEVERITY_ERROR, FACILITY_WIN32, RPC_X_NULL_REF_POINTER)
-
-extern struct list sessions;
 static struct list g_devices_cache = LIST_INIT(g_devices_cache);
 
 struct device_cache {
@@ -73,31 +70,14 @@ static GUID pulse_capture_guid =
 
 static WCHAR drv_key_devicesW[256];
 
-static CRITICAL_SECTION session_cs;
-static CRITICAL_SECTION_DEBUG session_cs_debug = {
-    0, 0, &session_cs,
-    { &session_cs_debug.ProcessLocksList,
-      &session_cs_debug.ProcessLocksList },
-    0, 0, { (DWORD_PTR)(__FILE__ ": session_cs") }
-};
-static CRITICAL_SECTION session_cs = { &session_cs_debug, -1, 0, 0, 0, 0 };
-
-void DECLSPEC_HIDDEN sessions_lock(void)
-{
-    EnterCriticalSection(&session_cs);
-}
-
-void DECLSPEC_HIDDEN sessions_unlock(void)
-{
-    LeaveCriticalSection(&session_cs);
-}
-
 BOOL WINAPI DllMain(HINSTANCE dll, DWORD reason, void *reserved)
 {
-    if (reason == DLL_PROCESS_ATTACH) {
-        WCHAR buf[MAX_PATH];
-        WCHAR *filename;
+    WCHAR buf[MAX_PATH];
+    WCHAR *filename;
 
+    switch (reason)
+    {
+    case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(dll);
         if (__wine_init_unix_call())
             return FALSE;
@@ -109,48 +89,36 @@ BOOL WINAPI DllMain(HINSTANCE dll, DWORD reason, void *reserved)
 
         swprintf(drv_key_devicesW, ARRAY_SIZE(drv_key_devicesW),
                  L"Software\\Wine\\Drivers\\%s\\devices", filename);
-    } else if (reason == DLL_PROCESS_DETACH) {
-        struct device_cache *device, *device_next;
+        break;
+    case DLL_PROCESS_DETACH:
+        if (!reserved)
+        {
+            struct device_cache *device, *device_next;
 
-        LIST_FOR_EACH_ENTRY_SAFE(device, device_next, &g_devices_cache, struct device_cache, entry)
-            free(device);
+            LIST_FOR_EACH_ENTRY_SAFE(device, device_next, &g_devices_cache, struct device_cache, entry)
+                free(device);
+        }
+        break;
     }
     return TRUE;
 }
 
-extern const IAudioClient3Vtbl AudioClient3_Vtbl;
-extern const IAudioRenderClientVtbl AudioRenderClient_Vtbl;
-extern const IAudioCaptureClientVtbl AudioCaptureClient_Vtbl;
-extern const IAudioSessionControl2Vtbl AudioSessionControl2_Vtbl;
-extern const ISimpleAudioVolumeVtbl SimpleAudioVolume_Vtbl;
-extern const IChannelAudioVolumeVtbl ChannelAudioVolume_Vtbl;
-extern const IAudioClockVtbl AudioClock_Vtbl;
-extern const IAudioClock2Vtbl AudioClock2_Vtbl;
-extern const IAudioStreamVolumeVtbl AudioStreamVolume_Vtbl;
-
-extern struct audio_session_wrapper *session_wrapper_create(
-    struct audio_client *client) DECLSPEC_HIDDEN;
-
-static void pulse_call(enum unix_funcs code, void *params)
-{
-    NTSTATUS status;
-    status = WINE_UNIX_CALL(code, params);
-    assert(!status);
-}
-
-static void get_device_guid(HKEY drv_key, EDataFlow flow, const char *pulse_name, GUID *guid)
+void WINAPI get_device_guid(EDataFlow flow, const char *pulse_name, GUID *guid)
 {
     WCHAR key_name[MAX_PULSE_NAME_LEN + 2];
     DWORD type, size = sizeof(*guid);
     LSTATUS status;
-    HKEY dev_key;
+    HKEY drv_key, dev_key;
 
     if (!pulse_name[0]) {
         *guid = (flow == eRender) ? pulse_render_guid : pulse_capture_guid;
         return;
     }
 
-    if (!drv_key) {
+    status = RegCreateKeyExW(HKEY_CURRENT_USER, drv_key_devicesW, 0, NULL, 0,
+                             KEY_WRITE | KEY_WOW64_64KEY, NULL, &drv_key, NULL);
+    if (status != ERROR_SUCCESS) {
+        ERR("Failed to open devices registry key: %lu\n", status);
         CoCreateGuid(guid);
         return;
     }
@@ -163,6 +131,7 @@ static void get_device_guid(HKEY drv_key, EDataFlow flow, const char *pulse_name
                              NULL, &dev_key, NULL);
     if (status != ERROR_SUCCESS) {
         ERR("Failed to open registry key for device %s: %lu\n", pulse_name, status);
+        RegCloseKey(drv_key);
         CoCreateGuid(guid);
         return;
     }
@@ -175,77 +144,10 @@ static void get_device_guid(HKEY drv_key, EDataFlow flow, const char *pulse_name
             ERR("Failed to store device GUID for %s to registry: %lu\n", pulse_name, status);
     }
     RegCloseKey(dev_key);
+    RegCloseKey(drv_key);
 }
 
-HRESULT WINAPI AUDDRV_GetEndpointIDs(EDataFlow flow, WCHAR ***ids_out, GUID **keys,
-        UINT *num, UINT *def_index)
-{
-    struct get_endpoint_ids_params params;
-    GUID *guids = NULL;
-    WCHAR **ids = NULL;
-    unsigned int i = 0;
-    LSTATUS status;
-    HKEY drv_key;
-
-    TRACE("%d %p %p %p\n", flow, ids_out, num, def_index);
-
-    params.flow = flow;
-    params.size = MAX_PULSE_NAME_LEN * 4;
-    params.endpoints = NULL;
-    do {
-        HeapFree(GetProcessHeap(), 0, params.endpoints);
-        params.endpoints = HeapAlloc(GetProcessHeap(), 0, params.size);
-        pulse_call(get_endpoint_ids, &params);
-    } while(params.result == HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER));
-
-    if (FAILED(params.result))
-        goto end;
-
-    ids = HeapAlloc(GetProcessHeap(), 0, params.num * sizeof(*ids));
-    guids = HeapAlloc(GetProcessHeap(), 0, params.num * sizeof(*guids));
-    if (!ids || !guids) {
-        params.result = E_OUTOFMEMORY;
-        goto end;
-    }
-
-    status = RegCreateKeyExW(HKEY_CURRENT_USER, drv_key_devicesW, 0, NULL, 0,
-                             KEY_WRITE | KEY_WOW64_64KEY, NULL, &drv_key, NULL);
-    if (status != ERROR_SUCCESS) {
-        ERR("Failed to open devices registry key: %lu\n", status);
-        drv_key = NULL;
-    }
-
-    for (i = 0; i < params.num; i++) {
-        WCHAR *name = (WCHAR *)((char *)params.endpoints + params.endpoints[i].name);
-        char *pulse_name = (char *)params.endpoints + params.endpoints[i].device;
-        unsigned int size = (wcslen(name) + 1) * sizeof(WCHAR);
-
-        if (!(ids[i] = HeapAlloc(GetProcessHeap(), 0, size))) {
-            params.result = E_OUTOFMEMORY;
-            break;
-        }
-        memcpy(ids[i], name, size);
-        get_device_guid(drv_key, flow, pulse_name, &guids[i]);
-    }
-    if (drv_key)
-        RegCloseKey(drv_key);
-
-end:
-    HeapFree(GetProcessHeap(), 0, params.endpoints);
-    if (FAILED(params.result)) {
-        HeapFree(GetProcessHeap(), 0, guids);
-        while (i--) HeapFree(GetProcessHeap(), 0, ids[i]);
-        HeapFree(GetProcessHeap(), 0, ids);
-    } else {
-        *ids_out = ids;
-        *keys = guids;
-        *num = params.num;
-        *def_index = params.default_idx;
-    }
-    return params.result;
-}
-
-static BOOL get_device_name_from_guid(GUID *guid, char **name, EDataFlow *flow)
+BOOL WINAPI get_device_name_from_guid(GUID *guid, char **name, EDataFlow *flow)
 {
     struct device_cache *device;
     WCHAR key_name[MAX_PULSE_NAME_LEN + 2];
@@ -345,151 +247,4 @@ static BOOL get_device_name_from_guid(GUID *guid, char **name, EDataFlow *flow)
     RegCloseKey(key);
     WARN("No matching device in registry for GUID %s\n", debugstr_guid(guid));
     return FALSE;
-}
-
-HRESULT WINAPI AUDDRV_GetAudioEndpoint(GUID *guid, IMMDevice *dev, IAudioClient **out)
-{
-    ACImpl *This;
-    char *pulse_name;
-    EDataFlow dataflow;
-    unsigned len;
-    HRESULT hr;
-
-    TRACE("%s %p %p\n", debugstr_guid(guid), dev, out);
-
-    if (!get_device_name_from_guid(guid, &pulse_name, &dataflow))
-        return AUDCLNT_E_DEVICE_INVALIDATED;
-
-    if (dataflow != eRender && dataflow != eCapture) {
-        free(pulse_name);
-        return E_UNEXPECTED;
-    }
-
-    *out = NULL;
-
-    len = strlen(pulse_name) + 1;
-    This = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, FIELD_OFFSET(ACImpl, device_name[len]));
-    if (!This) {
-        free(pulse_name);
-        return E_OUTOFMEMORY;
-    }
-
-    memcpy(This->device_name, pulse_name, len);
-    free(pulse_name);
-
-    This->IAudioClient3_iface.lpVtbl = &AudioClient3_Vtbl;
-    This->IAudioRenderClient_iface.lpVtbl = &AudioRenderClient_Vtbl;
-    This->IAudioCaptureClient_iface.lpVtbl = &AudioCaptureClient_Vtbl;
-    This->IAudioClock_iface.lpVtbl = &AudioClock_Vtbl;
-    This->IAudioClock2_iface.lpVtbl = &AudioClock2_Vtbl;
-    This->IAudioStreamVolume_iface.lpVtbl = &AudioStreamVolume_Vtbl;
-    This->dataflow = dataflow;
-    This->parent = dev;
-
-    hr = CoCreateFreeThreadedMarshaler((IUnknown*)&This->IAudioClient3_iface, &This->marshal);
-    if (FAILED(hr)) {
-        HeapFree(GetProcessHeap(), 0, This);
-        return hr;
-    }
-    IMMDevice_AddRef(This->parent);
-
-    *out = (IAudioClient *)&This->IAudioClient3_iface;
-    IAudioClient3_AddRef(&This->IAudioClient3_iface);
-
-    return S_OK;
-}
-
-extern void session_init_vols(AudioSession *session, UINT channels);
-
-extern AudioSession *session_create(const GUID *guid, IMMDevice *device,
-        UINT num_channels);
-/* if channels == 0, then this will return or create a session with
- * matching dataflow and GUID. otherwise, channels must also match */
-HRESULT get_audio_session(const GUID *sessionguid,
-        IMMDevice *device, UINT channels, AudioSession **out)
-{
-    AudioSession *session;
-
-    if (!sessionguid || IsEqualGUID(sessionguid, &GUID_NULL)) {
-        *out = session_create(&GUID_NULL, device, channels);
-        if (!*out)
-            return E_OUTOFMEMORY;
-
-        return S_OK;
-    }
-
-    *out = NULL;
-    LIST_FOR_EACH_ENTRY(session, &sessions, AudioSession, entry) {
-        if (session->device == device &&
-            IsEqualGUID(sessionguid, &session->guid)) {
-            session_init_vols(session, channels);
-            *out = session;
-            break;
-        }
-    }
-
-    if (!*out) {
-        *out = session_create(sessionguid, device, channels);
-        if (!*out)
-            return E_OUTOFMEMORY;
-    }
-
-    return S_OK;
-}
-
-HRESULT WINAPI AUDDRV_GetAudioSessionWrapper(const GUID *guid, IMMDevice *device,
-                                             AudioSessionWrapper **out)
-{
-    AudioSession *session;
-
-    HRESULT hr = get_audio_session(guid, device, 0, &session);
-    if(FAILED(hr))
-        return hr;
-
-    *out = session_wrapper_create(NULL);
-    if(!*out)
-        return E_OUTOFMEMORY;
-
-    (*out)->session = session;
-
-    return S_OK;
-}
-
-HRESULT WINAPI AUDDRV_GetPropValue(GUID *guid, const PROPERTYKEY *prop, PROPVARIANT *out)
-{
-    struct get_prop_value_params params;
-    char *pulse_name;
-    unsigned int size = 0;
-
-    TRACE("%s, (%s,%lu), %p\n", wine_dbgstr_guid(guid), wine_dbgstr_guid(&prop->fmtid), prop->pid, out);
-
-    if (!get_device_name_from_guid(guid, &pulse_name, &params.flow))
-        return E_FAIL;
-
-    params.device = pulse_name;
-    params.guid = guid;
-    params.prop = prop;
-    params.value = out;
-    params.buffer = NULL;
-    params.buffer_size = &size;
-
-    while(1) {
-        pulse_call(get_prop_value, &params);
-
-        if(params.result != E_NOT_SUFFICIENT_BUFFER)
-            break;
-
-        CoTaskMemFree(params.buffer);
-        params.buffer = CoTaskMemAlloc(*params.buffer_size);
-        if(!params.buffer) {
-            free(pulse_name);
-            return E_OUTOFMEMORY;
-        }
-    }
-    if(FAILED(params.result))
-        CoTaskMemFree(params.buffer);
-
-    free(pulse_name);
-
-    return params.result;
 }

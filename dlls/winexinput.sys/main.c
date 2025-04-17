@@ -27,6 +27,7 @@
 #include "winbase.h"
 #include "winternl.h"
 #include "winioctl.h"
+#include "winreg.h"
 
 #include "cfgmgr32.h"
 #include "ddk/wdm.h"
@@ -460,6 +461,24 @@ static WCHAR *query_compatible_ids(DEVICE_OBJECT *device)
     return dst;
 }
 
+static void remove_pending_irps(DEVICE_OBJECT *device)
+{
+    struct func_device *fdo = fdo_from_DEVICE_OBJECT(device);
+    IRP *pending;
+
+    RtlEnterCriticalSection(&fdo->cs);
+    pending = fdo->pending_read;
+    fdo->pending_read = NULL;
+    RtlLeaveCriticalSection(&fdo->cs);
+
+    if (pending)
+    {
+        pending->IoStatus.Status = STATUS_DELETE_PENDING;
+        pending->IoStatus.Information = 0;
+        IoCompleteRequest(pending, IO_NO_INCREMENT);
+    }
+}
+
 static NTSTATUS WINAPI pdo_pnp(DEVICE_OBJECT *device, IRP *irp)
 {
     IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
@@ -467,7 +486,6 @@ static NTSTATUS WINAPI pdo_pnp(DEVICE_OBJECT *device, IRP *irp)
     struct device *impl = impl_from_DEVICE_OBJECT(device);
     UCHAR code = stack->MinorFunction;
     NTSTATUS status;
-    IRP *pending;
 
     TRACE("device %p, irp %p, code %#x, bus_device %p.\n", device, irp, code, fdo->bus_device);
 
@@ -480,21 +498,11 @@ static NTSTATUS WINAPI pdo_pnp(DEVICE_OBJECT *device, IRP *irp)
     case IRP_MN_SURPRISE_REMOVAL:
         status = STATUS_SUCCESS;
         if (InterlockedExchange(&impl->removed, TRUE)) break;
-
-        RtlEnterCriticalSection(&fdo->cs);
-        pending = fdo->pending_read;
-        fdo->pending_read = NULL;
-        RtlLeaveCriticalSection(&fdo->cs);
-
-        if (pending)
-        {
-            pending->IoStatus.Status = STATUS_DELETE_PENDING;
-            pending->IoStatus.Information = 0;
-            IoCompleteRequest(pending, IO_NO_INCREMENT);
-        }
+        remove_pending_irps(device);
         break;
 
     case IRP_MN_REMOVE_DEVICE:
+        remove_pending_irps(device);
         irp->IoStatus.Status = STATUS_SUCCESS;
         IoCompleteRequest(irp, IO_NO_INCREMENT);
         IoDeleteDevice(device);
@@ -526,7 +534,7 @@ static NTSTATUS WINAPI pdo_pnp(DEVICE_OBJECT *device, IRP *irp)
             else status = STATUS_SUCCESS;
             break;
         default:
-            FIXME("IRP_MN_QUERY_ID type %u, not implemented!\n", type);
+            WARN("IRP_MN_QUERY_ID type %u, not implemented!\n", type);
             status = irp->IoStatus.Status;
             break;
         }
@@ -784,6 +792,8 @@ static NTSTATUS WINAPI fdo_pnp(DEVICE_OBJECT *device, IRP *irp)
         IoSkipCurrentIrpStackLocation(irp);
         status = IoCallDriver(fdo->bus_device, irp);
         IoDetachDevice(fdo->bus_device);
+        if (fdo->cs.DebugInfo)
+            fdo->cs.DebugInfo->Spare[0] = 0;
         RtlDeleteCriticalSection(&fdo->cs);
         HidP_FreeCollectionDescription(&fdo->device_desc);
         free(fdo->report_buf);
@@ -870,7 +880,7 @@ static NTSTATUS WINAPI add_device(DRIVER_OBJECT *driver, DEVICE_OBJECT *bus_devi
     fdo->bus_device = bus_device;
     wcscpy(fdo->instance_id, instance_id);
 
-    RtlInitializeCriticalSection(&fdo->cs);
+    RtlInitializeCriticalSectionEx(&fdo->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO);
     fdo->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": func_device.cs");
 
     TRACE("device %p, bus_id %s, device_id %s, instance_id %s.\n", device, debugstr_w(bus_id),

@@ -406,6 +406,10 @@ WINSHLWAPI BOOL WINAPI PathFileExistsAndAttributesA(LPCSTR,DWORD*);
 WINSHLWAPI BOOL WINAPI PathFileExistsAndAttributesW(LPCWSTR,DWORD*);
 #define PathFileExistsAndAttributes WINELIB_NAME_AW(PathFileExistsAndAttributes)
 
+WINSHLWAPI BOOL WINAPI PathFileExistsDefExtA(LPSTR,DWORD);
+WINSHLWAPI BOOL WINAPI PathFileExistsDefExtW(LPWSTR,DWORD);
+#define PathFileExistsDefExt WINELIB_NAME_AW(PathFileExistsDefExt)
+
 WINSHLWAPI LPSTR  WINAPI PathFindExtensionA(LPCSTR);
 WINSHLWAPI LPWSTR WINAPI PathFindExtensionW(LPCWSTR);
 #define PathFindExtension WINELIB_NAME_AW(PathFindExtension)
@@ -421,6 +425,10 @@ WINSHLWAPI LPWSTR WINAPI PathFindNextComponentW(LPCWSTR);
 WINSHLWAPI BOOL WINAPI PathFindOnPathA(LPSTR,LPCSTR*);
 WINSHLWAPI BOOL WINAPI PathFindOnPathW(LPWSTR,LPCWSTR*);
 #define PathFindOnPath WINELIB_NAME_AW(PathFindOnPath)
+
+WINSHLWAPI BOOL WINAPI PathFindOnPathExA(LPSTR,LPCSTR*,DWORD);
+WINSHLWAPI BOOL WINAPI PathFindOnPathExW(LPWSTR,LPCWSTR*,DWORD);
+#define PathFindOnPathEx WINELIB_NAME_AW(PathFindOnPathEx)
 
 WINSHLWAPI LPSTR  WINAPI PathGetArgsA(LPCSTR);
 WINSHLWAPI LPWSTR WINAPI PathGetArgsW(LPCWSTR);
@@ -1089,7 +1097,7 @@ typedef HRESULT (CALLBACK *DLLGETVERSIONPROC)(DLLVERSIONINFO *);
 
 #ifdef __WINESRC__
 /* shouldn't be here, but is nice for type checking */
-HRESULT WINAPI DllGetVersion(DLLVERSIONINFO *) DECLSPEC_HIDDEN;
+HRESULT WINAPI DllGetVersion(DLLVERSIONINFO *);
 #endif
 
 typedef struct _DLLVERSIONINFO2 {
@@ -1106,7 +1114,7 @@ typedef struct _DLLVERSIONINFO2 {
 #define MAKEDLLVERULL(mjr, mnr, bld, qfe) (((ULONGLONG)(mjr)<< 48)| \
   ((ULONGLONG)(mnr)<< 32) | ((ULONGLONG)(bld)<< 16) | (ULONGLONG)(qfe))
 
-HRESULT WINAPI DllInstall(BOOL,LPCWSTR) DECLSPEC_HIDDEN;
+HRESULT WINAPI DllInstall(BOOL,LPCWSTR);
 
 
 /* IsOS definitions */
@@ -1166,8 +1174,8 @@ WINSHLWAPI BOOL WINAPI IsOS(DWORD);
 #define FDTF_RTLDATE            0x00000200
 #define FDTF_NOAUTOREADINGORDER 0x00000400
 
-WINSHLWAPI int WINAPI SHFormatDateTimeA(const FILETIME UNALIGNED *filetime, DWORD *flags, LPSTR buffer, UINT size);
-WINSHLWAPI int WINAPI SHFormatDateTimeW(const FILETIME UNALIGNED *filetime, DWORD *flags, LPWSTR buffer, UINT size);
+WINSHLWAPI int WINAPI SHFormatDateTimeA(const FILETIME *filetime, DWORD *flags, LPSTR buffer, UINT size);
+WINSHLWAPI int WINAPI SHFormatDateTimeW(const FILETIME *filetime, DWORD *flags, LPWSTR buffer, UINT size);
 
 typedef struct
 {

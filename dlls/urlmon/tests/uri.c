@@ -33,7 +33,6 @@
 #include "wininet.h"
 #include "strsafe.h"
 #include "initguid.h"
-#include <wine/heap.h>
 
 DEFINE_GUID(CLSID_CUri, 0xDF2FCE13, 0x25EC, 0x45BB, 0x9D,0x4C, 0xCE,0xCD,0x47,0xC2,0x43,0x0C);
 
@@ -79,20 +78,15 @@ static HRESULT (WINAPI *pCoInternetParseIUri)(IUri*,PARSEACTION,DWORD,LPWSTR,DWO
 static HRESULT (WINAPI *pCreateURLMonikerEx)(IMoniker*,LPCWSTR,IMoniker**,DWORD);
 static HRESULT (WINAPI *pCreateURLMonikerEx2)(IMoniker*,IUri*,IMoniker**,DWORD);
 
-static const WCHAR http_urlW[] = { 'h','t','t','p',':','/','/','w','w','w','.','w','i','n','e','h','q',
-        '.','o','r','g','/',0};
-static const WCHAR http_url_fragW[] = { 'h','t','t','p',':','/','/','w','w','w','.','w','i','n','e','h','q',
-        '.','o','r','g','/','#','F','r','a','g',0};
+static const WCHAR http_urlW[] = L"http://www.winehq.org/";
+static const WCHAR http_url_fragW[] = L"http://www.winehq.org/#Frag";
 
-static const WCHAR combine_baseW[] = {'w','i','n','e','t','e','s','t',':','?','t',
-        'e','s','t','i','n','g',0};
-static const WCHAR combine_relativeW[] = {'?','t','e','s','t',0};
-static const WCHAR combine_resultW[] = {'z','i','p',':','t','e','s','t',0};
+static const WCHAR combine_baseW[] = L"winetest:?testing";
+static const WCHAR combine_relativeW[] = L"?test";
+static const WCHAR combine_resultW[] = L"zip:test";
 
-static const WCHAR winetestW[] = {'w','i','n','e','t','e','s','t',0};
-
-static const WCHAR parse_urlW[] = {'w','i','n','e','t','e','s','t',':','t','e','s','t',0};
-static const WCHAR parse_resultW[] = {'z','i','p',':','t','e','s','t',0};
+static const WCHAR parse_urlW[] = L"winetest:test";
+static const WCHAR parse_resultW[] = L"zip:test";
 
 static PARSEACTION parse_action;
 static DWORD parse_flags;
@@ -132,13 +126,14 @@ typedef struct _uri_properties {
     DWORD               create_flags;
     HRESULT             create_expected;
     BOOL                create_todo;
+    DWORD               flags;
 
     uri_str_property    str_props[URI_STR_PROPERTY_COUNT];
     uri_dword_property  dword_props[URI_DWORD_PROPERTY_COUNT];
 } uri_properties;
 
 static const uri_properties uri_tests[] = {
-    {   "http://www.winehq.org/tests/../tests/../..", 0, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/../tests/../..", 0, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/",S_OK,FALSE},                      /* ABSOLUTE_URI */
             {"www.winehq.org",S_OK,FALSE},                              /* AUTHORITY */
@@ -163,7 +158,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}                           /* ZONE */
         }
     },
-    {   "http://winehq.org/tests/.././tests", 0, S_OK, FALSE,
+    {   "http://winehq.org/tests/.././tests", 0, S_OK, FALSE, 0,
         {
             {"http://winehq.org/tests",S_OK,FALSE},
             {"winehq.org",S_OK,FALSE},
@@ -188,7 +183,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "HtTp://www.winehq.org/tests/..?query=x&return=y", 0, S_OK, FALSE,
+    {   "HtTp://www.winehq.org/tests/..?query=x&return=y", 0, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/?query=x&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -213,7 +208,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE},
         }
     },
-    {   "HtTpS://www.winehq.org/tests/..?query=x&return=y", 0, S_OK, FALSE,
+    {   "HtTpS://www.winehq.org/tests/..?query=x&return=y", 0, S_OK, FALSE, 0,
         {
             {"https://www.winehq.org/?query=x&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -238,7 +233,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE},
         }
     },
-    {   "hTTp://us%45r%3Ainfo@examp%4CE.com:80/path/a/b/./c/../%2E%2E/Forbidden'<|> Characters", 0, S_OK, FALSE,
+    {   "hTTp://us%45r%3Ainfo@examp%4CE.com:80/path/a/b/./c/../%2E%2E/Forbidden'<|> Characters", 0, S_OK, FALSE, 0,
         {
             {"http://usEr%3Ainfo@example.com/path/a/Forbidden'%3C%7C%3E%20Characters",S_OK,FALSE},
             {"usEr%3Ainfo@example.com",S_OK,FALSE},
@@ -263,7 +258,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE},
         }
     },
-    {   "ftp://winepass:wine@ftp.winehq.org:9999/dir/foo bar.txt", 0, S_OK, FALSE,
+    {   "ftp://winepass:wine@ftp.winehq.org:9999/dir/foo bar.txt", 0, S_OK, FALSE, 0,
         {
             {"ftp://winepass:wine@ftp.winehq.org:9999/dir/foo%20bar.txt",S_OK,FALSE},
             {"winepass:wine@ftp.winehq.org:9999",S_OK,FALSE},
@@ -288,7 +283,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "file://c:\\tests\\../tests/foo%20bar.mp3", 0, S_OK, FALSE,
+    {   "file://c:\\tests\\../tests/foo%20bar.mp3", 0, S_OK, FALSE, 0,
         {
             {"file:///c:/tests/foo%2520bar.mp3",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -313,7 +308,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "file://c:\\tests\\../tests/foo%20bar.mp3", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "file://c:\\tests\\../tests/foo%20bar.mp3", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"file:///c:/tests/../tests/foo%2520bar.mp3",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -338,7 +333,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "FILE://localhost/test dir\\../tests/test%20file.README.txt", 0, S_OK, FALSE,
+    {   "FILE://localhost/test dir\\../tests/test%20file.README.txt", 0, S_OK, FALSE, 0,
         {
             {"file:///tests/test%20file.README.txt",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -363,7 +358,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "file:///z:/test dir/README.txt", 0, S_OK, FALSE,
+    {   "file:///z:/test dir/README.txt", 0, S_OK, FALSE, 0,
         {
             {"file:///z:/test%20dir/README.txt",S_OK},
             {"",S_FALSE},
@@ -388,7 +383,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "file:///z:/test dir/README.txt#hash part", 0, S_OK, FALSE,
+    {   "file:///z:/test dir/README.txt#hash part", 0, S_OK, FALSE, 0,
         {
             {"file:///z:/test%20dir/README.txt#hash%20part",S_OK},
             {"",S_FALSE},
@@ -413,7 +408,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "urn:nothing:should:happen here", 0, S_OK, FALSE,
+    {   "urn:nothing:should:happen here", 0, S_OK, FALSE, 0,
         {
             {"urn:nothing:should:happen here",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -438,7 +433,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://127.0.0.1/tests/../test dir/./test.txt", 0, S_OK, FALSE,
+    {   "http://127.0.0.1/tests/../test dir/./test.txt", 0, S_OK, FALSE, 0,
         {
             {"http://127.0.0.1/test%20dir/test.txt",S_OK,FALSE},
             {"127.0.0.1",S_OK,FALSE},
@@ -463,7 +458,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]", 0, S_OK, FALSE,
+    {   "http://[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]", 0, S_OK, FALSE, 0,
         {
             {"http://[fedc:ba98:7654:3210:fedc:ba98:7654:3210]/",S_OK,FALSE},
             {"[fedc:ba98:7654:3210:fedc:ba98:7654:3210]",S_OK,FALSE},
@@ -488,7 +483,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "ftp://[::13.1.68.3]", 0, S_OK, FALSE,
+    {   "ftp://[::13.1.68.3]", 0, S_OK, FALSE, 0,
         {
             {"ftp://[::13.1.68.3]/",S_OK,FALSE},
             {"[::13.1.68.3]",S_OK,FALSE},
@@ -513,7 +508,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://[FEDC:BA98:0:0:0:0:0:3210]", 0, S_OK, FALSE,
+    {   "http://[FEDC:BA98:0:0:0:0:0:3210]", 0, S_OK, FALSE, 0,
         {
             {"http://[fedc:ba98::3210]/",S_OK,FALSE},
             {"[fedc:ba98::3210]",S_OK,FALSE},
@@ -538,7 +533,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "1234://www.winehq.org", 0, S_OK, FALSE,
+    {   "1234://www.winehq.org", 0, S_OK, FALSE, 0,
         {
             {"1234://www.winehq.org/",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -564,7 +559,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Test's to make sure the parser/canonicalizer handles implicit file schemes correctly. */
-    {   "C:/test/test.mp3", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE,
+    {   "C:/test/test.mp3", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE, 0,
         {
             {"file:///C:/test/test.mp3",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -590,7 +585,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Test's to make sure the parser/canonicalizer handles implicit file schemes correctly. */
-    {   "\\\\Server/test.mp3", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE,
+    {   "\\\\Server/test.mp3", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE, 0,
         {
             {"file://server/test.mp3",S_OK,FALSE},
             {"server",S_OK,FALSE},
@@ -615,7 +610,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "C:/test/test.mp3#fragment|part", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME|Uri_CREATE_FILE_USE_DOS_PATH|Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE,
+    {   "C:/test/test.mp3#fragment|part", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME|Uri_CREATE_FILE_USE_DOS_PATH|Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE, 0,
         {
             {"file://C:\\test\\test.mp3#fragment|part",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -640,7 +635,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "C:/test/test.mp3?query|part", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME|Uri_CREATE_FILE_USE_DOS_PATH|Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE,
+    {   "C:/test/test.mp3?query|part", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME|Uri_CREATE_FILE_USE_DOS_PATH|Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE, 0,
         {
             {"file://C:\\test\\test.mp3?query|part",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -665,7 +660,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "C:/test/test.mp3?query|part#hash|part", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME|Uri_CREATE_FILE_USE_DOS_PATH|Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE,
+    {   "C:/test/test.mp3?query|part#hash|part", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME|Uri_CREATE_FILE_USE_DOS_PATH|Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE, 0,
         {
             {"file://C:\\test\\test.mp3?query|part#hash|part",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -690,7 +685,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "www.winehq.org/test", Uri_CREATE_ALLOW_IMPLICIT_WILDCARD_SCHEME, S_OK, FALSE,
+    {   "www.winehq.org/test", Uri_CREATE_ALLOW_IMPLICIT_WILDCARD_SCHEME, S_OK, FALSE, 0,
         {
             {"*:www.winehq.org/test",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -716,7 +711,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Valid since the '*' is the only character in the scheme name. */
-    {   "*:www.winehq.org/test", 0, S_OK, FALSE,
+    {   "*:www.winehq.org/test", 0, S_OK, FALSE, 0,
         {
             {"*:www.winehq.org/test",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -741,7 +736,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "/../some dir/test.ext", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE,
+    {   "/../some dir/test.ext", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE, 0,
         {
             {"/../some dir/test.ext",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -766,7 +761,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "//implicit/wildcard/uri scheme", Uri_CREATE_ALLOW_RELATIVE|Uri_CREATE_ALLOW_IMPLICIT_WILDCARD_SCHEME, S_OK, FALSE,
+    {   "//implicit/wildcard/uri scheme", Uri_CREATE_ALLOW_RELATIVE|Uri_CREATE_ALLOW_IMPLICIT_WILDCARD_SCHEME, S_OK, FALSE, 0,
         {
             {"*://implicit/wildcard/uri%20scheme",S_OK,FALSE},
             {"",S_OK,FALSE},
@@ -792,7 +787,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* URI is considered opaque since CREATE_NO_CRACK_UNKNOWN_SCHEMES is set and it's an unknown scheme. */
-    {   "zip://google.com", Uri_CREATE_NO_CRACK_UNKNOWN_SCHEMES, S_OK, FALSE,
+    {   "zip://google.com", Uri_CREATE_NO_CRACK_UNKNOWN_SCHEMES, S_OK, FALSE, 0,
         {
             {"zip:/.//google.com",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -818,7 +813,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Windows uses the first occurrence of ':' to delimit the userinfo. */
-    {   "ftp://user:pass:word@winehq.org/", 0, S_OK, FALSE,
+    {   "ftp://user:pass:word@winehq.org/", 0, S_OK, FALSE, 0,
         {
             {"ftp://user:pass:word@winehq.org/",S_OK,FALSE},
             {"user:pass:word@winehq.org",S_OK,FALSE},
@@ -844,7 +839,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Make sure % encoded unreserved characters are decoded. */
-    {   "ftp://w%49%4Ee:PA%53%53@ftp.google.com/", 0, S_OK, FALSE,
+    {   "ftp://w%49%4Ee:PA%53%53@ftp.google.com/", 0, S_OK, FALSE, 0,
         {
             {"ftp://wINe:PASS@ftp.google.com/",S_OK,FALSE},
             {"wINe:PASS@ftp.google.com",S_OK,FALSE},
@@ -870,7 +865,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Make sure % encoded characters which are NOT unreserved are NOT decoded. */
-    {   "ftp://w%5D%5Be:PA%7B%7D@ftp.google.com/", 0, S_OK, FALSE,
+    {   "ftp://w%5D%5Be:PA%7B%7D@ftp.google.com/", 0, S_OK, FALSE, 0,
         {
             {"ftp://w%5D%5Be:PA%7B%7D@ftp.google.com/",S_OK,FALSE},
             {"w%5D%5Be:PA%7B%7D@ftp.google.com",S_OK,FALSE},
@@ -896,7 +891,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* You're allowed to have an empty password portion in the userinfo section. */
-    {   "ftp://empty:@ftp.google.com/", 0, S_OK, FALSE,
+    {   "ftp://empty:@ftp.google.com/", 0, S_OK, FALSE, 0,
         {
             {"ftp://empty:@ftp.google.com/",S_OK,FALSE},
             {"empty:@ftp.google.com",S_OK,FALSE},
@@ -922,7 +917,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Make sure forbidden characters in "userinfo" get encoded. */
-    {   "ftp://\" \"weird@ftp.google.com/", 0, S_OK, FALSE,
+    {   "ftp://\" \"weird@ftp.google.com/", 0, S_OK, FALSE, 0,
         {
             {"ftp://%22%20%22weird@ftp.google.com/",S_OK,FALSE},
             {"%22%20%22weird@ftp.google.com",S_OK,FALSE},
@@ -948,7 +943,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Make sure the forbidden characters don't get percent encoded. */
-    {   "ftp://\" \"weird@ftp.google.com/", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE,
+    {   "ftp://\" \"weird@ftp.google.com/", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE, 0,
         {
             {"ftp://\" \"weird@ftp.google.com/",S_OK,FALSE},
             {"\" \"weird@ftp.google.com",S_OK,FALSE},
@@ -974,7 +969,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Make sure already percent encoded characters don't get unencoded. */
-    {   "ftp://\"%20\"weird@ftp.google.com/\"%20\"weird", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE,
+    {   "ftp://\"%20\"weird@ftp.google.com/\"%20\"weird", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE, 0,
         {
             {"ftp://\"%20\"weird@ftp.google.com/\"%20\"weird",S_OK,FALSE},
             {"\"%20\"weird@ftp.google.com",S_OK,FALSE},
@@ -1000,7 +995,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Allowed to have invalid % encoded because it's an unknown scheme type. */
-    {   "zip://%xy:word@winehq.org/", 0, S_OK, FALSE,
+    {   "zip://%xy:word@winehq.org/", 0, S_OK, FALSE, 0,
         {
             {"zip://%xy:word@winehq.org/",S_OK,FALSE},
             {"%xy:word@winehq.org",S_OK,FALSE},
@@ -1028,7 +1023,7 @@ static const uri_properties uri_tests[] = {
     /* Unreserved, percent encoded characters aren't decoded in the userinfo because the scheme
      * isn't known.
      */
-    {   "zip://%2E:%52%53ord@winehq.org/", 0, S_OK, FALSE,
+    {   "zip://%2E:%52%53ord@winehq.org/", 0, S_OK, FALSE, 0,
         {
             {"zip://%2E:%52%53ord@winehq.org/",S_OK,FALSE},
             {"%2E:%52%53ord@winehq.org",S_OK,FALSE},
@@ -1053,7 +1048,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "ftp://[](),'test':word@winehq.org/", 0, S_OK, FALSE,
+    {   "ftp://[](),'test':word@winehq.org/", 0, S_OK, FALSE, 0,
         {
             {"ftp://[](),'test':word@winehq.org/",S_OK,FALSE},
             {"[](),'test':word@winehq.org",S_OK,FALSE},
@@ -1078,7 +1073,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "ftp://test?:word@winehq.org/", 0, S_OK, FALSE,
+    {   "ftp://test?:word@winehq.org/", 0, S_OK, FALSE, 0,
         {
             {"ftp://test/?:word@winehq.org/",S_OK,FALSE},
             {"test",S_OK,FALSE},
@@ -1103,7 +1098,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "ftp://test#:word@winehq.org/", 0, S_OK, FALSE,
+    {   "ftp://test#:word@winehq.org/", 0, S_OK, FALSE, 0,
         {
             {"ftp://test/#:word@winehq.org/",S_OK,FALSE},
             {"test",S_OK,FALSE},
@@ -1129,7 +1124,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Allowed to have a backslash in the userinfo since it's an unknown scheme. */
-    {   "zip://test\\:word@winehq.org/", 0, S_OK, FALSE,
+    {   "zip://test\\:word@winehq.org/", 0, S_OK, FALSE, 0,
         {
             {"zip://test\\:word@winehq.org/",S_OK,FALSE},
             {"test\\:word@winehq.org",S_OK,FALSE},
@@ -1155,7 +1150,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* It normalizes IPv4 addresses correctly. */
-    {   "http://127.000.000.100/", 0, S_OK, FALSE,
+    {   "http://127.000.000.100/", 0, S_OK, FALSE, 0,
         {
             {"http://127.0.0.100/",S_OK,FALSE},
             {"127.0.0.100",S_OK,FALSE},
@@ -1180,7 +1175,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://127.0.0.1:8000", 0, S_OK, FALSE,
+    {   "http://127.0.0.1:8000", 0, S_OK, FALSE, 0,
         {
             {"http://127.0.0.1:8000/",S_OK},
             {"127.0.0.1:8000",S_OK},
@@ -1206,7 +1201,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Make sure it normalizes partial IPv4 addresses correctly. */
-    {   "http://127.0/", 0, S_OK, FALSE,
+    {   "http://127.0/", 0, S_OK, FALSE, 0,
         {
             {"http://127.0.0.0/",S_OK,FALSE},
             {"127.0.0.0",S_OK,FALSE},
@@ -1232,7 +1227,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Make sure it converts implicit IPv4's correctly. */
-    {   "http://123456/", 0, S_OK, FALSE,
+    {   "http://123456/", 0, S_OK, FALSE, 0,
         {
             {"http://0.1.226.64/",S_OK,FALSE},
             {"0.1.226.64",S_OK,FALSE},
@@ -1258,7 +1253,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* UINT_MAX */
-    {   "http://4294967295/", 0, S_OK, FALSE,
+    {   "http://4294967295/", 0, S_OK, FALSE, 0,
         {
             {"http://255.255.255.255/",S_OK,FALSE},
             {"255.255.255.255",S_OK,FALSE},
@@ -1284,7 +1279,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* UINT_MAX+1 */
-    {   "http://4294967296/", 0, S_OK, FALSE,
+    {   "http://4294967296/", 0, S_OK, FALSE, 0,
         {
             {"http://4294967296/",S_OK,FALSE},
             {"4294967296",S_OK,FALSE},
@@ -1310,7 +1305,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Window's doesn't normalize IP address for unknown schemes. */
-    {   "1234://4294967295/", 0, S_OK, FALSE,
+    {   "1234://4294967295/", 0, S_OK, FALSE, 0,
         {
             {"1234://4294967295/",S_OK,FALSE},
             {"4294967295",S_OK,FALSE},
@@ -1336,7 +1331,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Window's doesn't normalize IP address for unknown schemes. */
-    {   "1234://127.001/", 0, S_OK, FALSE,
+    {   "1234://127.001/", 0, S_OK, FALSE, 0,
         {
             {"1234://127.001/",S_OK,FALSE},
             {"127.001",S_OK,FALSE},
@@ -1361,7 +1356,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://[FEDC:BA98::3210]", 0, S_OK, FALSE,
+    {   "http://[FEDC:BA98::3210]", 0, S_OK, FALSE, 0,
         {
             {"http://[fedc:ba98::3210]/",S_OK,FALSE},
             {"[fedc:ba98::3210]",S_OK,FALSE},
@@ -1386,7 +1381,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://[::]", 0, S_OK, FALSE,
+    {   "http://[::]", 0, S_OK, FALSE, 0,
         {
             {"http://[::]/",S_OK,FALSE},
             {"[::]",S_OK,FALSE},
@@ -1411,7 +1406,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://[FEDC:BA98::]", 0, S_OK, FALSE,
+    {   "http://[FEDC:BA98::]", 0, S_OK, FALSE, 0,
         {
             {"http://[fedc:ba98::]/",S_OK,FALSE},
             {"[fedc:ba98::]",S_OK,FALSE},
@@ -1437,7 +1432,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Valid even with 2 byte elision because it doesn't appear the beginning or end. */
-    {   "http://[1::3:4:5:6:7:8]", 0, S_OK, FALSE,
+    {   "http://[1::3:4:5:6:7:8]", 0, S_OK, FALSE, 0,
         {
             {"http://[1:0:3:4:5:6:7:8]/",S_OK,FALSE},
             {"[1:0:3:4:5:6:7:8]",S_OK,FALSE},
@@ -1462,7 +1457,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://[v2.34]/", 0, S_OK, FALSE,
+    {   "http://[v2.34]/", 0, S_OK, FALSE, 0,
         {
             {"http://[v2.34]/",S_OK,FALSE},
             {"[v2.34]",S_OK,FALSE},
@@ -1488,7 +1483,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Windows ignores ':' if they appear after a '[' on a non-IPLiteral host. */
-    {   "http://[xyz:12345.com/test", 0, S_OK, FALSE,
+    {   "http://[xyz:12345.com/test", 0, S_OK, FALSE, 0,
         {
             {"http://[xyz:12345.com/test",S_OK,FALSE},
             {"[xyz:12345.com",S_OK,FALSE},
@@ -1516,7 +1511,7 @@ static const uri_properties uri_tests[] = {
     /* Valid URI since the '[' and ']' don't appear at the beginning and end
      * of the host name (respectively).
      */
-    {   "ftp://www.[works].com/", 0, S_OK, FALSE,
+    {   "ftp://www.[works].com/", 0, S_OK, FALSE, 0,
         {
             {"ftp://www.[works].com/",S_OK,FALSE},
             {"www.[works].com",S_OK,FALSE},
@@ -1542,7 +1537,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Considers ':' a delimiter since it appears after the ']'. */
-    {   "http://www.google.com]:12345/", 0, S_OK, FALSE,
+    {   "http://www.google.com]:12345/", 0, S_OK, FALSE, 0,
         {
             {"http://www.google.com]:12345/",S_OK,FALSE},
             {"www.google.com]:12345",S_OK,FALSE},
@@ -1568,7 +1563,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Unknown scheme types can have invalid % encoded data in the hostname. */
-    {   "zip://w%XXw%GEw.google.com/", 0, S_OK, FALSE,
+    {   "zip://w%XXw%GEw.google.com/", 0, S_OK, FALSE, 0,
         {
             {"zip://w%XXw%GEw.google.com/",S_OK,FALSE},
             {"w%XXw%GEw.google.com",S_OK,FALSE},
@@ -1594,7 +1589,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Unknown scheme types hostname doesn't get lower cased. */
-    {   "zip://GOOGLE.com/", 0, S_OK, FALSE,
+    {   "zip://GOOGLE.com/", 0, S_OK, FALSE, 0,
         {
             {"zip://GOOGLE.com/",S_OK,FALSE},
             {"GOOGLE.com",S_OK,FALSE},
@@ -1620,7 +1615,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Hostname gets lower-cased for known scheme types. */
-    {   "http://WWW.GOOGLE.com/", 0, S_OK, FALSE,
+    {   "http://WWW.GOOGLE.com/", 0, S_OK, FALSE, 0,
         {
             {"http://www.google.com/",S_OK,FALSE},
             {"www.google.com",S_OK,FALSE},
@@ -1648,7 +1643,7 @@ static const uri_properties uri_tests[] = {
     /* Characters that get % encoded in the hostname also have their percent
      * encoded forms lower cased.
      */
-    {   "http://www.%7Cgoogle|.com/", 0, S_OK, FALSE,
+    {   "http://www.%7Cgoogle|.com/", 0, S_OK, FALSE, 0,
         {
             {"http://www.%7cgoogle%7c.com/",S_OK,FALSE},
             {"www.%7cgoogle%7c.com",S_OK,FALSE},
@@ -1674,7 +1669,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* IPv4 addresses attached to IPv6 can be included in elisions. */
-    {   "http://[1:2:3:4:5:6:0.0.0.0]", 0, S_OK, FALSE,
+    {   "http://[1:2:3:4:5:6:0.0.0.0]", 0, S_OK, FALSE, 0,
         {
             {"http://[1:2:3:4:5:6::]/",S_OK,FALSE},
             {"[1:2:3:4:5:6::]",S_OK,FALSE},
@@ -1700,7 +1695,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* IPv4 addresses get normalized. */
-    {   "http://[::001.002.003.000]", 0, S_OK, FALSE,
+    {   "http://[::001.002.003.000]", 0, S_OK, FALSE, 0,
         {
             {"http://[::1.2.3.0]/",S_OK,FALSE},
             {"[::1.2.3.0]",S_OK,FALSE},
@@ -1725,7 +1720,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://[::5efe:1.2.3.4]", 0, S_OK, FALSE,
+    {   "http://[::5efe:1.2.3.4]", 0, S_OK, FALSE, 0,
         {
             {"http://[::5efe:1.2.3.4]/",S_OK,FALSE},
             {"[::5efe:1.2.3.4]",S_OK,FALSE},
@@ -1751,7 +1746,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Windows doesn't do anything to IPv6's in unknown schemes. */
-    {   "zip://[0001:0:000:0004:0005:0006:001.002.003.000]", 0, S_OK, FALSE,
+    {   "zip://[0001:0:000:0004:0005:0006:001.002.003.000]", 0, S_OK, FALSE, 0,
         {
             {"zip://[0001:0:000:0004:0005:0006:001.002.003.000]/",S_OK,FALSE},
             {"[0001:0:000:0004:0005:0006:001.002.003.000]",S_OK,FALSE},
@@ -1777,7 +1772,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* IPv4 address is converted into 2 h16 components. */
-    {   "http://[ffff::192.222.111.32]", 0, S_OK, FALSE,
+    {   "http://[ffff::192.222.111.32]", 0, S_OK, FALSE, 0,
         {
             {"http://[ffff::c0de:6f20]/",S_OK,FALSE},
             {"[ffff::c0de:6f20]",S_OK,FALSE},
@@ -1803,7 +1798,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Max value for a port. */
-    {   "http://google.com:65535", 0, S_OK, FALSE,
+    {   "http://google.com:65535", 0, S_OK, FALSE, 0,
         {
             {"http://google.com:65535/",S_OK,FALSE},
             {"google.com:65535",S_OK,FALSE},
@@ -1828,7 +1823,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "zip://google.com:65536", 0, S_OK, FALSE,
+    {   "zip://google.com:65536", 0, S_OK, FALSE, 0,
         {
             {"zip://google.com:65536/",S_OK,FALSE},
             {"google.com:65536",S_OK,FALSE},
@@ -1853,7 +1848,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "zip://google.com:65536:25", 0, S_OK, FALSE,
+    {   "zip://google.com:65536:25", 0, S_OK, FALSE, 0,
         {
             {"zip://google.com:65536:25/",S_OK,FALSE},
             {"google.com:65536:25",S_OK,FALSE},
@@ -1878,7 +1873,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "zip://[::ffff]:abcd", 0, S_OK, FALSE,
+    {   "zip://[::ffff]:abcd", 0, S_OK, FALSE, 0,
         {
             {"zip://[::ffff]:abcd/",S_OK,FALSE},
             {"[::ffff]:abcd",S_OK,FALSE},
@@ -1903,7 +1898,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "zip://127.0.0.1:abcd", 0, S_OK, FALSE,
+    {   "zip://127.0.0.1:abcd", 0, S_OK, FALSE, 0,
         {
             {"zip://127.0.0.1:abcd/",S_OK,FALSE},
             {"127.0.0.1:abcd",S_OK,FALSE},
@@ -1929,7 +1924,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Port is just copied over. */
-    {   "http://google.com:00035", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "http://google.com:00035", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"http://google.com:00035",S_OK,FALSE},
             {"google.com:00035",S_OK,FALSE},
@@ -1955,7 +1950,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Default port is copied over. */
-    {   "http://google.com:80", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "http://google.com:80", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"http://google.com:80",S_OK,FALSE},
             {"google.com:80",S_OK,FALSE},
@@ -1980,7 +1975,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://google.com.uk", 0, S_OK, FALSE,
+    {   "http://google.com.uk", 0, S_OK, FALSE, 0,
         {
             {"http://google.com.uk/",S_OK,FALSE},
             {"google.com.uk",S_OK,FALSE},
@@ -2005,7 +2000,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://google.co.uk", 0, S_OK, FALSE,
+    {   "http://google.co.uk", 0, S_OK, FALSE, 0,
         {
             {"http://google.co.uk/",S_OK,FALSE},
             {"google.co.uk",S_OK,FALSE},
@@ -2030,7 +2025,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://google.com.com", 0, S_OK, FALSE,
+    {   "http://google.com.com", 0, S_OK, FALSE, 0,
         {
             {"http://google.com.com/",S_OK,FALSE},
             {"google.com.com",S_OK,FALSE},
@@ -2055,7 +2050,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://google.uk.1", 0, S_OK, FALSE,
+    {   "http://google.uk.1", 0, S_OK, FALSE, 0,
         {
             {"http://google.uk.1/",S_OK,FALSE},
             {"google.uk.1",S_OK,FALSE},
@@ -2081,7 +2076,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Since foo isn't a recognized 3 character TLD it's considered the domain name. */
-    {   "http://google.foo.uk", 0, S_OK, FALSE,
+    {   "http://google.foo.uk", 0, S_OK, FALSE, 0,
         {
             {"http://google.foo.uk/",S_OK,FALSE},
             {"google.foo.uk",S_OK,FALSE},
@@ -2106,7 +2101,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://.com", 0, S_OK, FALSE,
+    {   "http://.com", 0, S_OK, FALSE, 0,
         {
             {"http://.com/",S_OK,FALSE},
             {".com",S_OK,FALSE},
@@ -2131,7 +2126,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://.uk", 0, S_OK, FALSE,
+    {   "http://.uk", 0, S_OK, FALSE, 0,
         {
             {"http://.uk/",S_OK,FALSE},
             {".uk",S_OK,FALSE},
@@ -2156,7 +2151,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://www.co.google.com.[]", 0, S_OK, FALSE,
+    {   "http://www.co.google.com.[]", 0, S_OK, FALSE, 0,
         {
             {"http://www.co.google.com.[]/",S_OK,FALSE},
             {"www.co.google.com.[]",S_OK,FALSE},
@@ -2181,7 +2176,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://co.uk", 0, S_OK, FALSE,
+    {   "http://co.uk", 0, S_OK, FALSE, 0,
         {
             {"http://co.uk/",S_OK,FALSE},
             {"co.uk",S_OK,FALSE},
@@ -2206,7 +2201,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://www.co.google.us.test", 0, S_OK, FALSE,
+    {   "http://www.co.google.us.test", 0, S_OK, FALSE, 0,
         {
             {"http://www.co.google.us.test/",S_OK,FALSE},
             {"www.co.google.us.test",S_OK,FALSE},
@@ -2231,7 +2226,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://gov.uk", 0, S_OK, FALSE,
+    {   "http://gov.uk", 0, S_OK, FALSE, 0,
         {
             {"http://gov.uk/",S_OK,FALSE},
             {"gov.uk",S_OK,FALSE},
@@ -2256,7 +2251,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "zip://www.google.com\\test", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "zip://www.google.com\\test", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"zip://www.google.com\\test",S_OK,FALSE},
             {"www.google.com\\test",S_OK,FALSE},
@@ -2281,7 +2276,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "urn:excepts:bad:%XY:encoded", 0, S_OK, FALSE,
+    {   "urn:excepts:bad:%XY:encoded", 0, S_OK, FALSE, 0,
         {
             {"urn:excepts:bad:%XY:encoded",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2309,7 +2304,7 @@ static const uri_properties uri_tests[] = {
     /* Since the original URI doesn't contain an extra '/' before the path no % encoded values
      * are decoded and all '%' are encoded.
      */
-    {   "file://C:/te%3Es%2Et/tes%t.mp3", 0, S_OK, FALSE,
+    {   "file://C:/te%3Es%2Et/tes%t.mp3", 0, S_OK, FALSE, 0,
         {
             {"file:///C:/te%253Es%252Et/tes%25t.mp3",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2337,7 +2332,7 @@ static const uri_properties uri_tests[] = {
     /* Since there's a '/' in front of the drive letter, any percent encoded, non-forbidden character
      * is decoded and only %'s in front of invalid hex digits are encoded.
      */
-    {   "file:///C:/te%3Es%2Et/t%23es%t.mp3", 0, S_OK, FALSE,
+    {   "file:///C:/te%3Es%2Et/t%23es%t.mp3", 0, S_OK, FALSE, 0,
         {
             {"file:///C:/te%3Es.t/t#es%25t.mp3",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2363,7 +2358,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Only unreserved percent encoded characters are decoded for known schemes that aren't file. */
-    {   "http://[::001.002.003.000]/%3F%23%2E%54/test", 0, S_OK, FALSE,
+    {   "http://[::001.002.003.000]/%3F%23%2E%54/test", 0, S_OK, FALSE, 0,
         {
             {"http://[::1.2.3.0]/%3F%23.T/test",S_OK,FALSE},
             {"[::1.2.3.0]",S_OK,FALSE},
@@ -2389,7 +2384,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters are always encoded for file URIs. */
-    {   "file:///C:/\"test\"/test.mp3", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE,
+    {   "file:///C:/\"test\"/test.mp3", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE, 0,
         {
             {"file:///C:/%22test%22/test.mp3",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2415,7 +2410,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters are never encoded for unknown scheme types. */
-    {   "1234://4294967295/<|>\" test<|>", 0, S_OK, FALSE,
+    {   "1234://4294967295/<|>\" test<|>", 0, S_OK, FALSE, 0,
         {
             {"1234://4294967295/<|>\" test<|>",S_OK,FALSE},
             {"4294967295",S_OK,FALSE},
@@ -2441,7 +2436,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Make sure forbidden characters are percent encoded. */
-    {   "http://gov.uk/<|> test<|>", 0, S_OK, FALSE,
+    {   "http://gov.uk/<|> test<|>", 0, S_OK, FALSE, 0,
         {
             {"http://gov.uk/%3C%7C%3E%20test%3C%7C%3E",S_OK,FALSE},
             {"gov.uk",S_OK,FALSE},
@@ -2466,7 +2461,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://gov.uk/test/../test2/././../test3/.././././", 0, S_OK, FALSE,
+    {   "http://gov.uk/test/../test2/././../test3/.././././", 0, S_OK, FALSE, 0,
         {
             {"http://gov.uk/",S_OK,FALSE},
             {"gov.uk",S_OK,FALSE},
@@ -2491,7 +2486,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://gov.uk/test/test2/../../..", 0, S_OK, FALSE,
+    {   "http://gov.uk/test/test2/../../..", 0, S_OK, FALSE, 0,
         {
             {"http://gov.uk/",S_OK,FALSE},
             {"gov.uk",S_OK,FALSE},
@@ -2516,7 +2511,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://gov.uk/test/test2/../../.", 0, S_OK, FALSE,
+    {   "http://gov.uk/test/test2/../../.", 0, S_OK, FALSE, 0,
         {
             {"http://gov.uk/",S_OK,FALSE},
             {"gov.uk",S_OK,FALSE},
@@ -2541,7 +2536,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "file://c:\\tests\\../tests\\./.\\..\\foo%20bar.mp3", 0, S_OK, FALSE,
+    {   "file://c:\\tests\\../tests\\./.\\..\\foo%20bar.mp3", 0, S_OK, FALSE, 0,
         {
             {"file:///c:/foo%2520bar.mp3",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2567,7 +2562,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Dot removal happens for unknown scheme types. */
-    {   "zip://gov.uk/test/test2/../../.", 0, S_OK, FALSE,
+    {   "zip://gov.uk/test/test2/../../.", 0, S_OK, FALSE, 0,
         {
             {"zip://gov.uk/",S_OK,FALSE},
             {"gov.uk",S_OK,FALSE},
@@ -2593,7 +2588,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Dot removal doesn't happen if NO_CANONICALIZE is set. */
-    {   "http://gov.uk/test/test2/../../.", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "http://gov.uk/test/test2/../../.", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"http://gov.uk/test/test2/../../.",S_OK,FALSE},
             {"gov.uk",S_OK,FALSE},
@@ -2619,7 +2614,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Dot removal doesn't happen for wildcard scheme types. */
-    {   "*:gov.uk/test/test2/../../.", 0, S_OK, FALSE,
+    {   "*:gov.uk/test/test2/../../.", 0, S_OK, FALSE, 0,
         {
             {"*:gov.uk/test/test2/../../.",S_OK,FALSE},
             {"gov.uk",S_OK,FALSE},
@@ -2645,7 +2640,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters are encoded for opaque known scheme types. */
-    {   "mailto:\"acco<|>unt@example.com\"", 0, S_OK, FALSE,
+    {   "mailto:\"acco<|>unt@example.com\"", 0, S_OK, FALSE, 0,
         {
             {"mailto:%22acco%3C%7C%3Eunt@example.com%22",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2670,7 +2665,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "news:test.tes<|>t.com", 0, S_OK, FALSE,
+    {   "news:test.tes<|>t.com", 0, S_OK, FALSE, 0,
         {
             {"news:test.tes%3C%7C%3Et.com",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2696,7 +2691,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Don't encode forbidden characters. */
-    {   "news:test.tes<|>t.com", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE,
+    {   "news:test.tes<|>t.com", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE, 0,
         {
             {"news:test.tes<|>t.com",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2722,7 +2717,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters aren't encoded for unknown, opaque URIs. */
-    {   "urn:test.tes<|>t.com", 0, S_OK, FALSE,
+    {   "urn:test.tes<|>t.com", 0, S_OK, FALSE, 0,
         {
             {"urn:test.tes<|>t.com",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2748,7 +2743,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Percent encoded unreserved characters are decoded for known opaque URIs. */
-    {   "news:test.%74%65%73%74.com", 0, S_OK, FALSE,
+    {   "news:test.%74%65%73%74.com", 0, S_OK, FALSE, 0,
         {
             {"news:test.test.com",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2774,7 +2769,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Percent encoded characters are still decoded for known scheme types. */
-    {   "news:test.%74%65%73%74.com", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "news:test.%74%65%73%74.com", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"news:test.test.com",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2800,7 +2795,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Percent encoded characters aren't decoded for unknown scheme types. */
-    {   "urn:test.%74%65%73%74.com", 0, S_OK, FALSE,
+    {   "urn:test.%74%65%73%74.com", 0, S_OK, FALSE, 0,
         {
             {"urn:test.%74%65%73%74.com",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -2826,7 +2821,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Unknown scheme types can have invalid % encoded data in query string. */
-    {   "zip://www.winehq.org/tests/..?query=%xx&return=y", 0, S_OK, FALSE,
+    {   "zip://www.winehq.org/tests/..?query=%xx&return=y", 0, S_OK, FALSE, 0,
         {
             {"zip://www.winehq.org/?query=%xx&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -2852,7 +2847,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Known scheme types can have invalid % encoded data with the right flags. */
-    {   "http://www.winehq.org/tests/..?query=%xx&return=y", Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/..?query=%xx&return=y", Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/?query=%xx&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -2878,7 +2873,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters in query aren't percent encoded for known scheme types with this flag. */
-    {   "http://www.winehq.org/tests/..?query=<|>&return=y", Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/..?query=<|>&return=y", Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/?query=<|>&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -2904,7 +2899,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters in query aren't percent encoded for known scheme types with this flag. */
-    {   "http://www.winehq.org/tests/..?query=<|>&return=y", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/..?query=<|>&return=y", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/?query=<|>&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -2930,7 +2925,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters are encoded for known scheme types. */
-    {   "http://www.winehq.org/tests/..?query=<|>&return=y", 0, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/..?query=<|>&return=y", 0, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/?query=%3C%7C%3E&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -2956,7 +2951,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters are not encoded for unknown scheme types. */
-    {   "zip://www.winehq.org/tests/..?query=<|>&return=y", 0, S_OK, FALSE,
+    {   "zip://www.winehq.org/tests/..?query=<|>&return=y", 0, S_OK, FALSE, 0,
         {
             {"zip://www.winehq.org/?query=<|>&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -2982,7 +2977,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Percent encoded, unreserved characters are decoded for known scheme types. */
-    {   "http://www.winehq.org/tests/..?query=%30%31&return=y", 0, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/..?query=%30%31&return=y", 0, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/?query=01&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3008,7 +3003,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Percent encoded, unreserved characters aren't decoded for unknown scheme types. */
-    {   "zip://www.winehq.org/tests/..?query=%30%31&return=y", 0, S_OK, FALSE,
+    {   "zip://www.winehq.org/tests/..?query=%30%31&return=y", 0, S_OK, FALSE, 0,
         {
             {"zip://www.winehq.org/?query=%30%31&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3034,7 +3029,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Percent encoded characters aren't decoded when NO_DECODE_EXTRA_INFO is set. */
-    {   "http://www.winehq.org/tests/..?query=%30%31&return=y", Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/..?query=%30%31&return=y", Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/?query=%30%31&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3059,7 +3054,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE},
         }
     },
-    {   "http://www.winehq.org?query=12&return=y", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "http://www.winehq.org?query=12&return=y", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org?query=12&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3085,7 +3080,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Unknown scheme types can have invalid % encoded data in fragments. */
-    {   "zip://www.winehq.org/tests/#Te%xx", 0, S_OK, FALSE,
+    {   "zip://www.winehq.org/tests/#Te%xx", 0, S_OK, FALSE, 0,
         {
             {"zip://www.winehq.org/tests/#Te%xx",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3111,7 +3106,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters in fragment aren't encoded for unknown schemes. */
-    {   "zip://www.winehq.org/tests/#Te<|>", 0, S_OK, FALSE,
+    {   "zip://www.winehq.org/tests/#Te<|>", 0, S_OK, FALSE, 0,
         {
             {"zip://www.winehq.org/tests/#Te<|>",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3137,7 +3132,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters in the fragment are percent encoded for known schemes. */
-    {   "http://www.winehq.org/tests/#Te<|>", 0, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/#Te<|>", 0, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/tests/#Te%3C%7C%3E",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3163,7 +3158,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters aren't encoded in the fragment with this flag. */
-    {   "http://www.winehq.org/tests/#Te<|>", Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/#Te<|>", Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/tests/#Te<|>",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3189,7 +3184,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters aren't encoded in the fragment with this flag. */
-    {   "http://www.winehq.org/tests/#Te<|>", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/#Te<|>", Uri_CREATE_NO_ENCODE_FORBIDDEN_CHARACTERS, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/tests/#Te<|>",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3215,7 +3210,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Percent encoded, unreserved characters aren't decoded for known scheme types. */
-    {   "zip://www.winehq.org/tests/#Te%30%31%32", 0, S_OK, FALSE,
+    {   "zip://www.winehq.org/tests/#Te%30%31%32", 0, S_OK, FALSE, 0,
         {
             {"zip://www.winehq.org/tests/#Te%30%31%32",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3241,7 +3236,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Percent encoded, unreserved characters are decoded for known schemes. */
-    {   "http://www.winehq.org/tests/#Te%30%31%32", 0, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/#Te%30%31%32", 0, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/tests/#Te012",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3267,7 +3262,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Percent encoded, unreserved characters are decoded even if NO_CANONICALIZE is set. */
-    {   "http://www.winehq.org/tests/#Te%30%31%32", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/#Te%30%31%32", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/tests/#Te012",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3293,7 +3288,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Percent encoded, unreserved characters aren't decoded when NO_DECODE_EXTRA is set. */
-    {   "http://www.winehq.org/tests/#Te%30%31%32", Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/#Te%30%31%32", Uri_CREATE_NO_DECODE_EXTRA_INFO, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/tests/#Te%30%31%32",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -3319,7 +3314,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Leading/Trailing whitespace is removed. */
-    {   "    http://google.com/     ", 0, S_OK, FALSE,
+    {   "    http://google.com/     ", 0, S_OK, FALSE, 0,
         {
             {"http://google.com/",S_OK,FALSE},
             {"google.com",S_OK,FALSE},
@@ -3344,7 +3339,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "\t\t\r\nhttp\n://g\noogle.co\rm/\n\n\n", 0, S_OK, FALSE,
+    {   "\t\t\r\nhttp\n://g\noogle.co\rm/\n\n\n", 0, S_OK, FALSE, 0,
         {
             {"http://google.com/",S_OK,FALSE},
             {"google.com",S_OK,FALSE},
@@ -3369,7 +3364,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http://g\noogle.co\rm/\n\n\n", Uri_CREATE_NO_PRE_PROCESS_HTML_URI, S_OK, FALSE,
+    {   "http://g\noogle.co\rm/\n\n\n", Uri_CREATE_NO_PRE_PROCESS_HTML_URI, S_OK, FALSE, 0,
         {
             {"http://g%0aoogle.co%0dm/%0A%0A%0A",S_OK,FALSE},
             {"g%0aoogle.co%0dm",S_OK,FALSE},
@@ -3394,7 +3389,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "zip://g\noogle.co\rm/\n\n\n", Uri_CREATE_NO_PRE_PROCESS_HTML_URI, S_OK, FALSE,
+    {   "zip://g\noogle.co\rm/\n\n\n", Uri_CREATE_NO_PRE_PROCESS_HTML_URI, S_OK, FALSE, 0,
         {
             {"zip://g\noogle.co\rm/\n\n\n",S_OK,FALSE},
             {"g\noogle.co\rm",S_OK,FALSE},
@@ -3422,7 +3417,7 @@ static const uri_properties uri_tests[] = {
     /* Since file URLs are usually hierarchical, it returns an empty string
      * for the absolute URI property since it was declared as an opaque URI.
      */
-    {   "file:index.html", 0, S_OK, FALSE,
+    {   "file:index.html", 0, S_OK, FALSE, 0,
         {
             {"",S_FALSE,FALSE},
             {"",S_FALSE,FALSE},
@@ -3448,7 +3443,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Doesn't have an absolute since it's opaque, but gets it port set. */
-    {   "http:test.com/index.html", 0, S_OK, FALSE,
+    {   "http:test.com/index.html", 0, S_OK, FALSE, 0,
         {
             {"",S_FALSE,FALSE},
             {"",S_FALSE,FALSE},
@@ -3473,7 +3468,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "ftp:test.com/index.html", 0, S_OK, FALSE,
+    {   "ftp:test.com/index.html", 0, S_OK, FALSE, 0,
         {
             {"",S_FALSE,FALSE},
             {"",S_FALSE,FALSE},
@@ -3498,7 +3493,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "file://C|/test.mp3", 0, S_OK, FALSE,
+    {   "file://C|/test.mp3", 0, S_OK, FALSE, 0,
         {
             {"file:///C:/test.mp3",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -3523,7 +3518,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "file:///C|/test.mp3", 0, S_OK, FALSE,
+    {   "file:///C|/test.mp3", 0, S_OK, FALSE, 0,
         {
             {"file:///C:/test.mp3",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -3551,7 +3546,7 @@ static const uri_properties uri_tests[] = {
     /* Extra '/' isn't added before "c:" since USE_DOS_PATH is set and '/' are converted
      * to '\\'.
      */
-    {   "file://c:/dir/index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE,
+    {   "file://c:/dir/index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE, 0,
         {
             {"file://c:\\dir\\index.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -3577,7 +3572,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Extra '/' after "file://" is removed. */
-    {   "file:///c:/dir/index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE,
+    {   "file:///c:/dir/index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE, 0,
         {
             {"file://c:\\dir\\index.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -3603,7 +3598,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Allow more characters when Uri_CREATE_FILE_USE_DOS_PATH is specified */
-    {   "file:///c:/dir\\%%61%20%5Fname/file%2A.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE,
+    {   "file:///c:/dir\\%%61%20%5Fname/file%2A.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE, 0,
         {
             {"file://c:\\dir\\%a _name\\file*.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -3628,7 +3623,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "file://c|/dir\\index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE,
+    {   "file://c|/dir\\index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE, 0,
         {
             {"file://c:\\dir\\index.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -3654,7 +3649,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* The backslashes after the scheme name are converted to forward slashes. */
-    {   "file:\\\\c:\\dir\\index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE,
+    {   "file:\\\\c:\\dir\\index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE, 0,
         {
             {"file://c:\\dir\\index.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -3679,7 +3674,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "file:\\\\c:/dir/index.html", 0, S_OK, FALSE,
+    {   "file:\\\\c:/dir/index.html", 0, S_OK, FALSE, 0,
         {
             {"file:///c:/dir/index.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -3704,7 +3699,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "http:\\\\google.com", 0, S_OK, FALSE,
+    {   "http:\\\\google.com", 0, S_OK, FALSE, 0,
         {
             {"http://google.com/",S_OK,FALSE},
             {"google.com",S_OK,FALSE},
@@ -3730,7 +3725,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* the "\\\\" aren't converted to "//" for unknown scheme types and it's considered opaque. */
-    {   "zip:\\\\google.com", 0, S_OK, FALSE,
+    {   "zip:\\\\google.com", 0, S_OK, FALSE, 0,
         {
             {"zip:\\\\google.com",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -3756,7 +3751,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Dot segments aren't removed. */
-    {   "file://c:\\dir\\../..\\./index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE,
+    {   "file://c:\\dir\\../..\\./index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE, 0,
         {
             {"file://c:\\dir\\..\\..\\.\\index.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -3782,7 +3777,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters aren't percent encoded. */
-    {   "file://c:\\dir\\i^|ndex.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE,
+    {   "file://c:\\dir\\i^|ndex.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE, 0,
         {
             {"file://c:\\dir\\i^|ndex.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -3808,7 +3803,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* The '\' are still converted to '/' even though it's an opaque file URI. */
-    {   "file:c:\\dir\\../..\\index.html", 0, S_OK, FALSE,
+    {   "file:c:\\dir\\../..\\index.html", 0, S_OK, FALSE, 0,
         {
             {"",S_FALSE,FALSE},
             {"",S_FALSE,FALSE},
@@ -3834,7 +3829,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* '/' are still converted to '\' even though it's an opaque URI. */
-    {   "file:c:/dir\\../..\\index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE,
+    {   "file:c:/dir\\../..\\index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE, 0,
         {
             {"",S_FALSE,FALSE},
             {"",S_FALSE,FALSE},
@@ -3860,7 +3855,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Forbidden characters aren't percent encoded. */
-    {   "file:c:\\in^|dex.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE,
+    {   "file:c:\\in^|dex.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE, 0,
         {
             {"",S_FALSE,FALSE},
             {"",S_FALSE,FALSE},
@@ -3888,7 +3883,7 @@ static const uri_properties uri_tests[] = {
     /* Doesn't have a UserName since the ':' appears at the beginning of the
      * userinfo section.
      */
-    {   "http://:password@gov.uk", 0, S_OK, FALSE,
+    {   "http://:password@gov.uk", 0, S_OK, FALSE, 0,
         {
             {"http://:password@gov.uk/",S_OK,FALSE},
             {":password@gov.uk",S_OK,FALSE},
@@ -3914,7 +3909,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Has a UserName since the userinfo section doesn't contain a password. */
-    {   "http://@gov.uk", 0, S_OK, FALSE,
+    {   "http://@gov.uk", 0, S_OK, FALSE, 0,
         {
             {"http://gov.uk/",S_OK,FALSE,"http://@gov.uk/"},
             {"@gov.uk",S_OK,FALSE},
@@ -3940,7 +3935,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* ":@" not included in the absolute URI. */
-    {   "http://:@gov.uk", 0, S_OK, FALSE,
+    {   "http://:@gov.uk", 0, S_OK, FALSE, 0,
         {
             {"http://gov.uk/",S_OK,FALSE,"http://:@gov.uk/"},
             {":@gov.uk",S_OK,FALSE},
@@ -3966,7 +3961,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* '@' is included because it's an unknown scheme type. */
-    {   "zip://@gov.uk", 0, S_OK, FALSE,
+    {   "zip://@gov.uk", 0, S_OK, FALSE, 0,
         {
             {"zip://@gov.uk/",S_OK,FALSE},
             {"@gov.uk",S_OK,FALSE},
@@ -3992,7 +3987,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* ":@" are included because it's an unknown scheme type. */
-    {   "zip://:@gov.uk", 0, S_OK, FALSE,
+    {   "zip://:@gov.uk", 0, S_OK, FALSE, 0,
         {
             {"zip://:@gov.uk/",S_OK,FALSE},
             {":@gov.uk",S_OK,FALSE},
@@ -4017,7 +4012,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "about:blank", 0, S_OK, FALSE,
+    {   "about:blank", 0, S_OK, FALSE, 0,
         {
             {"about:blank",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4042,7 +4037,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "mk:@MSITStore:C:\\Program Files/AutoCAD 2008\\Help/acad_acg.chm::/WSfacf1429558a55de1a7524c1004e616f8b-322b.htm",0,S_OK,FALSE,
+    {   "mk:@MSITStore:C:\\Program Files/AutoCAD 2008\\Help/acad_acg.chm::/WSfacf1429558a55de1a7524c1004e616f8b-322b.htm",0,S_OK,FALSE, 0,
         {
             {"mk:@MSITStore:C:\\Program%20Files/AutoCAD%202008\\Help/acad_acg.chm::/WSfacf1429558a55de1a7524c1004e616f8b-322b.htm",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4067,7 +4062,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "mk:@MSITStore:Z:\\home\\test\\chm\\silqhelp.chm::/thesilqquickstartguide.htm",0,S_OK,FALSE,
+    {   "mk:@MSITStore:Z:\\home\\test\\chm\\silqhelp.chm::/thesilqquickstartguide.htm",0,S_OK,FALSE, 0,
         {
             {"mk:@MSITStore:Z:\\home\\test\\chm\\silqhelp.chm::/thesilqquickstartguide.htm",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4093,7 +4088,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Two '\' are added to the URI when USE_DOS_PATH is set, and it's a UNC path. */
-    {   "file://server/dir/index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE,
+    {   "file://server/dir/index.html", Uri_CREATE_FILE_USE_DOS_PATH, S_OK, FALSE, 0,
         {
             {"file://\\\\server\\dir\\index.html",S_OK,FALSE},
             {"server",S_OK,FALSE},
@@ -4121,7 +4116,7 @@ static const uri_properties uri_tests[] = {
     /* When CreateUri generates an IUri, it still displays the default port in the
      * authority.
      */
-    {   "http://google.com:80/", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "http://google.com:80/", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"http://google.com:80/",S_OK,FALSE},
             {"google.com:80",S_OK,FALSE},
@@ -4147,7 +4142,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* For res URIs the host is everything up until the first '/'. */
-    {   "res://C:\\dir\\file.exe/DATA/test.html", 0, S_OK, FALSE,
+    {   "res://C:\\dir\\file.exe/DATA/test.html", 0, S_OK, FALSE, 0,
         {
             {"res://C:\\dir\\file.exe/DATA/test.html",S_OK,FALSE},
             {"C:\\dir\\file.exe",S_OK,FALSE},
@@ -4173,7 +4168,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Res URI can contain a '|' in the host name. */
-    {   "res://c:\\di|r\\file.exe/test", 0, S_OK, FALSE,
+    {   "res://c:\\di|r\\file.exe/test", 0, S_OK, FALSE, 0,
         {
             {"res://c:\\di|r\\file.exe/test",S_OK,FALSE},
             {"c:\\di|r\\file.exe",S_OK,FALSE},
@@ -4199,7 +4194,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Res URIs can have invalid percent encoded values. */
-    {   "res://c:\\dir%xx\\file.exe/test", 0, S_OK, FALSE,
+    {   "res://c:\\dir%xx\\file.exe/test", 0, S_OK, FALSE, 0,
         {
             {"res://c:\\dir%xx\\file.exe/test",S_OK,FALSE},
             {"c:\\dir%xx\\file.exe",S_OK,FALSE},
@@ -4225,7 +4220,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Res doesn't get forbidden characters percent encoded in its path. */
-    {   "res://c:\\test/tes<|>t", 0, S_OK, FALSE,
+    {   "res://c:\\test/tes<|>t", 0, S_OK, FALSE, 0,
         {
             {"res://c:\\test/tes<|>t",S_OK,FALSE},
             {"c:\\test",S_OK,FALSE},
@@ -4250,7 +4245,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "mk:@MSITStore:Z:\\dir\\test.chm::/html/../images/xxx.jpg", 0, S_OK, FALSE,
+    {   "mk:@MSITStore:Z:\\dir\\test.chm::/html/../images/xxx.jpg", 0, S_OK, FALSE, 0,
         {
             {"mk:@MSITStore:Z:\\dir\\test.chm::/images/xxx.jpg",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4275,7 +4270,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "mk:@MSITStore:Z:\\dir\\test.chm::/html/../images/xxx.jpg", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "mk:@MSITStore:Z:\\dir\\test.chm::/html/../images/xxx.jpg", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"mk:@MSITStore:Z:\\dir\\test.chm::/html/../images/xxx.jpg",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4300,7 +4295,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "xx:@MSITStore:Z:\\dir\\test.chm::/html/../images/xxx.jpg", 0, S_OK, FALSE,
+    {   "xx:@MSITStore:Z:\\dir\\test.chm::/html/../images/xxx.jpg", 0, S_OK, FALSE, 0,
         {
             {"xx:@MSITStore:Z:\\dir\\test.chm::/html/../images/xxx.jpg",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4325,7 +4320,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "mk:@MSITStore:Z:\\dir\\test.chm::/html/../../images/xxx.jpg", 0, S_OK, FALSE,
+    {   "mk:@MSITStore:Z:\\dir\\test.chm::/html/../../images/xxx.jpg", 0, S_OK, FALSE, 0,
         {
             {"mk:@MSITStore:Z:\\dir\\images/xxx.jpg",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4350,7 +4345,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "mk:@MSITStore:Z:\\dir\\dir2\\..\\test.chm::/html/../../images/xxx.jpg", 0, S_OK, FALSE,
+    {   "mk:@MSITStore:Z:\\dir\\dir2\\..\\test.chm::/html/../../images/xxx.jpg", 0, S_OK, FALSE, 0,
         {
             {"mk:@MSITStore:Z:\\dir\\images/xxx.jpg",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4375,7 +4370,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "mk:@MSITStore:Z:\\dir\\test.chm::/html/../../../../images/xxx.jpg", 0, S_OK, FALSE,
+    {   "mk:@MSITStore:Z:\\dir\\test.chm::/html/../../../../images/xxx.jpg", 0, S_OK, FALSE, 0,
         {
             {"mk:images/xxx.jpg",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4400,7 +4395,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE,
+    {   "", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE, 0,
         {
             {"",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4425,7 +4420,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   " \t ", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE,
+    {   " \t ", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE, 0,
         {
             {"",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4450,7 +4445,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "javascript:void", 0, S_OK, FALSE,
+    {   "javascript:void", 0, S_OK, FALSE, 0,
         {
             {"javascript:void",S_OK},
             {"",S_FALSE},
@@ -4475,7 +4470,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL}
         }
     },
-    {   "javascript://undefined", 0, S_OK, FALSE,
+    {   "javascript://undefined", 0, S_OK, FALSE, 0,
         {
             {"javascript://undefined",S_OK},
             {"",S_FALSE},
@@ -4500,7 +4495,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL}
         }
     },
-    {   "JavaSCript:escape('/\\?#?')", 0, S_OK, FALSE,
+    {   "JavaSCript:escape('/\\?#?')", 0, S_OK, FALSE, 0,
         {
             {"javascript:escape('/\\?#?')",S_OK},
             {"",S_FALSE},
@@ -4525,7 +4520,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL}
         }
     },
-    {   "*://google.com", 0, S_OK, FALSE,
+    {   "*://google.com", 0, S_OK, FALSE, 0,
         {
             {"*:google.com/",S_OK,FALSE},
             {"google.com",S_OK},
@@ -4550,7 +4545,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "mk:@MSITSTORE:C:\\Some\\Bogus\\Path.chm::/subdir/file.txt",0,S_OK,FALSE,
+    {   "mk:@MSITSTORE:C:\\Some\\Bogus\\Path.chm::/subdir/file.txt", 0, S_OK, FALSE, 0,
         {
             {"mk:@MSITSTORE:C:\\Some\\Bogus\\Path.chm::/subdir/file.txt",S_OK},
             {"",S_FALSE},
@@ -4575,7 +4570,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL}
         }
     },
-    {   "gopher://test.winehq.org:151/file.txt",0,S_OK,FALSE,
+    {   "gopher://test.winehq.org:151/file.txt", 0, S_OK, FALSE, 0,
         {
             {"gopher://test.winehq.org:151/file.txt",S_OK},
             {"test.winehq.org:151",S_OK},
@@ -4600,7 +4595,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL}
         }
     },
-    {   "//host.com/path/file.txt?query", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE,
+    {   "//host.com/path/file.txt?query", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE, 0,
         {
             {"//host.com/path/file.txt?query",S_OK},
             {"host.com",S_OK},
@@ -4625,7 +4620,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL}
         }
     },
-    {   "//host/path/file.txt?query", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE,
+    {   "//host/path/file.txt?query", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE, 0,
         {
             {"//host/path/file.txt?query",S_OK},
             {"host",S_OK},
@@ -4650,7 +4645,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL}
         }
     },
-    {   "//host", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE,
+    {   "//host", Uri_CREATE_ALLOW_RELATIVE, S_OK, FALSE, 0,
         {
             {"//host/",S_OK},
             {"host",S_OK},
@@ -4675,7 +4670,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL}
         }
     },
-    {   "mailto://", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "mailto://", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"mailto:",S_OK},
             {"",S_FALSE},
@@ -4700,7 +4695,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL}
         }
     },
-    {   "mailto://a@b.com", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE,
+    {   "mailto://a@b.com", Uri_CREATE_NO_CANONICALIZE, S_OK, FALSE, 0,
         {
             {"mailto:a@b.com",S_OK},
             {"",S_FALSE},
@@ -4725,7 +4720,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL}
         }
     },
-    {   "c:\\test file.html", Uri_CREATE_FILE_USE_DOS_PATH|Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE,
+    {   "c:\\test file.html", Uri_CREATE_FILE_USE_DOS_PATH|Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE, 0,
         {
             {"file://c:\\test file.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4750,7 +4745,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "c:\\test%20file.html", Uri_CREATE_FILE_USE_DOS_PATH|Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE,
+    {   "c:\\test%20file.html", Uri_CREATE_FILE_USE_DOS_PATH|Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE, 0,
         {
             {"file://c:\\test%20file.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4775,7 +4770,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "c:\\test file.html", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE,
+    {   "c:\\test file.html", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE, 0,
         {
             {"file:///c:/test%20file.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4800,7 +4795,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "c:\\test%20file.html", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE,
+    {   "c:\\test%20file.html", Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME, S_OK, FALSE, 0,
         {
             {"file:///c:/test%2520file.html",S_OK,FALSE},
             {"",S_FALSE,FALSE},
@@ -4827,7 +4822,7 @@ static const uri_properties uri_tests[] = {
     },
     /* Path with Unicode characters. Unicode characters should not be encoded */
     {/* "http://127.0.0.1/测试/test.txt" with Chinese in UTF-8 encoding */
-        "http://127.0.0.1/\xE6\xB5\x8B\xE8\xAF\x95/test.txt", 0, S_OK, FALSE,
+        "http://127.0.0.1/\xE6\xB5\x8B\xE8\xAF\x95/test.txt", 0, S_OK, FALSE, 0,
         {
             {"http://127.0.0.1/\xE6\xB5\x8B\xE8\xAF\x95/test.txt",S_OK,FALSE},
             {"127.0.0.1",S_OK,FALSE},
@@ -4852,7 +4847,7 @@ static const uri_properties uri_tests[] = {
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
     },
-    {   "file:\xE6\xB5\x8B\xE8\xAF\x95.html", 0, S_OK, FALSE,
+    {   "file:\xE6\xB5\x8B\xE8\xAF\x95.html", 0, S_OK, FALSE, 0,
         {
             {"",S_FALSE,FALSE},
             {"",S_FALSE,FALSE},
@@ -4878,7 +4873,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Username with Unicode characters. Unicode characters should not be encoded */
-    {   "ftp://\xE6\xB5\x8B\xE8\xAF\x95:wine@ftp.winehq.org:9999/dir/foobar.txt", 0, S_OK, FALSE,
+    {   "ftp://\xE6\xB5\x8B\xE8\xAF\x95:wine@ftp.winehq.org:9999/dir/foobar.txt", 0, S_OK, FALSE, 0,
         {
             {"ftp://\xE6\xB5\x8B\xE8\xAF\x95:wine@ftp.winehq.org:9999/dir/foobar.txt",S_OK,FALSE},
             {"\xE6\xB5\x8B\xE8\xAF\x95:wine@ftp.winehq.org:9999",S_OK,FALSE},
@@ -4904,7 +4899,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Password with Unicode characters. Unicode characters should not be encoded */
-    {   "ftp://winepass:\xE6\xB5\x8B\xE8\xAF\x95@ftp.winehq.org:9999/dir/foobar.txt", 0, S_OK, FALSE,
+    {   "ftp://winepass:\xE6\xB5\x8B\xE8\xAF\x95@ftp.winehq.org:9999/dir/foobar.txt", 0, S_OK, FALSE, 0,
         {
             {"ftp://winepass:\xE6\xB5\x8B\xE8\xAF\x95@ftp.winehq.org:9999/dir/foobar.txt",S_OK,FALSE},
             {"winepass:\xE6\xB5\x8B\xE8\xAF\x95@ftp.winehq.org:9999",S_OK,FALSE},
@@ -4930,7 +4925,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Query with Unicode characters. Unicode characters should not be encoded */
-    {   "http://www.winehq.org/tests/..?query=\xE6\xB5\x8B\xE8\xAF\x95&return=y", 0, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/..?query=\xE6\xB5\x8B\xE8\xAF\x95&return=y", 0, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/?query=\xE6\xB5\x8B\xE8\xAF\x95&return=y",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -4956,7 +4951,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Fragment with Unicode characters. Unicode characters should not be encoded */
-    {   "http://www.winehq.org/tests/#\xE6\xB5\x8B\xE8\xAF\x95", 0, S_OK, FALSE,
+    {   "http://www.winehq.org/tests/#\xE6\xB5\x8B\xE8\xAF\x95", 0, S_OK, FALSE, 0,
         {
             {"http://www.winehq.org/tests/#\xE6\xB5\x8B\xE8\xAF\x95",S_OK,FALSE},
             {"www.winehq.org",S_OK,FALSE},
@@ -4982,7 +4977,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* ZERO WIDTH JOINER as non-printing Unicode characters should not be encoded if not preprocessed. */
-    {   "file:a\xE2\x80\x8D.html", Uri_CREATE_NO_PRE_PROCESS_HTML_URI, S_OK, FALSE,
+    {   "file:a\xE2\x80\x8D.html", Uri_CREATE_NO_PRE_PROCESS_HTML_URI, S_OK, FALSE, 0,
         {
             {"",S_FALSE,FALSE},
             {"",S_FALSE,FALSE},
@@ -5008,7 +5003,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* LEFT-TO-RIGHT MARK as non-printing Unicode characters should not be encoded if not preprocessed. */
-    {   "file:ab\xE2\x80\x8E.html", Uri_CREATE_NO_PRE_PROCESS_HTML_URI, S_OK, FALSE,
+    {   "file:ab\xE2\x80\x8E.html", Uri_CREATE_NO_PRE_PROCESS_HTML_URI, S_OK, FALSE, 0,
         {
             {"",S_FALSE,FALSE},
             {"",S_FALSE,FALSE},
@@ -5034,7 +5029,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Invalid Unicode characters should not be filtered */
-    {   "file:ab\xc3\x28.html", 0, S_OK, FALSE,
+    {   "file:ab\xc3\x28.html", 0, S_OK, FALSE, 0,
         {
             {"",S_FALSE,FALSE},
             {"",S_FALSE,FALSE},
@@ -5060,7 +5055,7 @@ static const uri_properties uri_tests[] = {
         }
     },
     /* Make sure % encoded unicode characters are not decoded. */
-    {   "ftp://%E6%B5%8B%E8%AF%95:%E6%B5%8B%E8%AF%95@ftp.google.com/", 0, S_OK, FALSE,
+    {   "ftp://%E6%B5%8B%E8%AF%95:%E6%B5%8B%E8%AF%95@ftp.google.com/", 0, S_OK, FALSE, 0,
         {
             {"ftp://%E6%B5%8B%E8%AF%95:%E6%B5%8B%E8%AF%95@ftp.google.com/",S_OK,FALSE},
             {"%E6%B5%8B%E8%AF%95:%E6%B5%8B%E8%AF%95@ftp.google.com",S_OK,FALSE},
@@ -5084,7 +5079,398 @@ static const uri_properties uri_tests[] = {
             {URL_SCHEME_FTP,S_OK,FALSE},
             {URLZONE_INVALID,E_NOTIMPL,FALSE}
         }
-    }
+    },
+    /* Hostname is an IDN */
+    {
+    /*  "http://测试.org/" with Chinese in UTF-8 encoding */
+        "http://\xE6\xB5\x8B\xE8\xAF\x95.org/", 0, S_OK, FALSE, 0,
+        {
+            {"http://\xE6\xB5\x8B\xE8\xAF\x95.org/",S_OK,FALSE},
+            {"\xE6\xB5\x8B\xE8\xAF\x95.org",S_OK,FALSE},
+            {"http://xn--0zwm56d.org/",S_OK,FALSE,NULL,"http://\xE6\xB5\x8B\xE8\xAF\x95.org/",S_OK},
+            {"\xE6\xB5\x8B\xE8\xAF\x95.org",S_OK,FALSE},
+            {"",S_FALSE,FALSE},
+            {"",S_FALSE,FALSE},
+            {"\xE6\xB5\x8B\xE8\xAF\x95.org",S_OK,FALSE},
+            {"",S_FALSE,FALSE},
+            {"/",S_OK,FALSE},
+            {"/",S_OK,FALSE},
+            {"",S_FALSE,FALSE},
+            {"http://\xE6\xB5\x8B\xE8\xAF\x95.org/",S_OK,FALSE},
+            {"http",S_OK,FALSE},
+            {"",S_FALSE,FALSE},
+            {"",S_FALSE,FALSE}
+        },
+        {
+            {Uri_HOST_IDN,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Hostname is an IDN that has percent encoded characters*/
+    {
+    /*  "http://测试%74%65%73%74.org/" with Chinese in UTF-8 encoding */
+        "http://\xE6\xB5\x8B\xE8\xAF\x95%74%65%73%74.org/", 0, S_OK, FALSE, 0,
+        {
+            {"http://\xE6\xB5\x8B\xE8\xAF\x95test.org/",S_OK,FALSE},
+            {"\xE6\xB5\x8B\xE8\xAF\x95test.org",S_OK,FALSE},
+            {"http://xn--test-zx7if72m.org/",S_OK,FALSE,NULL,"http://\xE6\xB5\x8B\xE8\xAF\x95test.org/",S_OK},
+            {"\xE6\xB5\x8B\xE8\xAF\x95test.org",S_OK,FALSE},
+            {"",S_FALSE,FALSE},
+            {"",S_FALSE,FALSE},
+            {"\xE6\xB5\x8B\xE8\xAF\x95test.org",S_OK,FALSE},
+            {"",S_FALSE,FALSE},
+            {"/",S_OK,FALSE},
+            {"/",S_OK,FALSE},
+            {"",S_FALSE,FALSE},
+            {"http://\xE6\xB5\x8B\xE8\xAF\x95%74%65%73%74.org/",S_OK,FALSE},
+            {"http",S_OK,FALSE},
+            {"",S_FALSE,FALSE},
+            {"",S_FALSE,FALSE}
+        },
+        {
+            {Uri_HOST_IDN,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Uri_DISPLAY_NO_FRAGMENT a URI that has no PASSWORD, QUERY, USER_INFO and USER_NAME.
+     * GetPropertyBSTR() returns E_INVALIDARG for PASSWORD, QUERY, USER_INFO and USER_NAME while
+     * GetPropertyLength() returns S_FALSE. This means in GetPropertyLength() the check for property
+     * existence happens before the check of Uri_DISPLAY_NO_FRAGMENT for property */
+    {   "http://www.winehq.org/foo.html#fragment", 0, S_OK, FALSE, Uri_DISPLAY_NO_FRAGMENT,
+        {
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"http://www.winehq.org/foo.html",S_OK,FALSE},             /* DISPLAY_URI */
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* PASSWORD */
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* QUERY */
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* USER_INFO */
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* USER_NAME */
+        },
+        {
+            {Uri_HOST_DNS,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Uri_DISPLAY_NO_FRAGMENT with a URI that has PASSWORD, QUERY, USER_INFO and USER_NAME */
+    {   "http://username:password@www.winehq.org/foo.html?query=value#fragment", 0, S_OK, FALSE, Uri_DISPLAY_NO_FRAGMENT,
+        {
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"http://www.winehq.org/foo.html?query=value",S_OK,FALSE}, /* DISPLAY_URI */
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+        },
+        {
+            {Uri_HOST_DNS,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Uri_PUNYCODE_IDN_HOST with a ASCII host name that has no EXTENSION, FRAGMENT, PASSWORD, QUERY, USER_INFO and USER_NAME.
+     * GetPropertyBSTR() returns E_INVALIDARG for EXTENSION, FRAGMENT, PASSWORD, QUERY, USER_INFO
+     * and USER_NAME while GetPropertyLength() returns S_FALSE. This means the check for property
+     * existence happens before the check of Uri_PUNYCODE_IDN_HOST for property */
+    {   "http://www.winehq.org/", 0, S_OK, FALSE, Uri_PUNYCODE_IDN_HOST,
+        {
+            {"http://www.winehq.org/",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"winehq.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* EXTENSION */
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* FRAGMENT */
+            {"www.winehq.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* PASSWORD */
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* QUERY */
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* USER_INFO */
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* USER_NAME */
+        },
+        {
+            {Uri_HOST_DNS,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Uri_PUNYCODE_IDN_HOST with a ASCII host name that has EXTENSION, FRAGMENT, PASSWORD, QUERY, USER_INFO and USER_NAME */
+    {   "http://username:password@www.winehq.org/index.html?query=value#fragment", 0, S_OK, FALSE, Uri_PUNYCODE_IDN_HOST,
+        {
+            {"http://username:password@www.winehq.org/index.html?query=value#fragment",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"winehq.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"www.winehq.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+        },
+        {
+            {Uri_HOST_DNS,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Uri_PUNYCODE_IDN_HOST with an IDN that has EXTENSION, FRAGMENT, PASSWORD, QUERY, USER_INFO and USER_NAME */
+    {
+    /*  "http://username:password@测试.org/index.html?query=value#fragment" with Chinese in UTF-8 encoding */
+        "http://username:password@\xE6\xB5\x8B\xE8\xAF\x95.org/index.html?query=value#fragment", 0, S_OK, FALSE, Uri_PUNYCODE_IDN_HOST,
+        {
+            {"http://username:password@xn--0zwm56d.org/index.html?query=value#fragment",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"xn--0zwm56d.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"xn--0zwm56d.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+        },
+        {
+            {Uri_HOST_IDN,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    {
+    /*  "http://username:password@www.测试.org/index.html?query=value#fragment" with Chinese in UTF-8 encoding */
+        "http://username:password@www.\xE6\xB5\x8B\xE8\xAF\x95.org/index.html?query=value#fragment", 0, S_OK, FALSE, Uri_PUNYCODE_IDN_HOST,
+        {
+            {"http://username:password@www.xn--0zwm56d.org/index.html?query=value#fragment",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"xn--0zwm56d.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"www.xn--0zwm56d.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+        },
+        {
+            {Uri_HOST_IDN,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Uri_PUNYCODE_IDN_HOST with an IDN that has EXTENSION, FRAGMENT, PASSWORD, QUERY, USER_INFO and USER_NAME.
+     * User info is ":@" and not removed in the Uri_PROPERTY_ABSOLUTE_URI property */
+    {
+    /*  "http://:@www.测试.org/index.html?query=value#fragment" with Chinese in UTF-8 encoding */
+        "http://:@www.\xE6\xB5\x8B\xE8\xAF\x95.org/index.html?query=value#fragment", 0, S_OK, FALSE, Uri_PUNYCODE_IDN_HOST,
+        {
+            {"http://:@www.xn--0zwm56d.org/index.html?query=value#fragment",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"xn--0zwm56d.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"www.xn--0zwm56d.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* USER_NAME */
+        },
+        {
+            {Uri_HOST_IDN,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Uri_PUNYCODE_IDN_HOST with an IDN that has EXTENSION, FRAGMENT, PASSWORD, QUERY, USER_INFO and USER_NAME.
+     * User info is "@" and not removed in the Uri_PROPERTY_ABSOLUTE_URI property */
+    {/* "http://@www.测试.org/index.html?query=value#fragment" with Chinese in UTF-8 encoding */
+        "http://@www.\xE6\xB5\x8B\xE8\xAF\x95.org/index.html?query=value#fragment", 0, S_OK, FALSE, Uri_PUNYCODE_IDN_HOST,
+        {
+            {"http://@www.xn--0zwm56d.org/index.html?query=value#fragment",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"xn--0zwm56d.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"www.xn--0zwm56d.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* PASSWORD */
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* USER_NAME */
+        },
+        {
+            {Uri_HOST_IDN,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Uri_PUNYCODE_IDN_HOST with a path in Unicode characters */
+    {
+    /*  "http://username:password@winehq.org/测试.html?query=value#fragment" with Chinese in UTF-8 encoding */
+        "http://username:password@winehq.org/\xE6\xB5\x8B\xE8\xAF\x95.html?query=value#fragment", 0, S_OK, FALSE, Uri_PUNYCODE_IDN_HOST,
+        {
+            {"http://username:password@winehq.org/\xE6\xB5\x8B\xE8\xAF\x95.html?query=value#fragment",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"winehq.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"winehq.org",S_OK,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+        },
+        {
+            {Uri_HOST_DNS,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Uri_DISPLAY_IDN_HOST with an IDN and URI has no EXTENSION, FRAGMENT, PASSWORD, QUERY, USER_INFO and USER_NAME.
+     * GetPropertyBSTR() returns E_INVALIDARG for EXTENSION, FRAGMENT, PASSWORD, QUERY, USER_INFO
+     * and USER_NAME while GetPropertyLength() returns S_FALSE. This means the check for property
+     * existence happens before the check of Uri_DISPLAY_IDN_HOST for property */
+    {
+    /*  "http://测试.org/" with Chinese in UTF-8 encoding */
+        "http://\xE6\xB5\x8B\xE8\xAF\x95.org/", 0, S_OK, FALSE, Uri_DISPLAY_IDN_HOST,
+        {
+            {"http://xn--0zwm56d.org/",S_OK,FALSE,NULL,"http://\xE6\xB5\x8B\xE8\xAF\x95.org/",S_OK},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"xn--0zwm56d.org",S_OK,FALSE,NULL,"\xE6\xB5\x8B\xE8\xAF\x95.org",S_OK},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* EXTENSION */
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* FRAGMENT */
+            {"xn--0zwm56d.org",S_OK,FALSE,NULL,"\xE6\xB5\x8B\xE8\xAF\x95.org",S_OK},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* PASSWORD */
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* QUERY */
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* USER_INFO */
+            {NULL,E_INVALIDARG,FALSE,NULL,"",S_FALSE},                 /* USER_NAME */
+        },
+        {
+            {Uri_HOST_IDN,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Uri_DISPLAY_IDN_HOST with an IDN and URI has EXTENSION, FRAGMENT, PASSWORD, QUERY, USER_INFO and USER_NAME.*/
+    {
+    /*  "http://username:password@测试.org/index.html?query=value#fragment" with Chinese in UTF-8 encoding */
+        "http://username:password@\xE6\xB5\x8B\xE8\xAF\x95.org/index.html?query=value#fragment", 0, S_OK, FALSE, Uri_DISPLAY_IDN_HOST,
+        {
+            {"http://username:password@xn--0zwm56d.org/index.html?query=value#fragment",S_OK,FALSE,NULL,"http://username:password@\xE6\xB5\x8B\xE8\xAF\x95.org/index.html?query=value#fragment",S_OK},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"xn--0zwm56d.org",S_OK,FALSE,NULL,"\xE6\xB5\x8B\xE8\xAF\x95.org",S_OK},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {"xn--0zwm56d.org",S_OK,FALSE,NULL,"\xE6\xB5\x8B\xE8\xAF\x95.org",S_OK},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+        },
+        {
+            {Uri_HOST_IDN,S_OK,FALSE},
+            {80,S_OK,FALSE},
+            {URL_SCHEME_HTTP,S_OK,FALSE},
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}
+        }
+    },
+    /* Multiple flags */
+    {   "http://username:password@winehq.org/index.html?query=value#fragment", 0, S_OK, FALSE, Uri_DISPLAY_NO_FRAGMENT | Uri_DISPLAY_IDN_HOST,
+        {
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+            {NULL,E_INVALIDARG,FALSE},
+        },
+        {
+            {Uri_HOST_DNS,S_OK,FALSE},                                  /* HOST_TYPE */
+            {80,S_OK,FALSE},                                            /* PORT */
+            {URL_SCHEME_HTTP,S_OK,FALSE},                               /* SCHEME */
+            {URLZONE_INVALID,E_NOTIMPL,FALSE}                           /* ZONE */
+        }
+    },
 };
 
 typedef struct _invalid_uri {
@@ -7740,7 +8126,7 @@ static inline LPWSTR a2w(LPCSTR str) {
 
     if(str) {
         DWORD len = MultiByteToWideChar(CP_UTF8, 0, str, -1, NULL, 0);
-        ret = HeapAlloc(GetProcessHeap(), 0, len*sizeof(WCHAR));
+        ret = malloc(len * sizeof(WCHAR));
         MultiByteToWideChar(CP_UTF8, 0, str, -1, ret, len);
     }
 
@@ -7750,7 +8136,7 @@ static inline LPWSTR a2w(LPCSTR str) {
 static inline DWORD strcmp_aw(LPCSTR strA, LPCWSTR strB) {
     LPWSTR strAW = a2w(strA);
     DWORD ret = lstrcmpW(strAW, strB);
-    heap_free(strAW);
+    free(strAW);
     return ret;
 }
 
@@ -7826,7 +8212,7 @@ static void change_property(IUriBuilder *builder, const uri_builder_property *pr
         trace("Unsupported operation for %d on uri_builder_tests[%ld].\n", prop->property, test_index);
     }
 
-    heap_free(valueW);
+    free(valueW);
 }
 
 /*
@@ -7851,9 +8237,6 @@ static void test_CreateUri_InvalidArgs(void) {
     HRESULT hr;
     IUri *uri = (void*) 0xdeadbeef;
 
-    const WCHAR invalidW[] = {'i','n','v','a','l','i','d',0};
-    static const WCHAR emptyW[] = {0};
-
     hr = pCreateUri(http_urlW, 0, 0, NULL);
     ok(hr == E_INVALIDARG, "Error: CreateUri returned 0x%08lx, expected 0x%08lx\n", hr, E_INVALIDARG);
 
@@ -7862,12 +8245,12 @@ static void test_CreateUri_InvalidArgs(void) {
     ok(uri == NULL, "Error: Expected the IUri to be NULL, but it was %p instead\n", uri);
 
     uri = (void*) 0xdeadbeef;
-    hr = pCreateUri(invalidW, 0, 0, &uri);
+    hr = pCreateUri(L"invalid", 0, 0, &uri);
     ok(hr == E_INVALIDARG, "Error: CreateUri returned 0x%08lx, expected 0x%08lx.\n", hr, E_INVALIDARG);
     ok(uri == NULL, "Error: Expected the IUri to be NULL, but it was %p instead\n", uri);
 
     uri = (void*) 0xdeadbeef;
-    hr = pCreateUri(emptyW, 0, 0, &uri);
+    hr = pCreateUri(L"", 0, 0, &uri);
     ok(hr == E_INVALIDARG, "Error: CreateUri returned 0x%08lx, expected 0x%08lx.\n", hr, E_INVALIDARG);
     ok(uri == NULL, "Error: Expected the IUri to be NULL, but it was %p instead\n", uri);
 }
@@ -7888,7 +8271,7 @@ static void test_CreateUri_InvalidUri(void) {
                 hr, E_INVALIDARG, i);
         if(uri) IUri_Release(uri);
 
-        heap_free(uriW);
+        free(uriW);
     }
 }
 
@@ -7946,7 +8329,7 @@ static void test_IUri_GetPropertyBSTR(void) {
                 BSTR received = NULL;
                 uri_str_property prop = test.str_props[j];
 
-                hr = IUri_GetPropertyBSTR(uri, j, &received, 0);
+                hr = IUri_GetPropertyBSTR(uri, j, &received, test.flags);
                 todo_wine_if(prop.todo) {
                     ok(hr == prop.expected ||
                        (prop.value2 && hr == prop.expected2),
@@ -7964,7 +8347,7 @@ static void test_IUri_GetPropertyBSTR(void) {
 
         if(uri) IUri_Release(uri);
 
-        heap_free(uriW);
+        free(uriW);
     }
 }
 
@@ -8018,7 +8401,7 @@ static void test_IUri_GetPropertyDWORD(void) {
 
         if(uri) IUri_Release(uri);
 
-        heap_free(uriW);
+        free(uriW);
     }
 }
 
@@ -8084,6 +8467,8 @@ static void test_IUri_GetStrProperties(void) {
         LPWSTR uriW;
         uri = NULL;
 
+        if (test.flags) continue;
+
         uriW = a2w(test.uri);
         hr = pCreateUri(uriW, test.create_flags, 0, &uri);
         todo_wine_if(test.create_todo)
@@ -8123,9 +8508,11 @@ static void test_IUri_GetStrProperties(void) {
             prop = test.str_props[Uri_PROPERTY_DISPLAY_URI];
             hr = IUri_GetDisplayUri(uri, &received);
             todo_wine_if(prop.todo) {
-                ok(hr == prop.expected, "Error: GetDisplayUri returned 0x%08lx, expected 0x%08lx on uri_tests[%ld].\n",
-                        hr, prop.expected, i);
-                ok(!strcmp_aw(prop.value, received) || broken(prop.broken_value && !strcmp_aw(prop.broken_value, received)),
+                ok(hr == prop.expected,
+                   "Error: GetDisplayUri returned 0x%08lx, expected 0x%08lx on uri_tests[%ld].\n",
+                   hr, prop.expected, i);
+                ok(!strcmp_aw(prop.value, received) || (prop.value2 && !strcmp_aw(prop.value2, received))
+                   || broken(prop.broken_value && !strcmp_aw(prop.broken_value, received)),
                         "Error: Expected %s but got %s on uri_tests[%ld].\n",
                         prop.value, wine_dbgstr_w(received), i);
             }
@@ -8280,7 +8667,7 @@ static void test_IUri_GetStrProperties(void) {
 
         if(uri) IUri_Release(uri);
 
-        heap_free(uriW);
+        free(uriW);
     }
 }
 
@@ -8369,7 +8756,7 @@ static void test_IUri_GetDwordProperties(void) {
 
         if(uri) IUri_Release(uri);
 
-        heap_free(uriW);
+        free(uriW);
     }
 }
 
@@ -8408,25 +8795,45 @@ static void test_IUri_GetPropertyLength(void) {
             DWORD j;
 
             for(j = Uri_PROPERTY_STRING_START; j <= Uri_PROPERTY_STRING_LAST; ++j) {
-                DWORD expectedLen, receivedLen;
+                DWORD expectedLen, expectedLen2, receivedLen;
                 uri_str_property prop = test.str_props[j];
                 LPWSTR expectedValueW;
 
-                expectedLen = lstrlenA(prop.value);
-                /* Value may be unicode encoded */
-                expectedValueW = a2w(prop.value);
-                expectedLen = lstrlenW(expectedValueW);
-                heap_free(expectedValueW);
+                if (prop.value)
+                {
+                    expectedLen = lstrlenA(prop.value);
+                    /* Value may be unicode encoded */
+                    expectedValueW = a2w(prop.value);
+                    expectedLen = lstrlenW(expectedValueW);
+                    free(expectedValueW);
+                }
+                else
+                {
+                    expectedLen = 0;
+                }
+
+                if (prop.value2)
+                {
+                    expectedLen2 = lstrlenA(prop.value2);
+                    /* Value may be unicode encoded */
+                    expectedValueW = a2w(prop.value2);
+                    expectedLen2 = lstrlenW(expectedValueW);
+                    free(expectedValueW);
+                }
+                else
+                {
+                    expectedLen2 = 0;
+                }
 
                 /* This won't be necessary once GetPropertyLength is implemented. */
                 receivedLen = -1;
 
-                hr = IUri_GetPropertyLength(uri, j, &receivedLen, 0);
+                hr = IUri_GetPropertyLength(uri, j, &receivedLen, test.flags);
                 todo_wine_if(prop.todo) {
                     ok(hr == prop.expected || (prop.value2 && hr == prop.expected2),
                        "Error: GetPropertyLength returned 0x%08lx, expected 0x%08lx on uri_tests[%ld].str_props[%ld].\n",
                             hr, prop.expected, i, j);
-                    ok(receivedLen == expectedLen || (prop.value2 && receivedLen == lstrlenA(prop.value2)) ||
+                    ok(receivedLen == expectedLen || (prop.value2 && receivedLen == expectedLen2) ||
                        broken(prop.broken_value && receivedLen == lstrlenA(prop.broken_value)),
                             "Error: Expected a length of %ld but got %ld on uri_tests[%ld].str_props[%ld].\n",
                             expectedLen, receivedLen, i, j);
@@ -8436,7 +8843,7 @@ static void test_IUri_GetPropertyLength(void) {
 
         if(uri) IUri_Release(uri);
 
-        heap_free(uriW);
+        free(uriW);
     }
 }
 
@@ -8482,6 +8889,8 @@ static void test_IUri_GetProperties(void) {
         LPWSTR uriW;
         uri = NULL;
 
+        if (test.flags) continue;
+
         uriW = a2w(test.uri);
         hr = pCreateUri(uriW, test.create_flags, 0, &uri);
         todo_wine_if(test.create_todo)
@@ -8509,7 +8918,7 @@ static void test_IUri_GetProperties(void) {
 
         if(uri) IUri_Release(uri);
 
-        heap_free(uriW);
+        free(uriW);
     }
 }
 
@@ -8530,6 +8939,8 @@ static void test_IUri_HasProperty(void) {
         uri_properties test = uri_tests[i];
         LPWSTR uriW;
         uri = NULL;
+
+        if (test.flags) continue;
 
         uriW = a2w(test.uri);
 
@@ -8562,7 +8973,7 @@ static void test_IUri_HasProperty(void) {
 
         if(uri) IUri_Release(uri);
 
-        heap_free(uriW);
+        free(uriW);
     }
 }
 
@@ -8855,8 +9266,8 @@ static void test_IUri_IsEqual(void) {
         if(uriA) IUri_Release(uriA);
         if(uriB) IUri_Release(uriB);
 
-        heap_free(uriA_W);
-        heap_free(uriB_W);
+        free(uriA_W);
+        free(uriB_W);
     }
 }
 
@@ -8927,8 +9338,8 @@ static void test_CreateUriWithFragment(void) {
         }
 
         if(uri) IUri_Release(uri);
-        heap_free(uriW);
-        heap_free(fragW);
+        free(uriW);
+        free(fragW);
     }
 }
 
@@ -10142,7 +10553,7 @@ static void test_IUriBuilder(void) {
         }
         if(builder) IUriBuilder_Release(builder);
         if(uri) IUri_Release(uri);
-        heap_free(uriW);
+        free(uriW);
     }
 }
 
@@ -10469,7 +10880,7 @@ static void test_IUriBuilder_RemoveProperties(void) {
             if(builder) IUriBuilder_Release(builder);
         }
         if(uri) IUri_Release(uri);
-        heap_free(uriW);
+        free(uriW);
     }
 }
 
@@ -10676,10 +11087,10 @@ static void test_CoInternetCombineIUri(void) {
                 if(result) IUri_Release(result);
             }
             if(relative) IUri_Release(relative);
-            heap_free(relativeW);
+            free(relativeW);
         }
         if(base) IUri_Release(base);
-        heap_free(baseW);
+        free(baseW);
     }
 }
 
@@ -10818,7 +11229,7 @@ static void register_protocols(void)
         return;
 
     hres = IInternetSession_RegisterNameSpace(session, &protocol_cf, &IID_NULL,
-            winetestW, 0, NULL, 0);
+            L"winetest", 0, NULL, 0);
     ok(hres == S_OK, "RegisterNameSpace failed: %08lx\n", hres);
 
     IInternetSession_Release(session);
@@ -10833,7 +11244,7 @@ static void unregister_protocols(void) {
     if(FAILED(hr))
         return;
 
-    hr = IInternetSession_UnregisterNameSpace(session, &protocol_cf, winetestW);
+    hr = IInternetSession_UnregisterNameSpace(session, &protocol_cf, L"winetest");
     ok(hr == S_OK, "UnregisterNameSpace failed: 0x%08lx\n", hr);
 
     IInternetSession_Release(session);
@@ -10963,10 +11374,10 @@ static void test_CoInternetCombineUrlEx(void) {
                 }
             }
             if(result) IUri_Release(result);
-            heap_free(relativeW);
+            free(relativeW);
         }
         if(base) IUri_Release(base);
-        heap_free(baseW);
+        free(baseW);
     }
 }
 
@@ -11067,13 +11478,13 @@ static void test_CoInternetParseIUri_InvalidArgs(void) {
 
     /* a long url that causes a crash on Wine */
     len = INTERNET_MAX_URL_LENGTH*2;
-    longurl = heap_alloc((len+1)*sizeof(WCHAR));
+    longurl = malloc((len + 1) * sizeof(WCHAR));
     memcpy(longurl, http_urlW, sizeof(http_urlW));
     for(i = ARRAY_SIZE(http_urlW)-1; i < len; i++)
         longurl[i] = 'x';
     longurl[len] = 0;
 
-    copy = heap_alloc((len+1)*sizeof(WCHAR));
+    copy = malloc((len + 1) * sizeof(WCHAR));
     memcpy(copy, longurl, (len+1)*sizeof(WCHAR));
 
     hr = pCreateUri(longurl, 0, 0, &uri);
@@ -11088,8 +11499,8 @@ static void test_CoInternetParseIUri_InvalidArgs(void) {
         ok(result == len, "Error: Expected 'result' to be %ld, but was %ld instead.\n",
             len, result);
     }
-    heap_free(longurl);
-    heap_free(copy);
+    free(longurl);
+    free(copy);
     if(uri) IUri_Release(uri);
 }
 
@@ -11129,7 +11540,7 @@ static void test_CoInternetParseIUri(void) {
             }
         }
         if(uri) IUri_Release(uri);
-        heap_free(uriW);
+        free(uriW);
     }
 }
 
@@ -11355,8 +11766,8 @@ static void test_CreateURLMoniker(void)
         IMoniker_Release(mon);
 
         IUri_Release(uri);
-        heap_free(url);
-        heap_free(base_url);
+        free(url);
+        free(base_url);
         if(base_uri)
             IUri_Release(base_uri);
         if(base_mon)
@@ -11408,7 +11819,7 @@ static void test_IPersistStream(void)
         BSTR raw_uri;
         HRESULT hr;
 
-        if(test->create_todo || test->create_expected!=S_OK)
+        if(test->create_todo || test->create_expected!=S_OK || test->flags)
             continue;
 
         uriW = a2w(test->uri);
@@ -11433,14 +11844,14 @@ static void test_IPersistStream(void)
         ok(hr == S_OK, "%d) Seek failed 0x%08lx, expected S_OK.\n", i, hr);
         hr = IPersistStream_GetSizeMax(persist_stream, &max_size);
         ok(hr == S_OK, "%d) GetSizeMax failed 0x%08lx, expected S_OK.\n", i, hr);
-        ok(U(size).LowPart+2 == U(max_size).LowPart,
+        ok(size.LowPart+2 == max_size.LowPart,
                 "%d) Written data size is %ld, max_size %ld.\n",
-                i, U(size).LowPart, U(max_size).LowPart);
+                i, size.LowPart, max_size.LowPart);
 
         hr = IStream_Read(stream, (void*)dw_data, sizeof(DWORD), NULL);
         ok(hr == S_OK, "%d) Read failed 0x%08lx, expected S_OK.\n", i, hr);
-        ok(dw_data[0]-2 == U(size).LowPart, "%d) Structure size is %ld, expected %ld\n",
-                i, dw_data[0]-2, U(size).LowPart);
+        ok(dw_data[0]-2 == size.LowPart, "%d) Structure size is %ld, expected %ld\n",
+                i, dw_data[0]-2, size.LowPart);
         hr = IStream_Read(stream, (void*)dw_data, 6*sizeof(DWORD), NULL);
         ok(hr == S_OK, "%d) Read failed 0x%08lx, expected S_OK.\n", i, hr);
         ok(dw_data[0] == 0, "%d) Incorrect value %lx, expected 0 (unknown).\n", i, dw_data[0]);
@@ -11568,8 +11979,8 @@ static void test_IPersistStream(void)
         ok(hr == S_OK, "%d) Seek failed 0x%08lx, expected S_OK.\n", i, hr);
         hr = IStream_Read(stream, (void*)dw_data, 3*sizeof(DWORD), NULL);
         ok(hr == S_OK, "%d) Read failed 0x%08lx, expected S_OK.\n", i, hr);
-        ok(dw_data[0]-2 == U(size).LowPart, "%d) Structure size is %ld, expected %ld\n",
-                i, dw_data[0]-2, U(size).LowPart);
+        ok(dw_data[0]-2 == size.LowPart, "%d) Structure size is %ld, expected %ld\n",
+                i, dw_data[0]-2, size.LowPart);
         ok(dw_data[1] == MSHCTX_LOCAL, "%d) Incorrect value %ld, expected MSHCTX_LOCAL.\n",
                 i, dw_data[1]);
         ok(dw_data[2] == dw_data[0]-8, "%d) Incorrect value %ld, expected %ld (PersistStream size).\n",
@@ -11578,9 +11989,9 @@ static void test_IPersistStream(void)
                 (test->dword_props[Uri_PROPERTY_SCHEME-Uri_PROPERTY_DWORD_START].value == URL_SCHEME_HTTP
                  || test->dword_props[Uri_PROPERTY_SCHEME-Uri_PROPERTY_DWORD_START].value == URL_SCHEME_FTP
                  || test->dword_props[Uri_PROPERTY_SCHEME-Uri_PROPERTY_DWORD_START].value == URL_SCHEME_HTTPS))
-            U(max_size).LowPart += 3*sizeof(DWORD);
-        ok(dw_data[2] == U(max_size).LowPart, "%d) Incorrect value %ld, expected %ld (PersistStream size).\n",
-                i, dw_data[2], U(max_size).LowPart);
+            max_size.LowPart += 3*sizeof(DWORD);
+        ok(dw_data[2] == max_size.LowPart, "%d) Incorrect value %ld, expected %ld (PersistStream size).\n",
+                i, dw_data[2], max_size.LowPart);
         IMarshal_Release(marshal);
         IUri_Release(uri);
 
@@ -11606,7 +12017,7 @@ static void test_IPersistStream(void)
         IMarshal_Release(marshal);
         IStream_Release(stream);
         IUri_Release(uri);
-        heap_free(uriW);
+        free(uriW);
     }
 }
 

@@ -26,7 +26,6 @@
 #include <initguid.h>
 #include <d3d8.h>
 #include "wine/test.h"
-#include "wine/heap.h"
 
 struct vec3
 {
@@ -129,7 +128,7 @@ static BOOL save_display_modes(DEVMODEW **original_modes, unsigned int *display_
     DISPLAY_DEVICEW display_device;
     DEVMODEW *modes, *tmp;
 
-    if (!(modes = heap_alloc(size * sizeof(*modes))))
+    if (!(modes = malloc(size * sizeof(*modes))))
         return FALSE;
 
     display_device.cb = sizeof(display_device);
@@ -145,9 +144,9 @@ static BOOL save_display_modes(DEVMODEW **original_modes, unsigned int *display_
         if (count >= size)
         {
             size *= 2;
-            if (!(tmp = heap_realloc(modes, size * sizeof(*modes))))
+            if (!(tmp = realloc(modes, size * sizeof(*modes))))
             {
-                heap_free(modes);
+                free(modes);
                 return FALSE;
             }
             modes = tmp;
@@ -157,7 +156,7 @@ static BOOL save_display_modes(DEVMODEW **original_modes, unsigned int *display_
         modes[count].dmSize = sizeof(modes[count]);
         if (!EnumDisplaySettingsW(display_device.DeviceName, ENUM_CURRENT_SETTINGS, &modes[count]))
         {
-            heap_free(modes);
+            free(modes);
             return FALSE;
         }
 
@@ -411,7 +410,11 @@ static void test_swapchain(void)
     d3dpp.BackBufferCount = 0;
     hr = IDirect3DDevice8_CreateAdditionalSwapChain(device, &d3dpp, &swapchain1);
     ok(SUCCEEDED(hr), "Got hr %#lx.\n", hr);
-    ok(d3dpp.BackBufferCount == 1, "The back buffer count in the presentparams struct is %d\n", d3dpp.BackBufferCount);
+    ok(!d3dpp.BackBufferWidth, "Got unexpected BackBufferWidth %u.\n", d3dpp.BackBufferWidth);
+    ok(!d3dpp.BackBufferHeight, "Got unexpected BackBufferHeight %u.\n", d3dpp.BackBufferHeight);
+    ok(d3dpp.BackBufferFormat == D3DFMT_A8R8G8B8, "Got unexpected BackBufferFormat %#x.\n", d3dpp.BackBufferFormat);
+    ok(d3dpp.BackBufferCount == 1, "Got unexpected BackBufferCount %u.\n", d3dpp.BackBufferCount);
+    ok(!d3dpp.hDeviceWindow, "Got unexpected hDeviceWindow %p.\n", d3dpp.hDeviceWindow);
 
     d3dpp.hDeviceWindow = NULL;
     d3dpp.BackBufferCount  = 1;
@@ -1554,7 +1557,7 @@ static void test_reset(void)
     hr = IDirect3D8_GetAdapterDisplayMode(d3d8, D3DADAPTER_DEFAULT, &d3ddm);
     ok(SUCCEEDED(hr), "GetAdapterDisplayMode failed, hr %#lx.\n", hr);
     adapter_mode_count = IDirect3D8_GetAdapterModeCount(d3d8, D3DADAPTER_DEFAULT);
-    modes = HeapAlloc(GetProcessHeap(), 0, sizeof(*modes) * adapter_mode_count);
+    modes = malloc(sizeof(*modes) * adapter_mode_count);
     for (i = 0; i < adapter_mode_count; ++i)
     {
         UINT j;
@@ -2120,7 +2123,7 @@ static void test_reset(void)
         IDirect3DSurface8_Release(surface);
 
 cleanup:
-    HeapFree(GetProcessHeap(), 0, modes);
+    free(modes);
     if (device2)
         IDirect3DDevice8_Release(device2);
     if (device1)
@@ -2170,6 +2173,19 @@ static void test_scene(void)
     ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
     hr = IDirect3DDevice8_EndScene(device);
     ok(hr == D3DERR_INVALIDCALL, "Got hr %#lx.\n", hr);
+
+    /* Calling Reset clears scene state. */
+    hr = IDirect3DDevice8_BeginScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    reset_device(device, NULL);
+    hr = IDirect3DDevice8_EndScene(device);
+    ok(hr == D3DERR_INVALIDCALL, "Got hr %#lx.\n", hr);
+
+    hr = IDirect3DDevice8_BeginScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice8_EndScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
     /* StretchRect does not exit in Direct3D8, so no equivalent to the d3d9 stretchrect tests */
 
@@ -2264,7 +2280,7 @@ static void test_shader(void)
     hr = IDirect3DDevice8_GetVertexShaderDeclaration(device, hVertexShader, NULL, &data_size);
     ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
     ok(data_size == vertex_decl_size, "Got data_size %lu, expected %lu.\n", data_size, vertex_decl_size);
-    data = HeapAlloc(GetProcessHeap(), 0, vertex_decl_size);
+    data = malloc(vertex_decl_size);
     data_size = 1;
     hr = IDirect3DDevice8_GetVertexShaderDeclaration(device, hVertexShader, data, &data_size);
     ok(hr == D3DERR_INVALIDCALL, "Got hr %#lx.\n", hr);
@@ -2274,12 +2290,12 @@ static void test_shader(void)
     ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
     ok(data_size == vertex_decl_size, "Got data_size %lu, expected %lu.\n", data_size, vertex_decl_size);
     ok(!memcmp(data, dwVertexDecl, vertex_decl_size), "data not equal to shader declaration\n");
-    HeapFree(GetProcessHeap(), 0, data);
+    free(data);
     /* Verify that we can retrieve the shader function */
     hr = IDirect3DDevice8_GetVertexShaderFunction(device, hVertexShader, NULL, &data_size);
     ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
     ok(data_size == simple_vs_size, "Got data_size %lu, expected %lu.\n", data_size, simple_vs_size);
-    data = HeapAlloc(GetProcessHeap(), 0, simple_vs_size);
+    data = malloc(simple_vs_size);
     data_size = 1;
     hr = IDirect3DDevice8_GetVertexShaderFunction(device, hVertexShader, data, &data_size);
     ok(hr == D3DERR_INVALIDCALL, "Got hr %#lx.\n", hr);
@@ -2289,7 +2305,7 @@ static void test_shader(void)
     ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
     ok(data_size == simple_vs_size, "Got data_size %lu, expected %lu.\n", data_size, simple_vs_size);
     ok(!memcmp(data, simple_vs, simple_vs_size), "data not equal to shader function\n");
-    HeapFree(GetProcessHeap(), 0, data);
+    free(data);
     /* Delete the assigned shader. This is supposed to work */
     hr = IDirect3DDevice8_DeleteVertexShader(device, hVertexShader);
     ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
@@ -2331,7 +2347,7 @@ static void test_shader(void)
         hr = IDirect3DDevice8_GetPixelShaderFunction(device, hPixelShader, NULL, &data_size);
         ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
         ok(data_size == simple_ps_size, "Got data_size %lu, expected %lu.\n", data_size, simple_ps_size);
-        data = HeapAlloc(GetProcessHeap(), 0, simple_ps_size);
+        data = malloc(simple_ps_size);
         data_size = 1;
         hr = IDirect3DDevice8_GetPixelShaderFunction(device, hPixelShader, data, &data_size);
         ok(hr == D3DERR_INVALIDCALL, "Got hr %#lx.\n", hr);
@@ -2341,7 +2357,7 @@ static void test_shader(void)
         ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
         ok(data_size == simple_ps_size, "Got data_size %lu, expected %lu.\n", data_size, simple_ps_size);
         ok(!memcmp(data, simple_ps, simple_ps_size), "data not equal to shader function\n");
-        HeapFree(GetProcessHeap(), 0, data);
+        free(data);
         /* Delete the assigned shader. This is supposed to work */
         hr = IDirect3DDevice8_DeletePixelShader(device, hPixelShader);
         ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
@@ -2757,7 +2773,6 @@ struct wndproc_thread_param
     HWND dummy_window;
     HANDLE window_created;
     HANDLE test_finished;
-    BOOL running_in_foreground;
 };
 
 static LRESULT CALLBACK test_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -2833,10 +2848,9 @@ static DWORD WINAPI wndproc_thread(void *param)
     DWORD res;
     BOOL ret;
 
-    p->dummy_window = CreateWindowA("d3d8_test_wndproc_wc", "d3d8_test",
-            WS_MAXIMIZE | WS_VISIBLE | WS_CAPTION, 0, 0, registry_mode.dmPelsWidth,
-            registry_mode.dmPelsHeight, 0, 0, 0, 0);
-    p->running_in_foreground = SetForegroundWindow(p->dummy_window);
+    p->dummy_window = CreateWindowA("static", "d3d9_test", WS_VISIBLE | WS_CAPTION,
+            100, 100, 200, 200, 0, 0, 0, 0);
+    flush_events();
 
     ret = SetEvent(p->window_created);
     ok(ret, "SetEvent failed, last error %#lx.\n", GetLastError());
@@ -3094,11 +3108,14 @@ static void test_wndproc(void)
             WS_MAXIMIZE | WS_VISIBLE | WS_CAPTION , 0, 0, user32_width, user32_height, 0, 0, 0, 0);
     device_window = CreateWindowA("d3d8_test_wndproc_wc", "d3d8_test",
             WS_MAXIMIZE | WS_VISIBLE | WS_CAPTION , 0, 0, user32_width, user32_height, 0, 0, 0, 0);
+    flush_events();
+
     thread = CreateThread(NULL, 0, wndproc_thread, &thread_params, 0, &tid);
     ok(!!thread, "Failed to create thread, last error %#lx.\n", GetLastError());
 
     res = WaitForSingleObject(thread_params.window_created, INFINITE);
     ok(res == WAIT_OBJECT_0, "Wait failed (%#lx), last error %#lx.\n", res, GetLastError());
+    flush_events();
 
     proc = GetWindowLongPtrA(device_window, GWLP_WNDPROC);
     ok(proc == (LONG_PTR)test_proc, "Expected wndproc %#Ix, got %#Ix.\n",
@@ -3111,15 +3128,10 @@ static void test_wndproc(void)
             device_window, focus_window, thread_params.dummy_window);
 
     tmp = GetFocus();
-    ok(tmp == device_window, "Expected focus %p, got %p.\n", device_window, tmp);
-    if (thread_params.running_in_foreground)
-    {
-        tmp = GetForegroundWindow();
-        ok(tmp == thread_params.dummy_window, "Expected foreground window %p, got %p.\n",
-                thread_params.dummy_window, tmp);
-    }
-    else
-        skip("Not running in foreground, skip foreground window test\n");
+    ok(tmp == NULL, "Expected focus %p, got %p.\n", NULL, tmp);
+    tmp = GetForegroundWindow();
+    ok(tmp == thread_params.dummy_window, "Expected foreground window %p, got %p.\n",
+            thread_params.dummy_window, tmp);
 
     flush_events();
 
@@ -3140,13 +3152,10 @@ static void test_wndproc(void)
             expect_messages->message, expect_messages->window);
     expect_messages = NULL;
 
-    if (0) /* Disabled until we can make this work in a reliable way on Wine. */
-    {
-        tmp = GetFocus();
-        ok(tmp == focus_window, "Expected focus %p, got %p.\n", focus_window, tmp);
-        tmp = GetForegroundWindow();
-        ok(tmp == focus_window, "Expected foreground window %p, got %p.\n", focus_window, tmp);
-    }
+    tmp = GetFocus();
+    ok(tmp == focus_window, "Expected focus %p, got %p.\n", focus_window, tmp);
+    tmp = GetForegroundWindow();
+    ok(tmp == focus_window, "Expected foreground window %p, got %p.\n", focus_window, tmp);
     SetForegroundWindow(focus_window);
     flush_events();
 
@@ -3203,9 +3212,15 @@ static void test_wndproc(void)
 
     /* I have to minimize and restore the focus window, otherwise native d3d8 fails
      * device::reset with D3DERR_DEVICELOST. This does not happen when the window
-     * restore is triggered by the user. */
+     * restore is triggered by the user.
+     *
+     * fvwm randomly sends a focus loss notification when we minimize, so do it
+     * before checking the incoming messages. It might match WM_ACTIVATEAPP but has
+     * a wrong WPARAM. Use SW_SHOWMINNOACTIVE to make sure we don't accidentally
+     * activate the window at this point and miss our WM_ACTIVATEAPP(wparam=1). */
+    ShowWindow(focus_window, SW_SHOWMINNOACTIVE);
+    flush_events();
     expect_messages = reactivate_messages;
-    ShowWindow(focus_window, SW_MINIMIZE);
     ShowWindow(focus_window, SW_RESTORE);
     /* Set focus twice to make KDE and fvwm in focus-follows-mouse mode happy. */
     SetForegroundWindow(focus_window);
@@ -3240,7 +3255,12 @@ static void test_wndproc(void)
     SetForegroundWindow(GetDesktopWindow());
     ok(!expect_messages->message, "Expected message %#x for window %#x, but didn't receive it.\n",
             expect_messages->message, expect_messages->window);
+
+    /* kwin sometimes resizes hidden windows. The d3d8 version of this test has been reliable on
+     * Windows so far, but the d3d9 equivalent rarely fails since Windows 8. */
+    flaky
     ok(!windowposchanged_received, "Received WM_WINDOWPOSCHANGED but did not expect it.\n");
+
     expect_messages = NULL;
     flush_events();
 
@@ -3512,11 +3532,14 @@ static void test_wndproc_windowed(void)
     device_window = CreateWindowA("d3d8_test_wndproc_wc", "d3d8_test",
             WS_MAXIMIZE | WS_VISIBLE | WS_CAPTION, 0, 0, registry_mode.dmPelsWidth,
             registry_mode.dmPelsHeight, 0, 0, 0, 0);
+    flush_events();
+
     thread = CreateThread(NULL, 0, wndproc_thread, &thread_params, 0, &tid);
     ok(!!thread, "Failed to create thread, last error %#lx.\n", GetLastError());
 
     res = WaitForSingleObject(thread_params.window_created, INFINITE);
     ok(res == WAIT_OBJECT_0, "Wait failed (%#lx), last error %#lx.\n", res, GetLastError());
+    flush_events();
 
     proc = GetWindowLongPtrA(device_window, GWLP_WNDPROC);
     ok(proc == (LONG_PTR)test_proc, "Expected wndproc %#Ix, got %#Ix.\n",
@@ -3529,15 +3552,10 @@ static void test_wndproc_windowed(void)
             device_window, focus_window, thread_params.dummy_window);
 
     tmp = GetFocus();
-    ok(tmp == device_window, "Expected focus %p, got %p.\n", device_window, tmp);
-    if (thread_params.running_in_foreground)
-    {
-        tmp = GetForegroundWindow();
-        ok(tmp == thread_params.dummy_window, "Expected foreground window %p, got %p.\n",
-                thread_params.dummy_window, tmp);
-    }
-    else
-        skip("Not running in foreground, skip foreground window test\n");
+    ok(tmp == NULL, "Expected focus %p, got %p.\n", NULL, tmp);
+    tmp = GetForegroundWindow();
+    ok(tmp == thread_params.dummy_window, "Expected foreground window %p, got %p.\n",
+            thread_params.dummy_window, tmp);
 
     filter_messages = focus_window;
 
@@ -3553,7 +3571,7 @@ static void test_wndproc_windowed(void)
     }
 
     tmp = GetFocus();
-    ok(tmp == device_window, "Expected focus %p, got %p.\n", device_window, tmp);
+    ok(tmp == NULL, "Expected focus %p, got %p.\n", NULL, tmp);
     tmp = GetForegroundWindow();
     ok(tmp == thread_params.dummy_window, "Expected foreground window %p, got %p.\n",
             thread_params.dummy_window, tmp);
@@ -3687,28 +3705,34 @@ done:
     UnregisterClassA("d3d8_test_wndproc_wc", GetModuleHandleA(NULL));
 }
 
+static const GUID d3d8_private_data_test_guid =
+{
+    0xfdb37466,
+    0x428f,
+    0x4edf,
+    {0xa3,0x7f,0x9b,0x1d,0xf4,0x88,0xc5,0xfc}
+};
+
+#if defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__) && (defined(__GNUC__) || defined(__clang__)))
+
 static inline void set_fpu_cw(WORD cw)
 {
-#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
-#define D3D8_TEST_SET_FPU_CW 1
-    __asm__ volatile ("fnclex");
-    __asm__ volatile ("fldcw %0" : : "m" (cw));
-#elif defined(__i386__) && defined(_MSC_VER)
-#define D3D8_TEST_SET_FPU_CW 1
+#if defined(_MSC_VER) && defined(__i386__)
     __asm fnclex;
     __asm fldcw cw;
+#else
+    __asm__ volatile ("fnclex");
+    __asm__ volatile ("fldcw %0" : : "m" (cw));
 #endif
 }
 
 static inline WORD get_fpu_cw(void)
 {
     WORD cw = 0;
-#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
-#define D3D8_TEST_GET_FPU_CW 1
-    __asm__ volatile ("fnstcw %0" : "=m" (cw));
-#elif defined(__i386__) && defined(_MSC_VER)
-#define D3D8_TEST_GET_FPU_CW 1
+#if defined(_MSC_VER) && defined(__i386__)
     __asm fnstcw cw;
+#else
+    __asm__ volatile ("fnstcw %0" : "=m" (cw));
 #endif
     return cw;
 }
@@ -3745,17 +3769,8 @@ static const IUnknownVtbl dummy_object_vtbl =
     dummy_object_Release,
 };
 
-static const GUID d3d8_private_data_test_guid =
-{
-    0xfdb37466,
-    0x428f,
-    0x4edf,
-    {0xa3,0x7f,0x9b,0x1d,0xf4,0x88,0xc5,0xfc}
-};
-
 static void test_fpu_setup(void)
 {
-#if defined(D3D8_TEST_SET_FPU_CW) && defined(D3D8_TEST_GET_FPU_CW)
     struct device_desc device_desc;
     IDirect3DDevice8 *device;
     IDirect3D8 *d3d8;
@@ -3855,8 +3870,15 @@ static void test_fpu_setup(void)
 done:
     DestroyWindow(window);
     IDirect3D8_Release(d3d8);
-#endif
 }
+
+#else
+
+static void test_fpu_setup(void)
+{
+}
+
+#endif
 
 static void test_ApplyStateBlock(void)
 {
@@ -4700,7 +4722,7 @@ done:
     IDirect3D8_Release(d3d8);
     ret = restore_display_modes(original_modes, display_count);
     ok(ret, "Failed to restore display modes.\n");
-    heap_free(original_modes);
+    free(original_modes);
 }
 
 static void test_device_window_reset(void)
@@ -5041,11 +5063,11 @@ static void test_validate_vs(void)
     hr = ValidateVertexShader(NULL, NULL, NULL, FALSE, &errors);
     ok(hr == E_FAIL, "Got unexpected hr %#lx.\n", hr);
     ok(!*errors, "Got unexpected string \"%s\".\n", errors);
-    heap_free(errors);
+    HeapFree(GetProcessHeap(), 0, errors);
     hr = ValidateVertexShader(NULL, NULL, NULL, TRUE, &errors);
     ok(hr == E_FAIL, "Got unexpected hr %#lx.\n", hr);
     ok(!!*errors, "Got unexpected empty string.\n");
-    heap_free(errors);
+    HeapFree(GetProcessHeap(), 0, errors);
 
     hr = ValidateVertexShader(vs_code, NULL, NULL, FALSE, NULL);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
@@ -5054,7 +5076,7 @@ static void test_validate_vs(void)
     hr = ValidateVertexShader(vs_code, NULL, NULL, TRUE, &errors);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ok(!*errors, "Got unexpected string \"%s\".\n", errors);
-    heap_free(errors);
+    HeapFree(GetProcessHeap(), 0, errors);
 
     hr = ValidateVertexShader(vs_code, declaration_valid1, NULL, FALSE, NULL);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
@@ -5091,11 +5113,11 @@ static void test_validate_vs(void)
     hr = ValidateVertexShader(vs_code, NULL, NULL, FALSE, &errors);
     ok(hr == E_FAIL, "Got unexpected hr %#lx.\n", hr);
     ok(!*errors, "Got unexpected string \"%s\".\n", errors);
-    heap_free(errors);
+    HeapFree(GetProcessHeap(), 0, errors);
     hr = ValidateVertexShader(vs_code, NULL, NULL, TRUE, &errors);
     ok(hr == E_FAIL, "Got unexpected hr %#lx.\n", hr);
     ok(!!*errors, "Got unexpected empty string.\n");
-    heap_free(errors);
+    HeapFree(GetProcessHeap(), 0, errors);
 }
 
 static void test_validate_ps(void)
@@ -5139,7 +5161,7 @@ static void test_validate_ps(void)
     hr = ValidatePixelShader(ps_1_1_code, NULL, TRUE, &errors);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ok(!*errors, "Got unexpected string \"%s\".\n", errors);
-    heap_free(errors);
+    HeapFree(GetProcessHeap(), 0, errors);
 
     memset(&caps, 0, sizeof(caps));
     caps.PixelShaderVersion = D3DPS_VERSION(1, 1);
@@ -5169,11 +5191,11 @@ static void test_validate_ps(void)
     hr = ValidatePixelShader(ps_1_1_code, NULL, FALSE, &errors);
     ok(hr == E_FAIL, "Got unexpected hr %#lx.\n", hr);
     ok(!*errors, "Got unexpected string \"%s\".\n", errors);
-    heap_free(errors);
+    HeapFree(GetProcessHeap(), 0, errors);
     hr = ValidatePixelShader(ps_1_1_code, NULL, TRUE, &errors);
     ok(hr == E_FAIL, "Got unexpected hr %#lx.\n", hr);
     ok(!!*errors, "Got unexpected empty string.\n");
-    heap_free(errors);
+    HeapFree(GetProcessHeap(), 0, errors);
 }
 
 static void test_volume_get_container(void)
@@ -8886,6 +8908,33 @@ static void test_swapchain_parameters(void)
             IDirect3DDevice8_Release(device);
     }
 
+    memset(&present_parameters, 0, sizeof(present_parameters));
+    present_parameters.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    present_parameters.Windowed = TRUE;
+    present_parameters.BackBufferWidth  = 0;
+    present_parameters.BackBufferHeight = 0;
+    present_parameters.BackBufferFormat = D3DFMT_X8R8G8B8;
+
+    hr = IDirect3D8_CreateDevice(d3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
+            window, D3DCREATE_SOFTWARE_VERTEXPROCESSING,
+            &present_parameters, &device);
+
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    ok(!present_parameters.BackBufferWidth, "Got unexpected BackBufferWidth %u.\n", present_parameters.BackBufferWidth);
+    ok(!present_parameters.BackBufferHeight, "Got unexpected BackBufferHeight %u,.\n", present_parameters.BackBufferHeight);
+    ok(present_parameters.BackBufferFormat == D3DFMT_X8R8G8B8, "Got unexpected BackBufferFormat %#x.\n", present_parameters.BackBufferFormat);
+    ok(present_parameters.BackBufferCount == 1, "Got unexpected BackBufferCount %u.\n", present_parameters.BackBufferCount);
+    ok(!present_parameters.MultiSampleType, "Got unexpected MultiSampleType %u.\n", present_parameters.MultiSampleType);
+    ok(present_parameters.SwapEffect == D3DSWAPEFFECT_DISCARD, "Got unexpected SwapEffect %#x.\n", present_parameters.SwapEffect);
+    ok(!present_parameters.hDeviceWindow, "Got unexpected hDeviceWindow %p.\n", present_parameters.hDeviceWindow);
+    ok(present_parameters.Windowed, "Got unexpected Windowed %#x.\n", present_parameters.Windowed);
+    ok(!present_parameters.EnableAutoDepthStencil, "Got unexpected EnableAutoDepthStencil %#x.\n", present_parameters.EnableAutoDepthStencil);
+    ok(!present_parameters.AutoDepthStencilFormat, "Got unexpected AutoDepthStencilFormat %#x.\n", present_parameters.AutoDepthStencilFormat);
+    ok(!present_parameters.Flags, "Got unexpected Flags %#lx.\n", present_parameters.Flags);
+    ok(!present_parameters.FullScreen_RefreshRateInHz, "Got unexpected FullScreen_RefreshRateInHz %u.\n", present_parameters.FullScreen_RefreshRateInHz);
+    ok(!present_parameters.FullScreen_PresentationInterval, "Got unexpected FullScreen_PresentationInterval %#x.\n", present_parameters.FullScreen_PresentationInterval);
+
+    IDirect3DDevice8_Release(device);
     IDirect3D8_Release(d3d);
     DestroyWindow(window);
 }
@@ -9721,6 +9770,7 @@ static void test_resource_access(void)
     D3DADAPTER_IDENTIFIER8 identifier;
     struct device_desc device_desc;
     D3DSURFACE_DESC surface_desc;
+    BOOL skip_ati2n_once = FALSE;
     IDirect3DDevice8 *device;
     unsigned int i, j;
     IDirect3D8 *d3d;
@@ -9872,7 +9922,11 @@ static void test_resource_access(void)
             if (tests[j].format == FORMAT_ATI2 && FAILED(IDirect3D8_CheckDeviceFormat(d3d, D3DADAPTER_DEFAULT,
                     D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, 0, D3DRTYPE_TEXTURE, format)))
             {
-                skip("ATI2N texture not supported.\n");
+                if (!skip_ati2n_once)
+                {
+                    skip("ATI2N texture not supported.\n");
+                    skip_ati2n_once = TRUE;
+                }
                 continue;
             }
 
@@ -10027,6 +10081,17 @@ static void test_resource_access(void)
             format = MAKEFOURCC('A','T','I','2');
         else
             format = colour_format;
+
+        if (tests[i].format == FORMAT_ATI2 && FAILED(IDirect3D8_CheckDeviceFormat(d3d, D3DADAPTER_DEFAULT,
+                D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, 0, D3DRTYPE_VOLUMETEXTURE, format)))
+        {
+            if (!skip_ati2n_once)
+            {
+                skip("ATI2N texture not supported.\n");
+                skip_ati2n_once = TRUE;
+            }
+            continue;
+        }
 
         hr = IDirect3DDevice8_CreateVolumeTexture(device, 16, 16, 1, 1,
                 tests[i].usage, format, tests[i].pool, &texture);
@@ -10323,8 +10388,12 @@ static void test_draw_primitive(void)
     ok(stride == sizeof(*quad), "Unexpected stride %u.\n", stride);
     IDirect3DVertexBuffer8_Release(current_vb);
 
-    hr = IDirect3DDevice8_DrawPrimitiveUP(device, D3DPT_TRIANGLELIST, 0, quad, 0);
-    ok(hr == D3D_OK, "DrawPrimitiveUP failed, hr %#lx.\n", hr);
+    /* Crashes on r200, Windows XP with STATUS_INTEGER_DIVIDE_BY_ZERO. */
+    if (0)
+    {
+        hr = IDirect3DDevice8_DrawPrimitiveUP(device, D3DPT_TRIANGLELIST, 0, quad, 0);
+        ok(hr == D3D_OK, "DrawPrimitiveUP failed, hr %#lx.\n", hr);
+    }
     hr = IDirect3DDevice8_DrawPrimitiveUP(device, D3DPT_TRIANGLELIST, 0, quad, sizeof(*quad));
     ok(hr == D3D_OK, "DrawPrimitiveUP failed, hr %#lx.\n", hr);
 
@@ -10354,12 +10423,16 @@ static void test_draw_primitive(void)
     ok(base_vertex_index == 1, "Unexpected base vertex index %u.\n", base_vertex_index);
     IDirect3DIndexBuffer8_Release(current_ib);
 
-    hr = IDirect3DDevice8_DrawIndexedPrimitiveUP(device, D3DPT_TRIANGLELIST, 0, 4, 0,
-            indices, D3DFMT_INDEX16, quad, 0);
-    ok(SUCCEEDED(hr), "DrawIndexedPrimitiveUP failed, hr %#lx.\n", hr);
-    hr = IDirect3DDevice8_DrawIndexedPrimitiveUP(device, D3DPT_TRIANGLELIST, 0, 4, 2,
-            indices, D3DFMT_INDEX16, quad, 0);
-    ok(SUCCEEDED(hr), "DrawIndexedPrimitiveUP failed, hr %#lx.\n", hr);
+    /* Crashes on r200, Windows XP with STATUS_INTEGER_DIVIDE_BY_ZERO. */
+    if (0)
+    {
+        hr = IDirect3DDevice8_DrawIndexedPrimitiveUP(device, D3DPT_TRIANGLELIST, 0, 4, 0,
+                indices, D3DFMT_INDEX16, quad, 0);
+        ok(SUCCEEDED(hr), "DrawIndexedPrimitiveUP failed, hr %#lx.\n", hr);
+        hr = IDirect3DDevice8_DrawIndexedPrimitiveUP(device, D3DPT_TRIANGLELIST, 0, 4, 2,
+                indices, D3DFMT_INDEX16, quad, 0);
+        ok(SUCCEEDED(hr), "DrawIndexedPrimitiveUP failed, hr %#lx.\n", hr);
+    }
 
     hr = IDirect3DDevice8_DrawIndexedPrimitiveUP(device, D3DPT_TRIANGLELIST, 0, 4, 2,
             indices, D3DFMT_INDEX16, quad, sizeof(*quad));

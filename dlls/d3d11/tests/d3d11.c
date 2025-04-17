@@ -21,11 +21,16 @@
 #include <float.h>
 #include <limits.h>
 #include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #define COBJMACROS
 #include "initguid.h"
 #include "d3d11_4.h"
-#include "wine/heap.h"
+#include "d3dcompiler.h"
+#include "dxva.h"
+#include "winternl.h"
+#include "wine/wined3d.h"
 #include "wine/test.h"
 
 #define BITS_NNAN 0xffc00000
@@ -37,6 +42,7 @@
 
 #define SWAPCHAIN_FLAG_SHADER_INPUT             0x1
 
+static bool damavand;
 static unsigned int use_adapter_idx;
 static BOOL enable_debug_layer;
 static BOOL use_warp_adapter;
@@ -127,12 +133,29 @@ struct swapchain_desc
     DWORD flags;
 };
 
+static ID3D10Blob *compile_shader(const char *source, size_t len, const char *profile)
+{
+    ID3D10Blob *bytecode = NULL, *errors = NULL;
+    HRESULT hr;
+
+    hr = D3DCompile(source, len, NULL, NULL, NULL, "main", profile, 0, 0, &bytecode, &errors);
+    ok(hr == S_OK, "Cannot compile shader, hr %#lx.\n", hr);
+    ok(!!bytecode, "Compilation didn't produce any bytecode.\n");
+    if (errors)
+    {
+        trace("Compilation errors:\n%s\n", (char *)ID3D10Blob_GetBufferPointer(errors));
+        ID3D10Blob_Release(errors);
+    }
+
+    return bytecode;
+}
+
 static void queue_test_entry(const struct test_entry *t)
 {
     if (mt_test_count >= mt_tests_size)
     {
         mt_tests_size = max(16, mt_tests_size * 2);
-        mt_tests = heap_realloc(mt_tests, mt_tests_size * sizeof(*t));
+        mt_tests = realloc(mt_tests, mt_tests_size * sizeof(*t));
     }
     mt_tests[mt_test_count++] = *t;
 }
@@ -202,7 +225,7 @@ static void run_queued_tests(void)
 
     GetSystemInfo(&si);
     thread_count = si.dwNumberOfProcessors;
-    threads = heap_calloc(thread_count, sizeof(*threads));
+    threads = calloc(thread_count, sizeof(*threads));
     for (i = 0, test_idx = 0; i < thread_count; ++i)
     {
         threads[i] = CreateThread(NULL, 0, thread_func, &test_idx, 0, NULL);
@@ -213,7 +236,7 @@ static void run_queued_tests(void)
     {
         CloseHandle(threads[i]);
     }
-    heap_free(threads);
+    free(threads);
 }
 
 static void set_box(D3D11_BOX *box, UINT left, UINT top, UINT front, UINT right, UINT bottom, UINT back)
@@ -258,6 +281,13 @@ static HRESULT check_interface_(unsigned int line, void *iface, REFIID riid, BOO
     return hr;
 }
 
+static BOOL compare_uint(unsigned int x, unsigned int y, unsigned int max_diff)
+{
+    unsigned int diff = x > y ? x - y : y - x;
+
+    return diff <= max_diff;
+}
+
 static BOOL compare_float(float f, float g, unsigned int ulps)
 {
     int x = *(int *)&f;
@@ -268,10 +298,7 @@ static BOOL compare_float(float f, float g, unsigned int ulps)
     if (y < 0)
         y = INT_MIN - y;
 
-    if (abs(x - y) > ulps)
-        return FALSE;
-
-    return TRUE;
+    return compare_uint(x, y, ulps);
 }
 
 static BOOL compare_vec4(const struct vec4 *v1, const struct vec4 *v2, unsigned int ulps)
@@ -280,13 +307,6 @@ static BOOL compare_vec4(const struct vec4 *v1, const struct vec4 *v2, unsigned 
             && compare_float(v1->y, v2->y, ulps)
             && compare_float(v1->z, v2->z, ulps)
             && compare_float(v1->w, v2->w, ulps);
-}
-
-static BOOL compare_uint(unsigned int x, unsigned int y, unsigned int max_diff)
-{
-    unsigned int diff = x > y ? x - y : y - x;
-
-    return diff <= max_diff;
 }
 
 static BOOL compare_uvec4(const struct uvec4* v1, const struct uvec4 *v2)
@@ -325,49 +345,49 @@ static void get_srv_desc(D3D11_SHADER_RESOURCE_VIEW_DESC *d3d11_desc, const stru
     d3d11_desc->ViewDimension = desc->dimension;
     if (desc->dimension == D3D11_SRV_DIMENSION_TEXTURE1D)
     {
-        U(*d3d11_desc).Texture1D.MostDetailedMip = desc->miplevel_idx;
-        U(*d3d11_desc).Texture1D.MipLevels = desc->miplevel_count;
+        d3d11_desc->Texture1D.MostDetailedMip = desc->miplevel_idx;
+        d3d11_desc->Texture1D.MipLevels = desc->miplevel_count;
     }
     else if (desc->dimension == D3D11_SRV_DIMENSION_TEXTURE1DARRAY)
     {
-        U(*d3d11_desc).Texture1DArray.MostDetailedMip = desc->miplevel_idx;
-        U(*d3d11_desc).Texture1DArray.MipLevels = desc->miplevel_count;
-        U(*d3d11_desc).Texture1DArray.FirstArraySlice = desc->layer_idx;
-        U(*d3d11_desc).Texture1DArray.ArraySize = desc->layer_count;
+        d3d11_desc->Texture1DArray.MostDetailedMip = desc->miplevel_idx;
+        d3d11_desc->Texture1DArray.MipLevels = desc->miplevel_count;
+        d3d11_desc->Texture1DArray.FirstArraySlice = desc->layer_idx;
+        d3d11_desc->Texture1DArray.ArraySize = desc->layer_count;
     }
     else if (desc->dimension == D3D11_SRV_DIMENSION_TEXTURE2D)
     {
-        U(*d3d11_desc).Texture2D.MostDetailedMip = desc->miplevel_idx;
-        U(*d3d11_desc).Texture2D.MipLevels = desc->miplevel_count;
+        d3d11_desc->Texture2D.MostDetailedMip = desc->miplevel_idx;
+        d3d11_desc->Texture2D.MipLevels = desc->miplevel_count;
     }
     else if (desc->dimension == D3D11_SRV_DIMENSION_TEXTURE2DARRAY)
     {
-        U(*d3d11_desc).Texture2DArray.MostDetailedMip = desc->miplevel_idx;
-        U(*d3d11_desc).Texture2DArray.MipLevels = desc->miplevel_count;
-        U(*d3d11_desc).Texture2DArray.FirstArraySlice = desc->layer_idx;
-        U(*d3d11_desc).Texture2DArray.ArraySize = desc->layer_count;
+        d3d11_desc->Texture2DArray.MostDetailedMip = desc->miplevel_idx;
+        d3d11_desc->Texture2DArray.MipLevels = desc->miplevel_count;
+        d3d11_desc->Texture2DArray.FirstArraySlice = desc->layer_idx;
+        d3d11_desc->Texture2DArray.ArraySize = desc->layer_count;
     }
     else if (desc->dimension == D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY)
     {
-        U(*d3d11_desc).Texture2DMSArray.FirstArraySlice = desc->layer_idx;
-        U(*d3d11_desc).Texture2DMSArray.ArraySize = desc->layer_count;
+        d3d11_desc->Texture2DMSArray.FirstArraySlice = desc->layer_idx;
+        d3d11_desc->Texture2DMSArray.ArraySize = desc->layer_count;
     }
     else if (desc->dimension == D3D11_SRV_DIMENSION_TEXTURE3D)
     {
-        U(*d3d11_desc).Texture3D.MostDetailedMip = desc->miplevel_idx;
-        U(*d3d11_desc).Texture3D.MipLevels = desc->miplevel_count;
+        d3d11_desc->Texture3D.MostDetailedMip = desc->miplevel_idx;
+        d3d11_desc->Texture3D.MipLevels = desc->miplevel_count;
     }
     else if (desc->dimension == D3D11_SRV_DIMENSION_TEXTURECUBE)
     {
-        U(*d3d11_desc).TextureCube.MostDetailedMip = desc->miplevel_idx;
-        U(*d3d11_desc).TextureCube.MipLevels = desc->miplevel_count;
+        d3d11_desc->TextureCube.MostDetailedMip = desc->miplevel_idx;
+        d3d11_desc->TextureCube.MipLevels = desc->miplevel_count;
     }
     else if (desc->dimension == D3D11_SRV_DIMENSION_TEXTURECUBEARRAY)
     {
-        U(*d3d11_desc).TextureCubeArray.MostDetailedMip = desc->miplevel_idx;
-        U(*d3d11_desc).TextureCubeArray.MipLevels = desc->miplevel_count;
-        U(*d3d11_desc).TextureCubeArray.First2DArrayFace = desc->layer_idx;
-        U(*d3d11_desc).TextureCubeArray.NumCubes = desc->layer_count;
+        d3d11_desc->TextureCubeArray.MostDetailedMip = desc->miplevel_idx;
+        d3d11_desc->TextureCubeArray.MipLevels = desc->miplevel_count;
+        d3d11_desc->TextureCubeArray.First2DArrayFace = desc->layer_idx;
+        d3d11_desc->TextureCubeArray.NumCubes = desc->layer_count;
     }
     else if (desc->dimension != D3D11_SRV_DIMENSION_UNKNOWN
             && desc->dimension != D3D11_SRV_DIMENSION_TEXTURE2DMS)
@@ -390,69 +410,69 @@ static void check_srv_desc_(unsigned int line, const D3D11_SHADER_RESOURCE_VIEW_
 
     if (desc->ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D)
     {
-        ok_(__FILE__, line)(U(*desc).Texture2D.MostDetailedMip == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->Texture2D.MostDetailedMip == expected_desc->miplevel_idx,
                 "Got MostDetailedMip %u, expected %u.\n",
-                U(*desc).Texture2D.MostDetailedMip, expected_desc->miplevel_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2D.MipLevels == expected_desc->miplevel_count,
+                desc->Texture2D.MostDetailedMip, expected_desc->miplevel_idx);
+        ok_(__FILE__, line)(desc->Texture2D.MipLevels == expected_desc->miplevel_count,
                 "Got MipLevels %u, expected %u.\n",
-                U(*desc).Texture2D.MipLevels, expected_desc->miplevel_count);
+                desc->Texture2D.MipLevels, expected_desc->miplevel_count);
     }
     else if (desc->ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2DARRAY)
     {
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.MostDetailedMip == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->Texture2DArray.MostDetailedMip == expected_desc->miplevel_idx,
                 "Got MostDetailedMip %u, expected %u.\n",
-                U(*desc).Texture2DArray.MostDetailedMip, expected_desc->miplevel_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.MipLevels == expected_desc->miplevel_count,
+                desc->Texture2DArray.MostDetailedMip, expected_desc->miplevel_idx);
+        ok_(__FILE__, line)(desc->Texture2DArray.MipLevels == expected_desc->miplevel_count,
                 "Got MipLevels %u, expected %u.\n",
-                U(*desc).Texture2DArray.MipLevels, expected_desc->miplevel_count);
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.FirstArraySlice == expected_desc->layer_idx,
+                desc->Texture2DArray.MipLevels, expected_desc->miplevel_count);
+        ok_(__FILE__, line)(desc->Texture2DArray.FirstArraySlice == expected_desc->layer_idx,
                 "Got FirstArraySlice %u, expected %u.\n",
-                U(*desc).Texture2DArray.FirstArraySlice, expected_desc->layer_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.ArraySize == expected_desc->layer_count,
+                desc->Texture2DArray.FirstArraySlice, expected_desc->layer_idx);
+        ok_(__FILE__, line)(desc->Texture2DArray.ArraySize == expected_desc->layer_count,
                 "Got ArraySize %u, expected %u.\n",
-                U(*desc).Texture2DArray.ArraySize, expected_desc->layer_count);
+                desc->Texture2DArray.ArraySize, expected_desc->layer_count);
     }
     else if (desc->ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY)
     {
-        ok_(__FILE__, line)(U(*desc).Texture2DMSArray.FirstArraySlice == expected_desc->layer_idx,
+        ok_(__FILE__, line)(desc->Texture2DMSArray.FirstArraySlice == expected_desc->layer_idx,
                 "Got FirstArraySlice %u, expected %u.\n",
-                U(*desc).Texture2DMSArray.FirstArraySlice, expected_desc->layer_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2DMSArray.ArraySize == expected_desc->layer_count,
+                desc->Texture2DMSArray.FirstArraySlice, expected_desc->layer_idx);
+        ok_(__FILE__, line)(desc->Texture2DMSArray.ArraySize == expected_desc->layer_count,
                 "Got ArraySize %u, expected %u.\n",
-                U(*desc).Texture2DMSArray.ArraySize, expected_desc->layer_count);
+                desc->Texture2DMSArray.ArraySize, expected_desc->layer_count);
     }
     else if (desc->ViewDimension == D3D11_SRV_DIMENSION_TEXTURE3D)
     {
-        ok_(__FILE__, line)(U(*desc).Texture3D.MostDetailedMip == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->Texture3D.MostDetailedMip == expected_desc->miplevel_idx,
                 "Got MostDetailedMip %u, expected %u.\n",
-                U(*desc).Texture3D.MostDetailedMip, expected_desc->miplevel_idx);
-        ok_(__FILE__, line)(U(*desc).Texture3D.MipLevels == expected_desc->miplevel_count,
+                desc->Texture3D.MostDetailedMip, expected_desc->miplevel_idx);
+        ok_(__FILE__, line)(desc->Texture3D.MipLevels == expected_desc->miplevel_count,
                 "Got MipLevels %u, expected %u.\n",
-                U(*desc).Texture3D.MipLevels, expected_desc->miplevel_count);
+                desc->Texture3D.MipLevels, expected_desc->miplevel_count);
     }
     else if (desc->ViewDimension == D3D11_SRV_DIMENSION_TEXTURECUBE)
     {
-        ok_(__FILE__, line)(U(*desc).TextureCube.MostDetailedMip == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->TextureCube.MostDetailedMip == expected_desc->miplevel_idx,
                 "Got MostDetailedMip %u, expected %u.\n",
-                U(*desc).TextureCube.MostDetailedMip, expected_desc->miplevel_idx);
-        ok_(__FILE__, line)(U(*desc).TextureCube.MipLevels == expected_desc->miplevel_count,
+                desc->TextureCube.MostDetailedMip, expected_desc->miplevel_idx);
+        ok_(__FILE__, line)(desc->TextureCube.MipLevels == expected_desc->miplevel_count,
                 "Got MipLevels %u, expected %u.\n",
-                U(*desc).TextureCube.MipLevels, expected_desc->miplevel_count);
+                desc->TextureCube.MipLevels, expected_desc->miplevel_count);
     }
     else if (desc->ViewDimension == D3D11_SRV_DIMENSION_TEXTURECUBEARRAY)
     {
-        ok_(__FILE__, line)(U(*desc).TextureCubeArray.MostDetailedMip == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->TextureCubeArray.MostDetailedMip == expected_desc->miplevel_idx,
                 "Got MostDetailedMip %u, expected %u.\n",
-                U(*desc).TextureCubeArray.MostDetailedMip, expected_desc->miplevel_idx);
-        ok_(__FILE__, line)(U(*desc).TextureCubeArray.MipLevels == expected_desc->miplevel_count,
+                desc->TextureCubeArray.MostDetailedMip, expected_desc->miplevel_idx);
+        ok_(__FILE__, line)(desc->TextureCubeArray.MipLevels == expected_desc->miplevel_count,
                 "Got MipLevels %u, expected %u.\n",
-                U(*desc).TextureCubeArray.MipLevels, expected_desc->miplevel_count);
-        ok_(__FILE__, line)(U(*desc).TextureCubeArray.First2DArrayFace == expected_desc->layer_idx,
+                desc->TextureCubeArray.MipLevels, expected_desc->miplevel_count);
+        ok_(__FILE__, line)(desc->TextureCubeArray.First2DArrayFace == expected_desc->layer_idx,
                 "Got First2DArrayFace %u, expected %u.\n",
-                U(*desc).TextureCubeArray.First2DArrayFace, expected_desc->layer_idx);
-        ok_(__FILE__, line)(U(*desc).TextureCubeArray.NumCubes == expected_desc->layer_count,
+                desc->TextureCubeArray.First2DArrayFace, expected_desc->layer_idx);
+        ok_(__FILE__, line)(desc->TextureCubeArray.NumCubes == expected_desc->layer_count,
                 "Got NumCubes %u, expected %u.\n",
-                U(*desc).TextureCubeArray.NumCubes, expected_desc->layer_count);
+                desc->TextureCubeArray.NumCubes, expected_desc->layer_count);
     }
     else if (desc->ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2DMS)
     {
@@ -475,34 +495,34 @@ static void get_rtv_desc(D3D11_RENDER_TARGET_VIEW_DESC *d3d11_desc, const struct
     d3d11_desc->ViewDimension = desc->dimension;
     if (desc->dimension == D3D11_RTV_DIMENSION_TEXTURE1D)
     {
-        U(*d3d11_desc).Texture1D.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture1D.MipSlice = desc->miplevel_idx;
     }
     else if (desc->dimension == D3D11_RTV_DIMENSION_TEXTURE1DARRAY)
     {
-        U(*d3d11_desc).Texture1DArray.MipSlice = desc->miplevel_idx;
-        U(*d3d11_desc).Texture1DArray.FirstArraySlice = desc->layer_idx;
-        U(*d3d11_desc).Texture1DArray.ArraySize = desc->layer_count;
+        d3d11_desc->Texture1DArray.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture1DArray.FirstArraySlice = desc->layer_idx;
+        d3d11_desc->Texture1DArray.ArraySize = desc->layer_count;
     }
     else if (desc->dimension == D3D11_RTV_DIMENSION_TEXTURE2D)
     {
-        U(*d3d11_desc).Texture2D.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture2D.MipSlice = desc->miplevel_idx;
     }
     else if (desc->dimension == D3D11_RTV_DIMENSION_TEXTURE2DARRAY)
     {
-        U(*d3d11_desc).Texture2DArray.MipSlice = desc->miplevel_idx;
-        U(*d3d11_desc).Texture2DArray.FirstArraySlice = desc->layer_idx;
-        U(*d3d11_desc).Texture2DArray.ArraySize = desc->layer_count;
+        d3d11_desc->Texture2DArray.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture2DArray.FirstArraySlice = desc->layer_idx;
+        d3d11_desc->Texture2DArray.ArraySize = desc->layer_count;
     }
     else if (desc->dimension == D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY)
     {
-        U(*d3d11_desc).Texture2DMSArray.FirstArraySlice = desc->layer_idx;
-        U(*d3d11_desc).Texture2DMSArray.ArraySize = desc->layer_count;
+        d3d11_desc->Texture2DMSArray.FirstArraySlice = desc->layer_idx;
+        d3d11_desc->Texture2DMSArray.ArraySize = desc->layer_count;
     }
     else if (desc->dimension == D3D11_RTV_DIMENSION_TEXTURE3D)
     {
-        U(*d3d11_desc).Texture3D.MipSlice = desc->miplevel_idx;
-        U(*d3d11_desc).Texture3D.FirstWSlice = desc->layer_idx;
-        U(*d3d11_desc).Texture3D.WSize = desc->layer_count;
+        d3d11_desc->Texture3D.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture3D.FirstWSlice = desc->layer_idx;
+        d3d11_desc->Texture3D.WSize = desc->layer_count;
     }
     else if (desc->dimension != D3D11_RTV_DIMENSION_UNKNOWN
             && desc->dimension != D3D11_RTV_DIMENSION_TEXTURE2DMS)
@@ -525,42 +545,42 @@ static void check_rtv_desc_(unsigned int line, const D3D11_RENDER_TARGET_VIEW_DE
 
     if (desc->ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2D)
     {
-        ok_(__FILE__, line)(U(*desc).Texture2D.MipSlice == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->Texture2D.MipSlice == expected_desc->miplevel_idx,
                 "Got MipSlice %u, expected %u.\n",
-                U(*desc).Texture2D.MipSlice, expected_desc->miplevel_idx);
+                desc->Texture2D.MipSlice, expected_desc->miplevel_idx);
     }
     else if (desc->ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2DARRAY)
     {
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.MipSlice == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->Texture2DArray.MipSlice == expected_desc->miplevel_idx,
                 "Got MipSlice %u, expected %u.\n",
-                U(*desc).Texture2DArray.MipSlice, expected_desc->miplevel_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.FirstArraySlice == expected_desc->layer_idx,
+                desc->Texture2DArray.MipSlice, expected_desc->miplevel_idx);
+        ok_(__FILE__, line)(desc->Texture2DArray.FirstArraySlice == expected_desc->layer_idx,
                 "Got FirstArraySlice %u, expected %u.\n",
-                U(*desc).Texture2DArray.FirstArraySlice, expected_desc->layer_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.ArraySize == expected_desc->layer_count,
+                desc->Texture2DArray.FirstArraySlice, expected_desc->layer_idx);
+        ok_(__FILE__, line)(desc->Texture2DArray.ArraySize == expected_desc->layer_count,
                 "Got ArraySize %u, expected %u.\n",
-                U(*desc).Texture2DArray.ArraySize, expected_desc->layer_count);
+                desc->Texture2DArray.ArraySize, expected_desc->layer_count);
     }
     else if (desc->ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY)
     {
-        ok_(__FILE__, line)(U(*desc).Texture2DMSArray.FirstArraySlice == expected_desc->layer_idx,
+        ok_(__FILE__, line)(desc->Texture2DMSArray.FirstArraySlice == expected_desc->layer_idx,
                 "Got FirstArraySlice %u, expected %u.\n",
-                U(*desc).Texture2DMSArray.FirstArraySlice, expected_desc->layer_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2DMSArray.ArraySize == expected_desc->layer_count,
+                desc->Texture2DMSArray.FirstArraySlice, expected_desc->layer_idx);
+        ok_(__FILE__, line)(desc->Texture2DMSArray.ArraySize == expected_desc->layer_count,
                 "Got ArraySize %u, expected %u.\n",
-                U(*desc).Texture2DMSArray.ArraySize, expected_desc->layer_count);
+                desc->Texture2DMSArray.ArraySize, expected_desc->layer_count);
     }
     else if (desc->ViewDimension == D3D11_RTV_DIMENSION_TEXTURE3D)
     {
-        ok_(__FILE__, line)(U(*desc).Texture3D.MipSlice == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->Texture3D.MipSlice == expected_desc->miplevel_idx,
                 "Got MipSlice %u, expected %u.\n",
-                U(*desc).Texture3D.MipSlice, expected_desc->miplevel_idx);
-        ok_(__FILE__, line)(U(*desc).Texture3D.FirstWSlice == expected_desc->layer_idx,
+                desc->Texture3D.MipSlice, expected_desc->miplevel_idx);
+        ok_(__FILE__, line)(desc->Texture3D.FirstWSlice == expected_desc->layer_idx,
                 "Got FirstWSlice %u, expected %u.\n",
-                U(*desc).Texture3D.FirstWSlice, expected_desc->layer_idx);
-        ok_(__FILE__, line)(U(*desc).Texture3D.WSize == expected_desc->layer_count,
+                desc->Texture3D.FirstWSlice, expected_desc->layer_idx);
+        ok_(__FILE__, line)(desc->Texture3D.WSize == expected_desc->layer_count,
                 "Got WSize %u, expected %u.\n",
-                U(*desc).Texture3D.WSize, expected_desc->layer_count);
+                desc->Texture3D.WSize, expected_desc->layer_count);
     }
     else if (desc->ViewDimension != D3D11_RTV_DIMENSION_TEXTURE2DMS)
     {
@@ -584,28 +604,28 @@ static void get_dsv_desc(D3D11_DEPTH_STENCIL_VIEW_DESC *d3d11_desc, const struct
     d3d11_desc->Flags = 0;
     if (desc->dimension == D3D11_DSV_DIMENSION_TEXTURE1D)
     {
-        U(*d3d11_desc).Texture1D.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture1D.MipSlice = desc->miplevel_idx;
     }
     else if (desc->dimension == D3D11_DSV_DIMENSION_TEXTURE1DARRAY)
     {
-        U(*d3d11_desc).Texture1DArray.MipSlice = desc->miplevel_idx;
-        U(*d3d11_desc).Texture1DArray.FirstArraySlice = desc->layer_idx;
-        U(*d3d11_desc).Texture1DArray.ArraySize = desc->layer_count;
+        d3d11_desc->Texture1DArray.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture1DArray.FirstArraySlice = desc->layer_idx;
+        d3d11_desc->Texture1DArray.ArraySize = desc->layer_count;
     }
     else if (desc->dimension == D3D11_DSV_DIMENSION_TEXTURE2D)
     {
-        U(*d3d11_desc).Texture2D.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture2D.MipSlice = desc->miplevel_idx;
     }
     else if (desc->dimension == D3D11_DSV_DIMENSION_TEXTURE2DARRAY)
     {
-        U(*d3d11_desc).Texture2DArray.MipSlice = desc->miplevel_idx;
-        U(*d3d11_desc).Texture2DArray.FirstArraySlice = desc->layer_idx;
-        U(*d3d11_desc).Texture2DArray.ArraySize = desc->layer_count;
+        d3d11_desc->Texture2DArray.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture2DArray.FirstArraySlice = desc->layer_idx;
+        d3d11_desc->Texture2DArray.ArraySize = desc->layer_count;
     }
     else if (desc->dimension == D3D11_DSV_DIMENSION_TEXTURE2DMSARRAY)
     {
-        U(*d3d11_desc).Texture2DMSArray.FirstArraySlice = desc->layer_idx;
-        U(*d3d11_desc).Texture2DMSArray.ArraySize = desc->layer_count;
+        d3d11_desc->Texture2DMSArray.FirstArraySlice = desc->layer_idx;
+        d3d11_desc->Texture2DMSArray.ArraySize = desc->layer_count;
     }
     else if (desc->dimension != D3D11_DSV_DIMENSION_UNKNOWN
             && desc->dimension != D3D11_DSV_DIMENSION_TEXTURE2DMS)
@@ -628,30 +648,30 @@ static void check_dsv_desc_(unsigned int line, const D3D11_DEPTH_STENCIL_VIEW_DE
 
     if (desc->ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2D)
     {
-        ok_(__FILE__, line)(U(*desc).Texture2D.MipSlice == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->Texture2D.MipSlice == expected_desc->miplevel_idx,
                 "Got MipSlice %u, expected %u.\n",
-                U(*desc).Texture2D.MipSlice, expected_desc->miplevel_idx);
+                desc->Texture2D.MipSlice, expected_desc->miplevel_idx);
     }
     else if (desc->ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2DARRAY)
     {
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.MipSlice == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->Texture2DArray.MipSlice == expected_desc->miplevel_idx,
                 "Got MipSlice %u, expected %u.\n",
-                U(*desc).Texture2DArray.MipSlice, expected_desc->miplevel_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.FirstArraySlice == expected_desc->layer_idx,
+                desc->Texture2DArray.MipSlice, expected_desc->miplevel_idx);
+        ok_(__FILE__, line)(desc->Texture2DArray.FirstArraySlice == expected_desc->layer_idx,
                 "Got FirstArraySlice %u, expected %u.\n",
-                U(*desc).Texture2DArray.FirstArraySlice, expected_desc->layer_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.ArraySize == expected_desc->layer_count,
+                desc->Texture2DArray.FirstArraySlice, expected_desc->layer_idx);
+        ok_(__FILE__, line)(desc->Texture2DArray.ArraySize == expected_desc->layer_count,
                 "Got ArraySize %u, expected %u.\n",
-                U(*desc).Texture2DArray.ArraySize, expected_desc->layer_count);
+                desc->Texture2DArray.ArraySize, expected_desc->layer_count);
     }
     else if (desc->ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2DMSARRAY)
     {
-        ok_(__FILE__, line)(U(*desc).Texture2DMSArray.FirstArraySlice == expected_desc->layer_idx,
+        ok_(__FILE__, line)(desc->Texture2DMSArray.FirstArraySlice == expected_desc->layer_idx,
                 "Got FirstArraySlice %u, expected %u.\n",
-                U(*desc).Texture2DMSArray.FirstArraySlice, expected_desc->layer_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2DMSArray.ArraySize == expected_desc->layer_count,
+                desc->Texture2DMSArray.FirstArraySlice, expected_desc->layer_idx);
+        ok_(__FILE__, line)(desc->Texture2DMSArray.ArraySize == expected_desc->layer_count,
                 "Got ArraySize %u, expected %u.\n",
-                U(*desc).Texture2DMSArray.ArraySize, expected_desc->layer_count);
+                desc->Texture2DMSArray.ArraySize, expected_desc->layer_count);
     }
     else if (desc->ViewDimension != D3D11_DSV_DIMENSION_TEXTURE2DMS)
     {
@@ -674,29 +694,29 @@ static void get_uav_desc(D3D11_UNORDERED_ACCESS_VIEW_DESC *d3d11_desc, const str
     d3d11_desc->ViewDimension = desc->dimension;
     if (desc->dimension == D3D11_UAV_DIMENSION_TEXTURE1D)
     {
-        U(*d3d11_desc).Texture1D.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture1D.MipSlice = desc->miplevel_idx;
     }
     else if (desc->dimension == D3D11_UAV_DIMENSION_TEXTURE1DARRAY)
     {
-        U(*d3d11_desc).Texture1DArray.MipSlice = desc->miplevel_idx;
-        U(*d3d11_desc).Texture1DArray.FirstArraySlice = desc->layer_idx;
-        U(*d3d11_desc).Texture1DArray.ArraySize = desc->layer_count;
+        d3d11_desc->Texture1DArray.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture1DArray.FirstArraySlice = desc->layer_idx;
+        d3d11_desc->Texture1DArray.ArraySize = desc->layer_count;
     }
     else if (desc->dimension == D3D11_UAV_DIMENSION_TEXTURE2D)
     {
-        U(*d3d11_desc).Texture2D.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture2D.MipSlice = desc->miplevel_idx;
     }
     else if (desc->dimension == D3D11_UAV_DIMENSION_TEXTURE2DARRAY)
     {
-        U(*d3d11_desc).Texture2DArray.MipSlice = desc->miplevel_idx;
-        U(*d3d11_desc).Texture2DArray.FirstArraySlice = desc->layer_idx;
-        U(*d3d11_desc).Texture2DArray.ArraySize = desc->layer_count;
+        d3d11_desc->Texture2DArray.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture2DArray.FirstArraySlice = desc->layer_idx;
+        d3d11_desc->Texture2DArray.ArraySize = desc->layer_count;
     }
     else if (desc->dimension == D3D11_UAV_DIMENSION_TEXTURE3D)
     {
-        U(*d3d11_desc).Texture3D.MipSlice = desc->miplevel_idx;
-        U(*d3d11_desc).Texture3D.FirstWSlice = desc->layer_idx;
-        U(*d3d11_desc).Texture3D.WSize = desc->layer_count;
+        d3d11_desc->Texture3D.MipSlice = desc->miplevel_idx;
+        d3d11_desc->Texture3D.FirstWSlice = desc->layer_idx;
+        d3d11_desc->Texture3D.WSize = desc->layer_count;
     }
     else if (desc->dimension != D3D11_UAV_DIMENSION_UNKNOWN)
     {
@@ -718,33 +738,33 @@ static void check_uav_desc_(unsigned int line, const D3D11_UNORDERED_ACCESS_VIEW
 
     if (desc->ViewDimension == D3D11_UAV_DIMENSION_TEXTURE2D)
     {
-        ok_(__FILE__, line)(U(*desc).Texture2D.MipSlice == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->Texture2D.MipSlice == expected_desc->miplevel_idx,
                 "Got MipSlice %u, expected %u.\n",
-                U(*desc).Texture2D.MipSlice, expected_desc->miplevel_idx);
+                desc->Texture2D.MipSlice, expected_desc->miplevel_idx);
     }
     else if (desc->ViewDimension == D3D11_UAV_DIMENSION_TEXTURE2DARRAY)
     {
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.MipSlice == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->Texture2DArray.MipSlice == expected_desc->miplevel_idx,
                 "Got MipSlice %u, expected %u.\n",
-                U(*desc).Texture2DArray.MipSlice, expected_desc->miplevel_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.FirstArraySlice == expected_desc->layer_idx,
+                desc->Texture2DArray.MipSlice, expected_desc->miplevel_idx);
+        ok_(__FILE__, line)(desc->Texture2DArray.FirstArraySlice == expected_desc->layer_idx,
                 "Got FirstArraySlice %u, expected %u.\n",
-                U(*desc).Texture2DArray.FirstArraySlice, expected_desc->layer_idx);
-        ok_(__FILE__, line)(U(*desc).Texture2DArray.ArraySize == expected_desc->layer_count,
+                desc->Texture2DArray.FirstArraySlice, expected_desc->layer_idx);
+        ok_(__FILE__, line)(desc->Texture2DArray.ArraySize == expected_desc->layer_count,
                 "Got ArraySize %u, expected %u.\n",
-                U(*desc).Texture2DArray.ArraySize, expected_desc->layer_count);
+                desc->Texture2DArray.ArraySize, expected_desc->layer_count);
     }
     else if (desc->ViewDimension == D3D11_UAV_DIMENSION_TEXTURE3D)
     {
-        ok_(__FILE__, line)(U(*desc).Texture3D.MipSlice == expected_desc->miplevel_idx,
+        ok_(__FILE__, line)(desc->Texture3D.MipSlice == expected_desc->miplevel_idx,
                 "Got MipSlice %u, expected %u.\n",
-                U(*desc).Texture3D.MipSlice, expected_desc->miplevel_idx);
-        ok_(__FILE__, line)(U(*desc).Texture3D.FirstWSlice == expected_desc->layer_idx,
+                desc->Texture3D.MipSlice, expected_desc->miplevel_idx);
+        ok_(__FILE__, line)(desc->Texture3D.FirstWSlice == expected_desc->layer_idx,
                 "Got FirstWSlice %u, expected %u.\n",
-                U(*desc).Texture3D.FirstWSlice, expected_desc->layer_idx);
-        ok_(__FILE__, line)(U(*desc).Texture3D.WSize == expected_desc->layer_count,
+                desc->Texture3D.FirstWSlice, expected_desc->layer_idx);
+        ok_(__FILE__, line)(desc->Texture3D.WSize == expected_desc->layer_count,
                 "Got WSize %u, expected %u.\n",
-                U(*desc).Texture3D.WSize, expected_desc->layer_count);
+                desc->Texture3D.WSize, expected_desc->layer_count);
     }
     else
     {
@@ -1131,6 +1151,35 @@ static void check_readback_data_u8_(unsigned int line, struct resource_readback 
             {
                 value = get_readback_u8(rb, x, y, z);
                 if (!compare_uint(value, expected_value, max_diff))
+                    goto done;
+            }
+        }
+    }
+    all_match = TRUE;
+
+done:
+    ok_(__FILE__, line)(all_match,
+            "Got 0x%02x, expected 0x%02x at (%u, %u, %u), sub-resource %u.\n",
+            value, expected_value, x, y, z, rb->sub_resource_idx);
+}
+
+#define check_readback_data_u8_with_buffer(a, b, c, d) check_readback_data_u8_with_buffer_(__LINE__, a, b, c, d)
+static void check_readback_data_u8_with_buffer_(unsigned int line, struct resource_readback *rb,
+        const char *content, uint32_t depth_pitch, uint32_t slice_pitch)
+{
+    BYTE value = 0, expected_value = 0;
+    unsigned int x = 0, y = 0, z = 0;
+    BOOL all_match = FALSE;
+
+    for (z = 0; z < rb->depth; ++z)
+    {
+        for (y = 0; y < rb->height; ++y)
+        {
+            for (x = 0; x < rb->width; ++x)
+            {
+                value = get_readback_u8(rb, x, y, z);
+                expected_value = content[z * slice_pitch + y * depth_pitch + x];
+                if (value != expected_value)
                     goto done;
             }
         }
@@ -1647,6 +1696,16 @@ static BOOL check_compute_shaders_via_sm4_support(ID3D11Device *device)
     return options.ComputeShaders_Plus_RawAndStructuredBuffers_Via_Shader_4_x;
 }
 
+static bool check_stencil_ref_export_support(ID3D11Device *device)
+{
+    D3D11_FEATURE_DATA_D3D11_OPTIONS2 options;
+
+    if (FAILED(ID3D11Device_CheckFeatureSupport(device,
+            D3D11_FEATURE_D3D11_OPTIONS2, &options, sizeof(options))))
+        return false;
+    return options.PSSpecifiedStencilRefSupported;
+}
+
 static BOOL check_viewport_array_index_from_any_shader_support(ID3D11Device *device)
 {
     D3D11_FEATURE_DATA_D3D11_OPTIONS3 options;
@@ -1989,6 +2048,64 @@ static void draw_color_quad_(unsigned int line, struct d3d11_test_context *conte
     draw_quad_vs_(line, context, vs_code, vs_code_size);
 }
 
+static BOOL CALLBACK enum_first_current_thread_window_proc(HWND hwnd, LPARAM lparam)
+{
+    if (GetWindowThreadProcessId(hwnd, NULL) == GetCurrentThreadId())
+    {
+        *(HWND *)lparam = hwnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static void test_create_device_child(void)
+{
+    DXGI_SWAP_CHAIN_DESC swapchain_desc;
+    HWND hwnd, result_hwnd;
+    ID3D11Device *device;
+    HRESULT hr;
+
+    /* Unity expects the first window in the current thread to be its game window, not DXGI device window */
+    hwnd = CreateWindowW(L"static", L"", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, 0, 100, 100, NULL, NULL, NULL, NULL);
+
+    /* Create a device without a device window in windowed mode */
+    swapchain_desc.BufferDesc.Width = 800;
+    swapchain_desc.BufferDesc.Height = 600;
+    swapchain_desc.BufferDesc.RefreshRate.Numerator = 60;
+    swapchain_desc.BufferDesc.RefreshRate.Denominator = 60;
+    swapchain_desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    swapchain_desc.BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
+    swapchain_desc.BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
+    swapchain_desc.SampleDesc.Count = 1;
+    swapchain_desc.SampleDesc.Quality = 0;
+    swapchain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    swapchain_desc.BufferCount = 1;
+    swapchain_desc.OutputWindow = NULL;
+    swapchain_desc.Windowed = TRUE;
+    swapchain_desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    swapchain_desc.Flags = 0;
+    hr = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION,
+            &swapchain_desc, NULL, &device, NULL, NULL);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    EnumWindows(enum_first_current_thread_window_proc, (LPARAM)&result_hwnd);
+    ok(result_hwnd == hwnd, "Got unexpected window %p.\n", result_hwnd);
+
+    ID3D11Device_Release(device);
+
+    /* Create a device without a device window in fullscreen mode */
+    swapchain_desc.Windowed = FALSE;
+    hr = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION,
+            &swapchain_desc, NULL, &device, NULL, NULL);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    EnumWindows(enum_first_current_thread_window_proc, (LPARAM)&result_hwnd);
+    ok(result_hwnd == hwnd, "Got unexpected window %p.\n", result_hwnd);
+
+    ID3D11Device_Release(device);
+    DestroyWindow(hwnd);
+}
+
 static void test_create_device(void)
 {
     static const D3D_FEATURE_LEVEL default_feature_levels[] =
@@ -2003,8 +2120,11 @@ static void test_create_device(void)
     D3D_FEATURE_LEVEL feature_level, supported_feature_level;
     DXGI_SWAP_CHAIN_DESC swapchain_desc, obtained_desc;
     ID3D11DeviceContext *immediate_context;
+    char **argv, cmd[MAX_PATH];
     IDXGISwapChain *swapchain;
+    PROCESS_INFORMATION info;
     ID3D11Device *device;
+    STARTUPINFOA startup;
     ULONG refcount;
     HWND window;
     HRESULT hr;
@@ -2211,6 +2331,19 @@ static void test_create_device(void)
     ok(!immediate_context, "Got unexpected immediate context pointer %p.\n", immediate_context);
 
     DestroyWindow(window);
+
+    /* Test that creating a swapchain without a device window shouldn't create a fallback device
+     * window that's on top of normal windows at creation. Run the tests in a new process to avoid
+     * interference from windows in the current process */
+    winetest_get_mainargs(&argv);
+    sprintf(cmd, "%s d3d11 test_create_device_child", argv[0]);
+    memset(&startup, 0, sizeof(startup));
+    startup.cb = sizeof(startup);
+    ok(CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &info), "CreateProcess failed.\n");
+
+    wait_child_process(info.hProcess);
+    CloseHandle(info.hProcess);
+    CloseHandle(info.hThread);
 }
 
 static void test_device_interfaces(const D3D_FEATURE_LEVEL feature_level)
@@ -2827,7 +2960,7 @@ static void test_create_texture2d(void)
     unsigned int i;
     HRESULT hr;
 
-    static const struct
+    const struct
     {
         DXGI_FORMAT format;
         UINT array_size;
@@ -2923,7 +3056,7 @@ static void test_create_texture2d(void)
         {DXGI_FORMAT_D32_FLOAT,               1, D3D11_BIND_RENDER_TARGET,    0, FALSE, FALSE},
         {DXGI_FORMAT_D32_FLOAT,               1, D3D11_BIND_DEPTH_STENCIL,    0, TRUE,  FALSE},
         {DXGI_FORMAT_R9G9B9E5_SHAREDEXP,      1, D3D11_BIND_SHADER_RESOURCE,  0, TRUE,  FALSE},
-        {DXGI_FORMAT_R9G9B9E5_SHAREDEXP,      1, D3D11_BIND_RENDER_TARGET,    0, FALSE, FALSE},
+        {DXGI_FORMAT_R9G9B9E5_SHAREDEXP,      1, D3D11_BIND_RENDER_TARGET,    0, FALSE, damavand},
         {DXGI_FORMAT_R9G9B9E5_SHAREDEXP,      1, D3D11_BIND_DEPTH_STENCIL,    0, FALSE, FALSE},
     };
 
@@ -3229,7 +3362,7 @@ static void test_create_texture3d(void)
     unsigned int i;
     HRESULT hr;
 
-    static const struct
+    const struct
     {
         DXGI_FORMAT format;
         D3D11_BIND_FLAG bind_flags;
@@ -3248,7 +3381,7 @@ static void test_create_texture3d(void)
         {DXGI_FORMAT_D24_UNORM_S8_UINT,     D3D11_BIND_RENDER_TARGET,   FALSE, FALSE},
         {DXGI_FORMAT_D32_FLOAT,             D3D11_BIND_RENDER_TARGET,   FALSE, FALSE},
         {DXGI_FORMAT_R9G9B9E5_SHAREDEXP,    D3D11_BIND_SHADER_RESOURCE, TRUE,  FALSE},
-        {DXGI_FORMAT_R9G9B9E5_SHAREDEXP,    D3D11_BIND_RENDER_TARGET,   FALSE, FALSE},
+        {DXGI_FORMAT_R9G9B9E5_SHAREDEXP,    D3D11_BIND_RENDER_TARGET,   FALSE, damavand},
         {DXGI_FORMAT_R9G9B9E5_SHAREDEXP,    D3D11_BIND_DEPTH_STENCIL,   FALSE, FALSE},
     };
 
@@ -3919,7 +4052,7 @@ static void test_create_depthstencil_view(void)
     ok(dsv_desc.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2D,
             "Got unexpected view dimension %#x.\n", dsv_desc.ViewDimension);
     ok(!dsv_desc.Flags, "Got unexpected flags %#x.\n", dsv_desc.Flags);
-    ok(!U(dsv_desc).Texture2D.MipSlice, "Got unexpected mip slice %u.\n", U(dsv_desc).Texture2D.MipSlice);
+    ok(!dsv_desc.Texture2D.MipSlice, "Got unexpected mip slice %u.\n", dsv_desc.Texture2D.MipSlice);
 
     ID3D11DepthStencilView_Release(dsview);
     ID3D11Texture2D_Release(texture);
@@ -4020,7 +4153,7 @@ static void test_depthstencil_view_interfaces(void)
     dsv_desc.Format = texture_desc.Format;
     dsv_desc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
     dsv_desc.Flags = 0;
-    U(dsv_desc).Texture2D.MipSlice = 0;
+    dsv_desc.Texture2D.MipSlice = 0;
 
     hr = ID3D11Device_CreateDepthStencilView(device, (ID3D11Resource *)texture, &dsv_desc, &dsview);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
@@ -4040,8 +4173,8 @@ static void test_depthstencil_view_interfaces(void)
     ok(d3d10_dsv_desc.Format == dsv_desc.Format, "Got unexpected format %#x.\n", d3d10_dsv_desc.Format);
     ok(d3d10_dsv_desc.ViewDimension == (D3D10_DSV_DIMENSION)dsv_desc.ViewDimension,
             "Got unexpected view dimension %u.\n", d3d10_dsv_desc.ViewDimension);
-    ok(U(d3d10_dsv_desc).Texture2D.MipSlice == U(dsv_desc).Texture2D.MipSlice,
-            "Got unexpected mip slice %u.\n", U(d3d10_dsv_desc).Texture2D.MipSlice);
+    ok(d3d10_dsv_desc.Texture2D.MipSlice == dsv_desc.Texture2D.MipSlice,
+            "Got unexpected mip slice %u.\n", d3d10_dsv_desc.Texture2D.MipSlice);
 
     ID3D10DepthStencilView_Release(d3d10_dsview);
 
@@ -4230,8 +4363,8 @@ static void test_create_rendertarget_view(void)
 
     rtv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_BUFFER;
-    U1(U(rtv_desc).Buffer).ElementOffset = 0;
-    U2(U(rtv_desc).Buffer).ElementWidth = 64;
+    rtv_desc.Buffer.ElementOffset = 0;
+    rtv_desc.Buffer.ElementWidth = 64;
 
     if (!enable_debug_layer)
     {
@@ -4563,8 +4696,8 @@ static void test_create_shader_resource_view(void)
 
     srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-    U1(U(srv_desc).Buffer).ElementOffset = 0;
-    U2(U(srv_desc).Buffer).ElementWidth = 64;
+    srv_desc.Buffer.ElementOffset = 0;
+    srv_desc.Buffer.ElementWidth = 64;
 
     srview = (void *)0xdeadbeef;
     hr = ID3D11Device_CreateShaderResourceView(device, NULL, &srv_desc, &srview);
@@ -4622,10 +4755,10 @@ static void test_create_shader_resource_view(void)
         ok(srv_desc.Format == DXGI_FORMAT_UNKNOWN, "Got unexpected format %#x.\n", srv_desc.Format);
         ok(srv_desc.ViewDimension == D3D11_SRV_DIMENSION_BUFFER, "Got unexpected view dimension %#x.\n",
                 srv_desc.ViewDimension);
-        ok(!U1(U(srv_desc).Buffer).FirstElement, "Got unexpected first element %u.\n",
-                U1(U(srv_desc).Buffer).FirstElement);
-        ok(U2(U(srv_desc).Buffer).NumElements == 256, "Got unexpected num elements %u.\n",
-                U2(U(srv_desc).Buffer).NumElements);
+        ok(!srv_desc.Buffer.FirstElement, "Got unexpected first element %u.\n",
+                srv_desc.Buffer.FirstElement);
+        ok(srv_desc.Buffer.NumElements == 256, "Got unexpected num elements %u.\n",
+                srv_desc.Buffer.NumElements);
 
         ID3D11ShaderResourceView_Release(srview);
         ID3D11Buffer_Release(buffer);
@@ -6200,12 +6333,12 @@ static void test_pipeline_statistics_query(void)
         ok(data.IAVertices == 4, "Got unexpected IAVertices count: %u.\n", (unsigned int)data.IAVertices);
         ok(data.IAPrimitives == 2, "Got unexpected IAPrimitives count: %u.\n", (unsigned int)data.IAPrimitives);
         ok(data.VSInvocations == 4, "Got unexpected VSInvocations count: %u.\n", (unsigned int)data.VSInvocations);
-        ok(!data.GSInvocations, "Got unexpected GSInvocations count: %u.\n", (unsigned int)data.GSInvocations);
+        /* AMD has nonzero GSInvocations on Windows. */
         ok(!data.GSPrimitives, "Got unexpected GSPrimitives count: %u.\n", (unsigned int)data.GSPrimitives);
         ok(data.CInvocations == 2, "Got unexpected CInvocations count: %u.\n", (unsigned int)data.CInvocations);
         ok(data.CPrimitives == 2, "Got unexpected CPrimitives count: %u.\n", (unsigned int)data.CPrimitives);
-        todo_wine
-        ok(!data.PSInvocations, "Got unexpected PSInvocations count: %u.\n", (unsigned int)data.PSInvocations);
+        todo_wine_if (!damavand)
+            ok(!data.PSInvocations, "Got unexpected PSInvocations count: %u.\n", (unsigned int)data.PSInvocations);
         ok(!data.HSInvocations, "Got unexpected HSInvocations count: %u.\n", (unsigned int)data.HSInvocations);
         ok(!data.DSInvocations, "Got unexpected DSInvocations count: %u.\n", (unsigned int)data.DSInvocations);
         ok(!data.CSInvocations, "Got unexpected CSInvocations count: %u.\n", (unsigned int)data.CSInvocations);
@@ -6222,7 +6355,7 @@ static void test_pipeline_statistics_query(void)
     ok(data.IAVertices == 4, "Got unexpected IAVertices count: %u.\n", (unsigned int)data.IAVertices);
     ok(data.IAPrimitives == 2, "Got unexpected IAPrimitives count: %u.\n", (unsigned int)data.IAPrimitives);
     ok(data.VSInvocations == 4, "Got unexpected VSInvocations count: %u.\n", (unsigned int)data.VSInvocations);
-    ok(!data.GSInvocations, "Got unexpected GSInvocations count: %u.\n", (unsigned int)data.GSInvocations);
+    /* AMD has nonzero GSInvocations on Windows. */
     ok(!data.GSPrimitives, "Got unexpected GSPrimitives count: %u.\n", (unsigned int)data.GSPrimitives);
     ok(data.CInvocations == 2, "Got unexpected CInvocations count: %u.\n", (unsigned int)data.CInvocations);
     ok(data.CPrimitives == 2, "Got unexpected CPrimitives count: %u.\n", (unsigned int)data.CPrimitives);
@@ -6535,7 +6668,7 @@ static void test_so_statistics_query(void)
         get_query_data(context, query, &data, sizeof(data));
         ok(!data.NumPrimitivesWritten, "Got unexpected NumPrimitivesWritten: %u.\n",
                 (unsigned int)data.NumPrimitivesWritten);
-        todo_wine
+        todo_wine_if (!damavand)
         ok(!data.PrimitivesStorageNeeded, "Got unexpected PrimitivesStorageNeeded: %u.\n",
                 (unsigned int)data.PrimitivesStorageNeeded);
 
@@ -6545,7 +6678,7 @@ static void test_so_statistics_query(void)
         get_query_data(context, query, &data, sizeof(data));
         ok(!data.NumPrimitivesWritten, "Got unexpected NumPrimitivesWritten: %u.\n",
                 (unsigned int)data.NumPrimitivesWritten);
-        todo_wine
+        todo_wine_if (!damavand)
         ok(!data.PrimitivesStorageNeeded, "Got unexpected PrimitivesStorageNeeded: %u.\n",
                 (unsigned int)data.PrimitivesStorageNeeded);
 
@@ -7336,17 +7469,17 @@ static void test_device_context_state(void)
 
     srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-    U(srv_desc).Buffer.ElementOffset = 0;
-    U(srv_desc).Buffer.ElementWidth = 64;
+    srv_desc.Buffer.ElementOffset = 0;
+    srv_desc.Buffer.ElementWidth = 64;
     hr = ID3D11Device1_CreateShaderResourceView(device, (ID3D11Resource *)srvb, &srv_desc, &srv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ID3D11Buffer_Release(srvb);
 
     uav_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 4;
-    U(uav_desc).Buffer.Flags = 0;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 4;
+    uav_desc.Buffer.Flags = 0;
     hr = ID3D11Device1_CreateUnorderedAccessView(device, (ID3D11Resource *)uavb, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ID3D11Buffer_Release(uavb);
@@ -9828,10 +9961,10 @@ static void test_texture(void)
         {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX, -1.0f, rgba_level_0},
         {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX,  0.0f, rgba_level_0},
         {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX,  0.4f, rgba_level_0},
-        {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX,  0.5f, level_1_colors},
+        {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX,  0.6f, level_1_colors},
         {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX,  1.0f, level_1_colors},
         {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX,  1.4f, level_1_colors},
-        {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX,  1.5f, level_2_colors},
+        {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX,  1.6f, level_2_colors},
         {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX,  2.0f, level_2_colors},
         {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX,  3.0f, level_2_colors},
         {&ps_sample_l,        &rgba_texture,     POINT,        0.0f, 0.0f, MIP_MAX,  4.0f, level_2_colors},
@@ -10706,14 +10839,14 @@ static void test_depth_stencil_sampling(void)
         dsv_desc.Format = tests[i].dsv_format;
         dsv_desc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
         dsv_desc.Flags = 0;
-        U(dsv_desc).Texture2D.MipSlice = 0;
+        dsv_desc.Texture2D.MipSlice = 0;
         hr = ID3D11Device_CreateDepthStencilView(device, (ID3D11Resource *)texture, &dsv_desc, &dsv);
         ok(hr == S_OK, "Test %u: Got unexpected hr %#lx.\n", i, hr);
 
         srv_desc.Format = tests[i].depth_view_format;
         srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        U(srv_desc).Texture2D.MostDetailedMip = 0;
-        U(srv_desc).Texture2D.MipLevels = 1;
+        srv_desc.Texture2D.MostDetailedMip = 0;
+        srv_desc.Texture2D.MipLevels = 1;
         hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, &srv_desc, &depth_srv);
         ok(hr == S_OK, "Test %u: Got unexpected hr %#lx.\n", i, hr);
 
@@ -10959,7 +11092,7 @@ static void test_sample_c_lz(void)
         0x00000000, 0x0020800a, 0x00000000, 0x00000000, 0x05000036, 0x001020f2, 0x00000000, 0x00100006,
         0x00000000, 0x0100003e,
     };
-    static const float depth_values[] = {1.0f, 0.0f, 0.5f, 0.6f, 0.4f, 0.1f};
+    static const float depth_values[] = {0.0f, 1.0f, 0.5f, 0.6f, 0.4f, 0.1f};
     static const struct
     {
         unsigned int layer;
@@ -10968,8 +11101,8 @@ static void test_sample_c_lz(void)
     }
     tests[] =
     {
-        {0, 0.5f, 0.0f},
-        {1, 0.5f, 1.0f},
+        {0, 0.5f, 1.0f},
+        {1, 0.5f, 0.0f},
         {2, 0.5f, 0.0f},
         {3, 0.5f, 0.0f},
         {4, 0.5f, 1.0f},
@@ -10982,8 +11115,8 @@ static void test_sample_c_lz(void)
         {4, 0.0f, 0.0f},
         {5, 0.0f, 0.0f},
 
-        {0, 1.0f, 0.0f},
-        {1, 1.0f, 1.0f},
+        {0, 1.0f, 1.0f},
+        {1, 1.0f, 0.0f},
         {2, 1.0f, 1.0f},
         {3, 1.0f, 1.0f},
         {4, 1.0f, 1.0f},
@@ -11039,16 +11172,16 @@ static void test_sample_c_lz(void)
         dsv_desc.Format = DXGI_FORMAT_D32_FLOAT;
         dsv_desc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
         dsv_desc.Flags = 0;
-        U(dsv_desc).Texture2DArray.MipSlice = 0;
-        U(dsv_desc).Texture2DArray.FirstArraySlice = i;
-        U(dsv_desc).Texture2DArray.ArraySize = 1;
+        dsv_desc.Texture2DArray.MipSlice = 0;
+        dsv_desc.Texture2DArray.FirstArraySlice = i;
+        dsv_desc.Texture2DArray.ArraySize = 1;
 
         hr = ID3D11Device_CreateDepthStencilView(device, (ID3D11Resource *)texture, &dsv_desc, &dsv);
         ok(hr == S_OK, "Slice %u: Got unexpected hr %#lx.\n", i, hr);
         ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_DEPTH, depth_values[i], 0);
         ID3D11DepthStencilView_Release(dsv);
 
-        U(dsv_desc).Texture2DArray.MipSlice = 1;
+        dsv_desc.Texture2DArray.MipSlice = 1;
         hr = ID3D11Device_CreateDepthStencilView(device, (ID3D11Resource *)texture, &dsv_desc, &dsv);
         ok(hr == S_OK, "Slice %u: Got unexpected hr %#lx.\n", i, hr);
         ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
@@ -11057,10 +11190,10 @@ static void test_sample_c_lz(void)
 
     srv_desc.Format = DXGI_FORMAT_R32_FLOAT;
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-    U(srv_desc).Texture2DArray.MostDetailedMip = 0;
-    U(srv_desc).Texture2DArray.MipLevels = ~0u;
-    U(srv_desc).Texture2DArray.FirstArraySlice = 0;
-    U(srv_desc).Texture2DArray.ArraySize = ~0u;
+    srv_desc.Texture2DArray.MostDetailedMip = 0;
+    srv_desc.Texture2DArray.MipLevels = ~0u;
+    srv_desc.Texture2DArray.FirstArraySlice = 0;
+    srv_desc.Texture2DArray.ArraySize = ~0u;
     hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, &srv_desc, &srv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -11097,16 +11230,16 @@ static void test_sample_c_lz(void)
         dsv_desc.Format = DXGI_FORMAT_D32_FLOAT;
         dsv_desc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
         dsv_desc.Flags = 0;
-        U(dsv_desc).Texture2DArray.MipSlice = 0;
-        U(dsv_desc).Texture2DArray.FirstArraySlice = i;
-        U(dsv_desc).Texture2DArray.ArraySize = 1;
+        dsv_desc.Texture2DArray.MipSlice = 0;
+        dsv_desc.Texture2DArray.FirstArraySlice = i;
+        dsv_desc.Texture2DArray.ArraySize = 1;
 
         hr = ID3D11Device_CreateDepthStencilView(device, (ID3D11Resource *)texture, &dsv_desc, &dsv);
         ok(hr == S_OK, "Slice %u: Got unexpected hr %#lx.\n", i, hr);
         ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_DEPTH, depth_values[i], 0);
         ID3D11DepthStencilView_Release(dsv);
 
-        U(dsv_desc).Texture2DArray.MipSlice = 1;
+        dsv_desc.Texture2DArray.MipSlice = 1;
         hr = ID3D11Device_CreateDepthStencilView(device, (ID3D11Resource *)texture, &dsv_desc, &dsv);
         ok(hr == S_OK, "Slice %u: Got unexpected hr %#lx.\n", i, hr);
         ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
@@ -11115,8 +11248,8 @@ static void test_sample_c_lz(void)
 
     srv_desc.Format = DXGI_FORMAT_R32_FLOAT;
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
-    U(srv_desc).TextureCube.MostDetailedMip = 0;
-    U(srv_desc).TextureCube.MipLevels = ~0u;
+    srv_desc.TextureCube.MostDetailedMip = 0;
+    srv_desc.TextureCube.MipLevels = ~0u;
     hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, &srv_desc, &srv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -11471,7 +11604,7 @@ static void test_render_target_views(void)
     texture_desc.CPUAccessFlags = 0;
     texture_desc.MiscFlags = 0;
 
-    data = heap_alloc_zero(texture_desc.Width * texture_desc.Height * 4);
+    data = calloc(texture_desc.Width * texture_desc.Height, 4);
     ok(!!data, "Failed to allocate memory.\n");
 
     for (i = 0; i < ARRAY_SIZE(tests); ++i)
@@ -11555,7 +11688,7 @@ static void test_render_target_views(void)
         ID3D11Resource_Release(resource);
     }
 
-    heap_free(data);
+    free(data);
     release_test_context(&test_context);
 }
 
@@ -11800,9 +11933,9 @@ static void test_layered_rendering(void)
 
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
     rtv_desc.Format = texture_desc.Format;
-    U(rtv_desc).Texture2DArray.MipSlice = 0;
-    U(rtv_desc).Texture2DArray.FirstArraySlice = 3;
-    U(rtv_desc).Texture2DArray.ArraySize = 1;
+    rtv_desc.Texture2DArray.MipSlice = 0;
+    rtv_desc.Texture2DArray.FirstArraySlice = 3;
+    rtv_desc.Texture2DArray.ArraySize = 1;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv, NULL);
@@ -11813,9 +11946,9 @@ static void test_layered_rendering(void)
     ID3D11RenderTargetView_Release(rtv);
 
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-    U(rtv_desc).Texture2DArray.MipSlice = 1;
-    U(rtv_desc).Texture2DArray.FirstArraySlice = 0;
-    U(rtv_desc).Texture2DArray.ArraySize = ~0u;
+    rtv_desc.Texture2DArray.MipSlice = 1;
+    rtv_desc.Texture2DArray.FirstArraySlice = 0;
+    rtv_desc.Texture2DArray.ArraySize = ~0u;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv, NULL);
@@ -11830,11 +11963,11 @@ static void test_layered_rendering(void)
     ID3D11RenderTargetView_Release(rtv);
 
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-    U(rtv_desc).Texture2DArray.MipSlice = 2;
-    U(rtv_desc).Texture2DArray.ArraySize = 1;
+    rtv_desc.Texture2DArray.MipSlice = 2;
+    rtv_desc.Texture2DArray.ArraySize = 1;
     for (i = 0; i < texture_desc.ArraySize; ++i)
     {
-        U(rtv_desc).Texture2DArray.FirstArraySlice = texture_desc.ArraySize - 1 - i;
+        rtv_desc.Texture2DArray.FirstArraySlice = texture_desc.ArraySize - 1 - i;
         hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv);
         ok(hr == S_OK, "Slice %u: Got unexpected hr %#lx.\n", i, hr);
         ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv, NULL);
@@ -11871,9 +12004,9 @@ static void test_layered_rendering(void)
     constant.draw_id = 42;
     ID3D11DeviceContext_UpdateSubresource(context, (ID3D11Resource *)cb, 0, NULL, &constant, 0, 0);
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-    U(rtv_desc).Texture2DArray.MipSlice = 0;
-    U(rtv_desc).Texture2DArray.FirstArraySlice = 0;
-    U(rtv_desc).Texture2DArray.ArraySize = ~0u;
+    rtv_desc.Texture2DArray.MipSlice = 0;
+    rtv_desc.Texture2DArray.FirstArraySlice = 0;
+    rtv_desc.Texture2DArray.ArraySize = ~0u;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv, NULL);
@@ -12453,8 +12586,8 @@ static void test_clear_state(void)
 
     srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-    U(srv_desc).Buffer.ElementOffset = 0;
-    U(srv_desc).Buffer.ElementWidth = 64;
+    srv_desc.Buffer.ElementOffset = 0;
+    srv_desc.Buffer.ElementWidth = 64;
 
     for (i = 0; i < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++i)
     {
@@ -12465,9 +12598,9 @@ static void test_clear_state(void)
 
     uav_desc.Format = DXGI_FORMAT_R32_UINT;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 8;
-    U(uav_desc).Buffer.Flags = 0;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 8;
+    uav_desc.Buffer.Flags = 0;
 
     for (i = 0; i < D3D11_PS_CS_UAV_REGISTER_COUNT; ++i)
     {
@@ -13478,9 +13611,9 @@ static void test_instanced_draw(void)
         {"color",    0, DXGI_FORMAT_R8_UNORM,           1, D3D11_APPEND_ALIGNED_ELEMENT,
                 D3D11_INPUT_PER_INSTANCE_DATA, 1},
         {"color",    1, DXGI_FORMAT_R8_UNORM,           2, D3D11_APPEND_ALIGNED_ELEMENT,
-                D3D10_INPUT_PER_INSTANCE_DATA, 0},
+                D3D11_INPUT_PER_INSTANCE_DATA, 0},
         {"color",    2, DXGI_FORMAT_R8_UNORM,           3, D3D11_APPEND_ALIGNED_ELEMENT,
-                D3D10_INPUT_PER_INSTANCE_DATA, 2},
+                D3D11_INPUT_PER_INSTANCE_DATA, 2},
         {"v_offset", 0, DXGI_FORMAT_R32_FLOAT,          1, D3D11_APPEND_ALIGNED_ELEMENT,
                 D3D11_INPUT_PER_INSTANCE_DATA, 1},
     };
@@ -15401,7 +15534,7 @@ static void test_resource_access(const D3D_FEATURE_LEVEL feature_level)
 
     data.SysMemPitch = 0;
     data.SysMemSlicePitch = 0;
-    data.pSysMem = heap_alloc(10240);
+    data.pSysMem = malloc(10240);
     ok(!!data.pSysMem, "Failed to allocate memory.\n");
 
     for (i = 0; i < ARRAY_SIZE(tests); ++i)
@@ -15586,7 +15719,7 @@ static void test_resource_access(const D3D_FEATURE_LEVEL feature_level)
         }
     }
 
-    heap_free((void *)data.pSysMem);
+    free((void *)data.pSysMem);
 
     ID3D11DeviceContext_Release(context);
     refcount = ID3D11Device_Release(device);
@@ -15794,7 +15927,7 @@ static void test_swapchain_views(void)
 
     rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-    U(rtv_desc).Texture2D.MipSlice = 0;
+    rtv_desc.Texture2D.MipSlice = 0;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)test_context.backbuffer, &rtv_desc, &rtv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv, NULL);
@@ -15807,8 +15940,8 @@ static void test_swapchain_views(void)
 
     srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    U(srv_desc).Texture2D.MostDetailedMip = 0;
-    U(srv_desc).Texture2D.MipLevels = 1;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+    srv_desc.Texture2D.MipLevels = 1;
     hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)test_context.backbuffer, &srv_desc, &srv);
     ok(hr == E_INVALIDARG, "Got unexpected hr %#lx.\n", hr);
     if (SUCCEEDED(hr))
@@ -16174,13 +16307,13 @@ static void test_clear_render_target_view_2d(void)
 
     rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-    U(rtv_desc).Texture2D.MipSlice = 0;
+    rtv_desc.Texture2D.MipSlice = 0;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &srgb_rtv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
     rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-    U(rtv_desc).Texture2D.MipSlice = 0;
+    rtv_desc.Texture2D.MipSlice = 0;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv[0]);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -16213,19 +16346,19 @@ static void test_clear_render_target_view_2d(void)
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-    U(rtv_desc).Texture2DArray.MipSlice = 0;
-    U(rtv_desc).Texture2DArray.FirstArraySlice = 0;
-    U(rtv_desc).Texture2DArray.ArraySize = 5;
+    rtv_desc.Texture2DArray.MipSlice = 0;
+    rtv_desc.Texture2DArray.FirstArraySlice = 0;
+    rtv_desc.Texture2DArray.ArraySize = 5;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv[0]);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
-    U(rtv_desc).Texture2DArray.FirstArraySlice = 1;
-    U(rtv_desc).Texture2DArray.ArraySize = 3;
+    rtv_desc.Texture2DArray.FirstArraySlice = 1;
+    rtv_desc.Texture2DArray.ArraySize = 3;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv[1]);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
-    U(rtv_desc).Texture2DArray.FirstArraySlice = 2;
-    U(rtv_desc).Texture2DArray.ArraySize = 1;
+    rtv_desc.Texture2DArray.FirstArraySlice = 2;
+    rtv_desc.Texture2DArray.ArraySize = 1;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv[2]);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -16314,9 +16447,9 @@ static void test_clear_render_target_view_3d(void)
 
     rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE3D;
-    U(rtv_desc).Texture3D.MipSlice = 0;
-    U(rtv_desc).Texture3D.FirstWSlice = 0;
-    U(rtv_desc).Texture3D.WSize = ~0u;
+    rtv_desc.Texture3D.MipSlice = 0;
+    rtv_desc.Texture3D.FirstWSlice = 0;
+    rtv_desc.Texture3D.WSize = ~0u;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -16401,7 +16534,7 @@ static void test_clear_depth_stencil_view(void)
     todo_wine check_texture_color(depth_texture, 0x00ffffff, 0);
 
     ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_STENCIL, 0.0f, 0xff);
-    check_texture_color(depth_texture, 0xffffffff, 0);
+    todo_wine_if (damavand) check_texture_color(depth_texture, 0xffffffff, 0);
 
     ID3D11Texture2D_Release(depth_texture);
     ID3D11DepthStencilView_Release(dsv);
@@ -16558,9 +16691,9 @@ static void test_clear_buffer_unordered_access_view(void)
 
     uav_desc.Format = DXGI_FORMAT_UNKNOWN;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 4;
-    U(uav_desc).Buffer.Flags = 0;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 4;
+    uav_desc.Buffer.Flags = 0;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav2);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -16575,7 +16708,7 @@ static void test_clear_buffer_unordered_access_view(void)
 
         clear_uav(context, uav2, &fe_uvec4);
         get_buffer_readback(buffer, &rb);
-        SetRect(&rect, 0, 0, U(uav_desc).Buffer.NumElements * buffer_desc.StructureByteStride / sizeof(uvec4.x), 1);
+        SetRect(&rect, 0, 0, uav_desc.Buffer.NumElements * buffer_desc.StructureByteStride / sizeof(uvec4.x), 1);
         check_readback_data_color(&rb, &rect, fe_uvec4.x, 0);
         rect.left = rect.right;
         rect.right = buffer_desc.ByteWidth / sizeof(uvec4.x);
@@ -16594,13 +16727,13 @@ static void test_clear_buffer_unordered_access_view(void)
 
     uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 16;
-    U(uav_desc).Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 16;
+    uav_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
-    U(uav_desc).Buffer.FirstElement = 8;
-    U(uav_desc).Buffer.NumElements = 8;
+    uav_desc.Buffer.FirstElement = 8;
+    uav_desc.Buffer.NumElements = 8;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav2);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -16615,9 +16748,9 @@ static void test_clear_buffer_unordered_access_view(void)
 
         clear_uav(context, uav2, &fe_uvec4);
         get_buffer_readback(buffer, &rb);
-        SetRect(&rect, 0, 0, U(uav_desc).Buffer.FirstElement, 1);
+        SetRect(&rect, 0, 0, uav_desc.Buffer.FirstElement, 1);
         check_readback_data_color(&rb, &rect, uvec4.x, 0);
-        SetRect(&rect, U(uav_desc).Buffer.FirstElement, 0, buffer_desc.ByteWidth / sizeof(uvec4.x), 1);
+        SetRect(&rect, uav_desc.Buffer.FirstElement, 0, buffer_desc.ByteWidth / sizeof(uvec4.x), 1);
         check_readback_data_color(&rb, &rect, fe_uvec4.x, 0);
         release_resource_readback(&rb);
     }
@@ -16633,13 +16766,13 @@ static void test_clear_buffer_unordered_access_view(void)
 
     uav_desc.Format = DXGI_FORMAT_R32_SINT;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 16;
-    U(uav_desc).Buffer.Flags = 0;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 16;
+    uav_desc.Buffer.Flags = 0;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
-    U(uav_desc).Buffer.FirstElement = 8;
-    U(uav_desc).Buffer.NumElements = 8;
+    uav_desc.Buffer.FirstElement = 8;
+    uav_desc.Buffer.NumElements = 8;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav2);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -16654,9 +16787,9 @@ static void test_clear_buffer_unordered_access_view(void)
 
         clear_uav(context, uav2, &fe_uvec4);
         get_buffer_readback(buffer, &rb);
-        SetRect(&rect, 0, 0, U(uav_desc).Buffer.FirstElement, 1);
+        SetRect(&rect, 0, 0, uav_desc.Buffer.FirstElement, 1);
         check_readback_data_color(&rb, &rect, uvec4.x, 0);
-        SetRect(&rect, U(uav_desc).Buffer.FirstElement, 0, buffer_desc.ByteWidth / sizeof(uvec4.x), 1);
+        SetRect(&rect, uav_desc.Buffer.FirstElement, 0, buffer_desc.ByteWidth / sizeof(uvec4.x), 1);
         check_readback_data_color(&rb, &rect, fe_uvec4.x, 0);
         release_resource_readback(&rb);
     }
@@ -16666,13 +16799,13 @@ static void test_clear_buffer_unordered_access_view(void)
 
     uav_desc.Format = DXGI_FORMAT_R32G32B32A32_SINT;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 4;
-    U(uav_desc).Buffer.Flags = 0;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 4;
+    uav_desc.Buffer.Flags = 0;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
-    U(uav_desc).Buffer.FirstElement = 2;
-    U(uav_desc).Buffer.NumElements = 2;
+    uav_desc.Buffer.FirstElement = 2;
+    uav_desc.Buffer.NumElements = 2;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav2);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -16704,7 +16837,7 @@ static void test_clear_buffer_unordered_access_view(void)
         {
             struct uvec4 broken_result;
             data = get_readback_uvec4(&rb, x, 0);
-            uvec4 = U(uav_desc).Buffer.FirstElement <= x ? fe_uvec4 : uvec4_data[i];
+            uvec4 = uav_desc.Buffer.FirstElement <= x ? fe_uvec4 : uvec4_data[i];
             broken_result.x = broken_result.y = broken_result.z = broken_result.w = uvec4.x;
             if (!(compare_uvec4(data, &uvec4) || broken(compare_uvec4(data, &broken_result))))
             {
@@ -16724,13 +16857,13 @@ static void test_clear_buffer_unordered_access_view(void)
 
     uav_desc.Format = DXGI_FORMAT_R8G8B8A8_SINT;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 16;
-    U(uav_desc).Buffer.Flags = 0;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 16;
+    uav_desc.Buffer.Flags = 0;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
-    U(uav_desc).Buffer.FirstElement = 8;
-    U(uav_desc).Buffer.NumElements = 8;
+    uav_desc.Buffer.FirstElement = 8;
+    uav_desc.Buffer.NumElements = 8;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav2);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -16739,16 +16872,22 @@ static void test_clear_buffer_unordered_access_view(void)
         uvec4 = uvec4_data[i];
         clear_uav(context, uav, &uvec4);
         get_buffer_readback(buffer, &rb);
-        todo_wine check_rgba_sint8(get_readback_color(&rb, 0, 0, 0), &uvec4);
-        todo_wine check_rgba_sint8(get_readback_color(&rb, 7, 0, 0), &uvec4);
-        todo_wine check_rgba_sint8(get_readback_color(&rb, 15, 0, 0), &uvec4);
+        todo_wine_if (!damavand)
+        {
+            check_rgba_sint8(get_readback_color(&rb, 0, 0, 0), &uvec4);
+            check_rgba_sint8(get_readback_color(&rb, 7, 0, 0), &uvec4);
+            check_rgba_sint8(get_readback_color(&rb, 15, 0, 0), &uvec4);
+        }
         release_resource_readback(&rb);
 
         clear_uav(context, uav2, &fe_uvec4);
         get_buffer_readback(buffer, &rb);
-        todo_wine check_rgba_sint8(get_readback_color(&rb, 0, 0, 0), &uvec4);
-        todo_wine check_rgba_sint8(get_readback_color(&rb, U(uav_desc).Buffer.FirstElement - 1, 0, 0), &uvec4);
-        todo_wine check_rgba_sint8(get_readback_color(&rb, U(uav_desc).Buffer.FirstElement, 0, 0), &fe_uvec4);
+        todo_wine_if (!damavand)
+        {
+            check_rgba_sint8(get_readback_color(&rb, 0, 0, 0), &uvec4);
+            check_rgba_sint8(get_readback_color(&rb, uav_desc.Buffer.FirstElement - 1, 0, 0), &uvec4);
+            check_rgba_sint8(get_readback_color(&rb, uav_desc.Buffer.FirstElement, 0, 0), &fe_uvec4);
+        }
         release_resource_readback(&rb);
     }
 
@@ -18842,7 +18981,7 @@ static void check_layout_element_exclusion(ID3D11Device *device, const D3D11_INP
     unsigned int i;
     HRESULT hr;
 
-    winetest_push_context(test_context);
+    winetest_push_context("%s", test_context);
 
     hr = ID3D11Device_CreateInputLayout(device, elements, element_count, shader_code, shader_code_size, &layout);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
@@ -19624,6 +19763,7 @@ static void test_null_sampler(void)
 
 static void test_check_feature_support(void)
 {
+    D3D11_FEATURE_DATA_D3D9_SIMPLE_INSTANCING_SUPPORT d3d9si;
     D3D11_FEATURE_DATA_THREADING threading[2];
     D3D11_FEATURE_DATA_D3D10_X_HARDWARE_OPTIONS hwopts;
     D3D11_FEATURE_DATA_ARCHITECTURE_INFO archinfo;
@@ -19691,6 +19831,9 @@ static void test_check_feature_support(void)
     hr = ID3D11Device_CheckFeatureSupport(device, D3D11_FEATURE_ARCHITECTURE_INFO, &archinfo, sizeof(archinfo)*2);
     ok(hr == E_INVALIDARG /* Not available on all Windows versions but they will return E_INVALIDARG anyways. */,
             "Got unexpected hr %#lx.\n", hr);
+
+    hr = ID3D11Device_CheckFeatureSupport(device, D3D11_FEATURE_D3D9_SIMPLE_INSTANCING_SUPPORT, &d3d9si, sizeof(d3d9si));
+    ok(hr == S_OK || broken(hr == E_INVALIDARG) /* Win 7 */, "Got unexpected hr %#lx.\n", hr);
 
     refcount = ID3D11Device_Release(device);
     ok(!refcount, "Device has %lu references left.\n", refcount);
@@ -19872,9 +20015,9 @@ static void test_create_unordered_access_view(void)
 
     uav_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 64;
-    U(uav_desc).Buffer.Flags = 0;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 64;
+    uav_desc.Buffer.Flags = 0;
 
     uav = (void *)0xdeadbeef;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, NULL, &uav);
@@ -19912,9 +20055,9 @@ static void test_create_unordered_access_view(void)
     ok(uav_desc.Format == DXGI_FORMAT_UNKNOWN, "Got unexpected format %#x.\n", uav_desc.Format);
     ok(uav_desc.ViewDimension == D3D11_UAV_DIMENSION_BUFFER, "Got unexpected view dimension %#x.\n",
             uav_desc.ViewDimension);
-    ok(!U(uav_desc).Buffer.FirstElement, "Got unexpected first element %u.\n", U(uav_desc).Buffer.FirstElement);
-    ok(U(uav_desc).Buffer.NumElements == 256, "Got unexpected num elements %u.\n", U(uav_desc).Buffer.NumElements);
-    ok(!U(uav_desc).Buffer.Flags, "Got unexpected flags %u.\n", U(uav_desc).Buffer.Flags);
+    ok(!uav_desc.Buffer.FirstElement, "Got unexpected first element %u.\n", uav_desc.Buffer.FirstElement);
+    ok(uav_desc.Buffer.NumElements == 256, "Got unexpected num elements %u.\n", uav_desc.Buffer.NumElements);
+    ok(!uav_desc.Buffer.Flags, "Got unexpected flags %u.\n", uav_desc.Buffer.Flags);
 
     ID3D11UnorderedAccessView_Release(uav);
     ID3D11Buffer_Release(buffer);
@@ -19924,9 +20067,9 @@ static void test_create_unordered_access_view(void)
 
     uav_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 64;
-    U(uav_desc).Buffer.Flags = 0;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 64;
+    uav_desc.Buffer.Flags = 0;
 
     uav = (void *)0xdeadbeef;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav);
@@ -20829,7 +20972,7 @@ static void test_index_buffer_offset(void)
     for (i = 0; i < ARRAY_SIZE(expected_data); ++i)
     {
         data = get_readback_vec4(&rb, i, 0);
-        todo_wine_if(i >= 8 && i != 20 && i != 21)
+        todo_wine_if (!damavand && i >= 8 && i != 20 && i != 21)
         ok(compare_vec4(data, &expected_data[i], 0)
                 || broken(is_nvidia_device(device) && !(i % 2) && compare_vec4(data, &broken_result, 0)),
                 "Got unexpected result {%.8e, %.8e, %.8e, %.8e} at %u.\n",
@@ -21384,7 +21527,7 @@ static void test_fl9_draw(const D3D_FEATURE_LEVEL feature_level)
     ID3D11PixelShader_Release(ps);
 
     draw_color_quad(&test_context, &color);
-    todo_wine check_texture_color(test_context.backbuffer, 0xff004c33, 1);
+    todo_wine_if (!damavand) check_texture_color(test_context.backbuffer, 0xff004c33, 1);
 
     hr = ID3D11Device_CreatePixelShader(device, ps_texture_code, sizeof(ps_texture_code), NULL, &ps);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
@@ -21854,7 +21997,7 @@ static void test_unbind_shader_resource_view(void)
     ID3D11DeviceContext_PSSetShaderResources(context, 1, 1, &srv2);
     ID3D11DeviceContext_ClearRenderTargetView(context, test_context.backbuffer_rtv, white);
     draw_quad(&test_context);
-    todo_wine check_texture_color(test_context.backbuffer, 0x00000000, 1);
+    check_texture_color(test_context.backbuffer, 0x00000000, 1);
 
     ID3D11PixelShader_Release(ps);
     ID3D11ShaderResourceView_Release(srv);
@@ -22216,7 +22359,7 @@ static void test_uav_load(void)
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-    U(rtv_desc).Texture2D.MipSlice = 0;
+    rtv_desc.Texture2D.MipSlice = 0;
 
     rtv_desc.Format = DXGI_FORMAT_R32_FLOAT;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)rt_texture, &rtv_desc, &rtv_float);
@@ -22527,7 +22670,7 @@ static void test_cs_uav_store(void)
 
     uav_desc.Format = texture_desc.Format;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-    U(uav_desc).Texture2D.MipSlice = 0;
+    uav_desc.Texture2D.MipSlice = 0;
 
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)texture, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
@@ -22742,9 +22885,9 @@ static void test_uav_store_immediate_constant(void)
 
     uav_desc.Format = DXGI_FORMAT_R32_SINT;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 1;
-    U(uav_desc).Buffer.Flags = 0;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 1;
+    uav_desc.Buffer.Flags = 0;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     hr = ID3D11Device_CreateComputeShader(device, cs_store_int_code, sizeof(cs_store_int_code), NULL, &cs);
@@ -22945,7 +23088,7 @@ static void test_ps_cs_uav_binding(void)
 
     uav_desc.Format = texture_desc.Format;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-    U(uav_desc).Texture2D.MipSlice = 0;
+    uav_desc.Texture2D.MipSlice = 0;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)cs_texture, &uav_desc, &cs_uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)ps_texture, &uav_desc, &ps_uav);
@@ -23165,9 +23308,9 @@ static void test_atomic_instructions(void)
 
     uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = buffer_desc.ByteWidth / sizeof(*tests->input);
-    U(uav_desc).Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = buffer_desc.ByteWidth / sizeof(*tests->input);
+    uav_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)in_buffer, &uav_desc, &in_uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)out_buffer, &uav_desc, &out_uav);
@@ -23203,7 +23346,7 @@ static void test_atomic_instructions(void)
             unsigned int value = get_readback_color(&rb, j, 0, 0);
             unsigned int expected = test->expected_result[j];
 
-            todo_wine_if(expected != test->input[j]
+            todo_wine_if (!damavand && expected != test->input[j]
                     && (!strcmp(instructions[j], "atomic_imax")
                     || !strcmp(instructions[j], "atomic_imin")))
             ok(value == expected, "Test %u: Got %#x (%d), expected %#x (%d) for '%s' "
@@ -23231,7 +23374,7 @@ static void test_atomic_instructions(void)
             unsigned int value = get_readback_color(&rb, j, 0, 0);
             unsigned int expected = test->expected_result[j];
 
-            todo_wine_if(expected != test->input[j] && todo_instruction)
+            todo_wine_if (!damavand && expected != test->input[j] && todo_instruction)
             ok(value == expected, "Test %u: Got %#x (%d), expected %#x (%d) for '%s' "
                     "with inputs (%u, %u), (%d), %#x (%d).\n",
                     i, value, value, expected, expected, imm_instructions[j],
@@ -24130,11 +24273,11 @@ static void test_sm5_bufinfo_instruction(void)
         {
             uav_desc.Format = test->view_format;
             uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-            U(uav_desc).Buffer.FirstElement = test->view_element_idx;
-            U(uav_desc).Buffer.NumElements = test->view_element_count;
-            U(uav_desc).Buffer.Flags = 0;
+            uav_desc.Buffer.FirstElement = test->view_element_idx;
+            uav_desc.Buffer.NumElements = test->view_element_count;
+            uav_desc.Buffer.Flags = 0;
             if (buffer_desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS)
-                U(uav_desc).Buffer.Flags |= D3D11_BUFFER_UAV_FLAG_RAW;
+                uav_desc.Buffer.Flags |= D3D11_BUFFER_UAV_FLAG_RAW;
             hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav);
             ok(hr == S_OK, "Test %u: Got unexpected hr %#lx.\n", i, hr);
             srv = NULL;
@@ -24146,11 +24289,11 @@ static void test_sm5_bufinfo_instruction(void)
         {
             srv_desc.Format = test->view_format;
             srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
-            U(srv_desc).BufferEx.FirstElement = test->view_element_idx;
-            U(srv_desc).BufferEx.NumElements = test->view_element_count;
-            U(srv_desc).BufferEx.Flags = 0;
+            srv_desc.BufferEx.FirstElement = test->view_element_idx;
+            srv_desc.BufferEx.NumElements = test->view_element_count;
+            srv_desc.BufferEx.Flags = 0;
             if (buffer_desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS)
-                U(srv_desc).BufferEx.Flags |= D3D11_BUFFEREX_SRV_FLAG_RAW;
+                srv_desc.BufferEx.Flags |= D3D11_BUFFEREX_SRV_FLAG_RAW;
             hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)buffer, &srv_desc, &srv);
             ok(hr == S_OK, "Test %u: Got unexpected hr %#lx.\n", i, hr);
             uav = NULL;
@@ -24622,8 +24765,8 @@ static void test_buffer_srv(void)
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     srv_desc.Format = DXGI_FORMAT_R8_UNORM;
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-    U(srv_desc).Buffer.FirstElement = 0;
-    U(srv_desc).Buffer.NumElements = 0;
+    srv_desc.Buffer.FirstElement = 0;
+    srv_desc.Buffer.NumElements = 0;
     hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)buffer, &srv_desc, &srv);
     ok(hr == E_INVALIDARG, "Got unexpected hr %#lx.\n", hr);
     ID3D11Buffer_Release(buffer);
@@ -24683,7 +24826,7 @@ static void test_buffer_srv(void)
                 resource_data.SysMemSlicePitch = 0;
                 if (current_buffer->data_offset)
                 {
-                    data = heap_alloc_zero(current_buffer->byte_count);
+                    data = calloc(1, current_buffer->byte_count);
                     ok(!!data, "Failed to allocate memory.\n");
                     memcpy(data + current_buffer->data_offset, current_buffer->data,
                             current_buffer->byte_count - current_buffer->data_offset);
@@ -24695,7 +24838,7 @@ static void test_buffer_srv(void)
                 }
                 hr = ID3D11Device_CreateBuffer(device, &buffer_desc, &resource_data, &buffer);
                 ok(hr == S_OK, "Test %u: Got unexpected hr %#lx.\n", i, hr);
-                heap_free(data);
+                free(data);
             }
             else
             {
@@ -24709,8 +24852,8 @@ static void test_buffer_srv(void)
         {
             srv_desc.Format = test->srv_format;
             srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-            U(srv_desc).Buffer.FirstElement = test->srv_first_element;
-            U(srv_desc).Buffer.NumElements = test->srv_element_count;
+            srv_desc.Buffer.FirstElement = test->srv_first_element;
+            srv_desc.Buffer.NumElements = test->srv_element_count;
             hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)buffer, &srv_desc, &srv);
             ok(hr == S_OK, "Test %u: Got unexpected hr %#lx.\n", i, hr);
         }
@@ -24875,9 +25018,9 @@ static void test_unaligned_raw_buffer_access(const D3D_FEATURE_LEVEL feature_lev
 
     srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
-    U(srv_desc).BufferEx.FirstElement = 0;
-    U(srv_desc).BufferEx.NumElements = buffer_desc.ByteWidth / sizeof(unsigned int);
-    U(srv_desc).BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
+    srv_desc.BufferEx.FirstElement = 0;
+    srv_desc.BufferEx.NumElements = buffer_desc.ByteWidth / sizeof(unsigned int);
+    srv_desc.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
     hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)raw_buffer, &srv_desc, &srv);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
@@ -24936,9 +25079,9 @@ static void test_unaligned_raw_buffer_access(const D3D_FEATURE_LEVEL feature_lev
 
     uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = buffer_desc.ByteWidth / sizeof(unsigned int);
-    U(uav_desc).Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = buffer_desc.ByteWidth / sizeof(unsigned int);
+    uav_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)raw_buffer, &uav_desc, &uav);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
@@ -25144,9 +25287,9 @@ static void test_uav_counters(void)
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     uav_desc.Format = DXGI_FORMAT_UNKNOWN;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = buffer_desc.ByteWidth / sizeof(unsigned int);
-    U(uav_desc).Buffer.Flags = D3D11_BUFFER_UAV_FLAG_COUNTER;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = buffer_desc.ByteWidth / sizeof(unsigned int);
+    uav_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_COUNTER;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     hr = ID3D11Device_CreateBuffer(device, &buffer_desc, NULL, &buffer2);
@@ -25369,9 +25512,9 @@ static void test_dispatch_indirect(void)
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     uav_desc.Format = DXGI_FORMAT_UNKNOWN;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 5;
-    U(uav_desc).Buffer.Flags = D3D11_BUFFER_UAV_FLAG_APPEND;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 5;
+    uav_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_APPEND;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)append_buffer, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -25759,9 +25902,9 @@ static void test_tgsm(void)
 
     uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = buffer_desc.ByteWidth / sizeof(unsigned int);
-    U(uav_desc).Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = buffer_desc.ByteWidth / sizeof(unsigned int);
+    uav_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -25824,7 +25967,7 @@ static void test_tgsm(void)
     ID3D11UnorderedAccessView_Release(uav2);
 
     buffer_desc.MiscFlags = 0;
-    U(uav_desc).Buffer.Flags = 0;
+    uav_desc.Buffer.Flags = 0;
     hr = ID3D11Device_CreateBuffer(device, &buffer_desc, NULL, &buffer);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     uav_desc.Format = DXGI_FORMAT_R32_FLOAT;
@@ -27617,9 +27760,10 @@ static void test_stream_output_components(void)
         for (j = 0; j < tests[i].expected_data_size; ++j)
         {
             float expected_value = tests[i].expected_data[j];
-            ok(compare_float(result[j], expected_value, 2),
-                    "Test %u: Got %.8e, expected %.8e at %u.\n",
-                    i, result[j], expected_value, j);
+            todo_wine_if (damavand && !compare_float(result[j], expected_value, 2))
+                ok(compare_float(result[j], expected_value, 2),
+                        "Test %u: Got %.8e, expected %.8e at %u.\n",
+                        i, result[j], expected_value, j);
         }
         release_resource_readback(&rb);
     }
@@ -27801,6 +27945,7 @@ static void test_stream_output_vs(void)
         for (j = 0; j < tests[i].expected_data_size; ++j)
         {
             float expected_value = tests[i].expected_data[j];
+            todo_wine_if (damavand && !i && (j % 9) < 2 && j >= 9)
             ok(compare_float(result[j], expected_value, 2),
                     "Test %u: Got %.8e, expected %.8e at %u.\n",
                     i, result[j], expected_value, j);
@@ -28295,8 +28440,8 @@ static void test_gather_c(void)
 
     srv_desc.Format = DXGI_FORMAT_R32_FLOAT;
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    U(srv_desc).Texture2D.MostDetailedMip = 0;
-    U(srv_desc).Texture2D.MipLevels = 1;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+    srv_desc.Texture2D.MipLevels = 1;
     hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, &srv_desc, &srv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ID3D11DeviceContext_PSSetShaderResources(context, 0, 1, &srv);
@@ -28450,11 +28595,13 @@ static void test_depth_bias(void)
     rasterizer_desc.SlopeScaledDepthBias = 0.0f;
     rasterizer_desc.DepthClipEnable = TRUE;
 
-    depth_values = heap_calloc(swapchain_desc.height, sizeof(*depth_values));
+    depth_values = calloc(swapchain_desc.height, sizeof(*depth_values));
     ok(!!depth_values, "Failed to allocate memory.\n");
 
     for (format_idx = 0; format_idx < ARRAY_SIZE(formats); ++format_idx)
     {
+        winetest_push_context("Format %#x", formats[format_idx]);
+
         format = formats[format_idx];
 
         ID3D11Texture2D_GetDesc(test_context.backbuffer, &texture_desc);
@@ -28503,6 +28650,8 @@ static void test_depth_bias(void)
 
                 for (k = 0; k < ARRAY_SIZE(bias_clamp_tests); ++k)
                 {
+                    winetest_push_context("z %f, bias %d, clamp %f", quads[i].z, bias_tests[j], bias_clamp_tests[k]);
+
                     rasterizer_desc.DepthBiasClamp = bias_clamp_tests[k];
                     hr = ID3D11Device_CreateRasterizerState(device, &rasterizer_desc, &rs);
                     ok(hr == S_OK, "Format %#x, quad %u, bias %u, clamp %u: Got unexpected hr %#lx.\n",
@@ -28525,7 +28674,8 @@ static void test_depth_bias(void)
                             depth = min(max(0.0f, quads[i].z + bias), 1.0f);
 
                             get_texture_readback(texture, 0, &rb);
-                            check_readback_data_u24(&rb, NULL, shift, depth * 16777215.0f + 0.5f, 1);
+                            todo_wine_if (damavand)
+                                check_readback_data_u24(&rb, NULL, shift, depth * 16777215.0f + 0.5f, 1);
                             release_resource_readback(&rb);
                             break;
                         case DXGI_FORMAT_D16_UNORM:
@@ -28541,6 +28691,8 @@ static void test_depth_bias(void)
                             break;
                     }
                     ID3D11RasterizerState_Release(rs);
+
+                    winetest_pop_context();
                 }
             }
         }
@@ -28549,6 +28701,8 @@ static void test_depth_bias(void)
         rasterizer_desc.DepthBias = 0;
         for (i = 0; i < ARRAY_SIZE(quad_slopes); ++i)
         {
+            winetest_push_context("slope %f", quad_slopes[i]);
+
             for (j = 0; j < ARRAY_SIZE(vertices); ++j)
                 vertices[j].z = j == 1 || j == 3 ? 0.0f : quad_slopes[i];
             ID3D11DeviceContext_UpdateSubresource(context, (ID3D11Resource *)test_context.vb,
@@ -28587,6 +28741,9 @@ static void test_depth_bias(void)
                 for (k = 0; k < ARRAY_SIZE(bias_clamp_tests); ++k)
                 {
                     BOOL all_match = TRUE;
+
+                    winetest_push_context("scale %f, clamp %f", slope_scaled_bias_tests[j], bias_clamp_tests[k]);
+
                     rasterizer_desc.DepthBiasClamp = bias_clamp_tests[k];
                     hr = ID3D11Device_CreateRasterizerState(device, &rasterizer_desc, &rs);
                     ok(hr == S_OK, "Format %#x, slope %u, bias %u, clamp %u: Got unexpected hr %#lx.\n",
@@ -28614,10 +28771,10 @@ static void test_depth_bias(void)
                                 u32_value = *u32 >> shift;
                                 expected_value = depth * 16777215.0f + 0.5f;
                                 all_match = compare_uint(u32_value, expected_value, 3);
-                                ok(all_match,
-                                        "Got value %#x (%.8e), expected %#x (%.8e).\n",
-                                        u32_value, u32_value / 16777215.0f,
-                                        expected_value, expected_value / 16777215.0f);
+                                todo_wine_if (damavand && expected_value != 0.0f)
+                                    ok(all_match, "Got value %#x (%.8e), expected %#x (%.8e).\n",
+                                            u32_value, u32_value / 16777215.0f,
+                                            expected_value, expected_value / 16777215.0f);
                                 break;
                             case DXGI_FORMAT_D16_UNORM:
                                 u16 = get_readback_data(&rb, 0, y, 0, sizeof(*u16));
@@ -28633,15 +28790,21 @@ static void test_depth_bias(void)
                     }
                     release_resource_readback(&rb);
                     ID3D11RasterizerState_Release(rs);
+
+                    winetest_pop_context();
                 }
             }
+
+            winetest_pop_context();
         }
 
         ID3D11Texture2D_Release(texture);
         ID3D11DepthStencilView_Release(dsv);
+
+        winetest_pop_context();
     }
 
-    heap_free(depth_values);
+    free(depth_values);
     release_test_context(&test_context);
 }
 
@@ -30402,7 +30565,7 @@ static void test_generate_mips(void)
     device = test_context.device;
     context = test_context.immediate_context;
 
-    data = heap_alloc(sizeof(*data) * 32 * 32 * 32);
+    data = malloc(sizeof(*data) * 32 * 32 * 32);
 
     for (z = 0; z < 32; ++z)
     {
@@ -30429,7 +30592,7 @@ static void test_generate_mips(void)
         }
     }
 
-    zero_data = heap_alloc_zero(sizeof(*zero_data) * 16 * 16 * 16);
+    zero_data = calloc(16 * 16 * 16, sizeof(*zero_data));
 
     for (i = 0; i < ARRAY_SIZE(resource_types); ++i)
     {
@@ -30606,8 +30769,9 @@ static void test_generate_mips(void)
 
     get_resource_readback(resource, 1, &rb);
     color = get_readback_color(&rb, 8, 8, 0);
-    ok(compare_color(color, 0x7fbcbcbc, 1) || broken(compare_color(color, 0x7f7f7f7f, 1)), /* AMD */
-            "Got unexpected colour %08lx.\n", color);
+    todo_wine_if (damavand)
+        ok(compare_color(color, 0x7fbcbcbc, 1) || broken(compare_color(color, 0x7f7f7f7f, 1)), /* AMD */
+                "Got unexpected colour %08lx.\n", color);
     release_resource_readback(&rb);
 
     ID3D11ShaderResourceView_Release(srv);
@@ -30630,8 +30794,8 @@ static void test_generate_mips(void)
 
     ID3D11Resource_Release(resource);
 
-    heap_free(zero_data);
-    heap_free(data);
+    free(zero_data);
+    free(data);
 
     release_test_context(&test_context);
 }
@@ -30756,10 +30920,10 @@ static void test_alpha_to_coverage(void)
         SetRect(&rect, 0, 0, 200, 200);
         check_readback_data_color(&rb, &rect, expected_color, 1);
         SetRect(&rect, 200, 0, 640, 200);
-        todo_wine
+        todo_wine_if (!damavand)
         check_readback_data_color(&rb, &rect, 0xffffffff, 1);
         SetRect(&rect, 0, 200, 640, 480);
-        todo_wine
+        todo_wine_if (!damavand)
         check_readback_data_color(&rb, &rect, 0xffffffff, 1);
         release_resource_readback(&rb);
 
@@ -30783,11 +30947,11 @@ static void test_alpha_to_coverage(void)
     SetRect(&rect, 0, 0, 200, 200);
     check_readback_data_color(&rb, &rect, 0xffff0000, 1);
     SetRect(&rect, 200, 0, 640, 200);
-    todo_wine
-    check_readback_data_color(&rb, &rect, 0xffffffff, 1);
+    todo_wine_if (!damavand)
+        check_readback_data_color(&rb, &rect, 0xffffffff, 1);
     SetRect(&rect, 0, 200, 640, 480);
-    todo_wine
-    check_readback_data_color(&rb, &rect, 0xffffffff, 1);
+    todo_wine_if (!damavand)
+        check_readback_data_color(&rb, &rect, 0xffffffff, 1);
     release_resource_readback(&rb);
 
     ID3D11Texture2D_Release(render_targets[0]);
@@ -31389,7 +31553,7 @@ static void test_multisample_resolve(void)
 
         /* Found broken on AMD Radeon HD 6310 */
         if (!broken(is_amd_device(device) && tests[i].format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB))
-            todo_wine_if(tests[i].todo) check_texture_color(texture, tests[i].expected_color, 2);
+            todo_wine_if(tests[i].todo && !damavand) check_texture_color(texture, tests[i].expected_color, 2);
 
         ID3D11RenderTargetView_Release(rtv);
         ID3D11Texture2D_Release(ms_texture);
@@ -31692,7 +31856,7 @@ static void test_sample_shading(void)
         0x001020f2, 0x00000000, 0x00100e46, 0x00000000, 0x00107e46, 0x00000000, 0x0020800a, 0x00000000,
         0x00000000, 0x0100003e,
     };
-    static const struct
+    const struct
     {
         const struct shader *ps;
         BOOL sample_shading;
@@ -31705,7 +31869,7 @@ static void test_sample_shading(void)
         {&ps_sample_index, TRUE},
         {&ps_samplepos, FALSE},
         {&ps_samplepos_rasterizer, FALSE},
-        {&ps_samplepos_indexed, TRUE, TRUE},
+        {&ps_samplepos_indexed, TRUE, !damavand},
         {&ps_sampleinfo, FALSE},
         {&ps_sampleinfo_rasterizer, FALSE},
         {&ps_sample, TRUE, TRUE, TRUE /* broken on Intel */},
@@ -31745,9 +31909,9 @@ static void test_sample_shading(void)
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 256;
-    U(uav_desc).Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 256;
+    uav_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -32218,9 +32382,9 @@ static void test_standard_pattern(void)
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    U(uav_desc).Buffer.FirstElement = 0;
-    U(uav_desc).Buffer.NumElements = 256;
-    U(uav_desc).Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+    uav_desc.Buffer.FirstElement = 0;
+    uav_desc.Buffer.NumElements = 256;
+    uav_desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
     hr = ID3D11Device_CreateUnorderedAccessView(device, (ID3D11Resource *)buffer, &uav_desc, &uav);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -32239,8 +32403,10 @@ static void test_standard_pattern(void)
     for (i = 0; i < ARRAY_SIZE(standard_pos4); ++i)
     {
         float data = get_readback_float(&rb, i, 0);
-        /* Wine does not support GetSamplePosition. */
-        todo_wine ok(data == standard_pos4[i], "Got sample position %.8e, expected %.8e.\n", data, standard_pos4[i]);
+
+        /* The GL renderer does not support GetSamplePosition. */
+        todo_wine_if (!damavand)
+            ok(data == standard_pos4[i], "Got sample position %.8e, expected %.8e.\n", data, standard_pos4[i]);
     }
     release_resource_readback(&rb);
 
@@ -32482,11 +32648,11 @@ static void test_sample_attached_rtv(void)
     memset(&rtv_desc, 0, sizeof(rtv_desc));
     rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-    U(rtv_desc).Texture2D.MipSlice = 0;
+    rtv_desc.Texture2D.MipSlice = 0;
 
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture2, &rtv_desc, &rtv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
-    U(rtv_desc).Texture2D.MipSlice = 1;
+    rtv_desc.Texture2D.MipSlice = 1;
     hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture2, &rtv_desc, &rtv2);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -32498,7 +32664,7 @@ static void test_sample_attached_rtv(void)
     memset(&srv_desc, 0, sizeof(srv_desc));
     srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    U(srv_desc).Texture2D.MipLevels = 1;
+    srv_desc.Texture2D.MipLevels = 1;
 
     hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, &srv_desc, &srv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
@@ -32540,8 +32706,8 @@ static void test_sample_attached_rtv(void)
     hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture2, &srv_desc, &srv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
-    U(srv_desc).Texture2D.MostDetailedMip = 1;
-    U(srv_desc).Texture2D.MipLevels = 1;
+    srv_desc.Texture2D.MostDetailedMip = 1;
+    srv_desc.Texture2D.MipLevels = 1;
     hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture2, &srv_desc, &srv2);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -32644,7 +32810,7 @@ static void test_sample_attached_rtv(void)
 
     memset(&srvds_desc, 0, sizeof(srvds_desc));
     srvds_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    U(srvds_desc).Texture2D.MipLevels = 1;
+    srvds_desc.Texture2D.MipLevels = 1;
 
     for (i = 0; i < ARRAY_SIZE(ds_tests); ++i)
     {
@@ -33956,7 +34122,7 @@ static void test_texture_compressed_3d(void)
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
     /* Simply test all combinations of r0 and r1. */
-    texture_data = heap_alloc(256 * 256 * sizeof(UINT64));
+    texture_data = malloc(256 * 256 * sizeof(UINT64));
     for (r1 = 0; r1 < 256; ++r1)
     {
         for (r0 = 0; r0 < 256; ++r0)
@@ -33981,7 +34147,7 @@ static void test_texture_compressed_3d(void)
     texture_desc.MiscFlags = 0;
     hr = ID3D11Device_CreateTexture3D(device, &texture_desc, &resource_data, &texture);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
-    heap_free(texture_data);
+    free(texture_data);
 
     hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, NULL, &srv);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
@@ -34680,8 +34846,9 @@ static void test_rtv_depth_slice(void)
         unsigned int x = 320, y = 60 + i * 480 / 4;
 
         colour = get_readback_color(&rb, x, y, 0);
-        todo_wine ok(colour == colours[i].output, "Got unexpected colour 0x%08x at (%u, %u), expected 0x%08x.\n",
-                colour, x, y, colours[i].output);
+        todo_wine_if (!damavand)
+            ok(colour == colours[i].output, "Got unexpected colour 0x%08x at (%u, %u), expected 0x%08x.\n",
+                    colour, x, y, colours[i].output);
     }
     release_resource_readback(&rb);
 
@@ -34800,7 +34967,7 @@ static void test_vertex_formats(void)
         {DXGI_FORMAT_R8_SNORM,              { 2.59842515e-01,  0.0,             0.0,             1.0}},
 
         {DXGI_FORMAT_B8G8R8A8_UNORM,        { 3.96078438e-01,  2.62745112e-01,  1.29411772e-01,  5.29411793e-01}},
-        {DXGI_FORMAT_B8G8R8X8_UNORM,        { 3.96078438e-01,  2.62745112e-01,  1.29411772e-01,  1.0}},
+        {DXGI_FORMAT_B8G8R8X8_UNORM,        { 3.96078438e-01,  2.62745112e-01,  1.29411772e-01}},
     };
 
     if (!init_test_context(&test_context, NULL))
@@ -34844,9 +35011,12 @@ static void test_vertex_formats(void)
         };
 
         static const unsigned int stride = sizeof(*quad);
+        const struct vec4 *expect = &tests[i].expect;
         static const unsigned int offset = 0;
         ID3D11InputLayout *input_layout;
+        struct resource_readback rb;
         unsigned int format_support;
+        struct vec4 value;
 
         hr = ID3D11Device_CheckFormatSupport(device, tests[i].format, &format_support);
         ok(hr == S_OK || hr == E_FAIL, "Got hr %#lx.\n", hr);
@@ -34869,7 +35039,15 @@ static void test_vertex_formats(void)
         ID3D11DeviceContext_PSSetShader(context, test_context.ps, NULL, 0);
         ID3D11DeviceContext_Draw(context, 4, 0);
 
-        check_texture_vec4(rt, &tests[i].expect, 1);
+        get_texture_readback(rt, 0, &rb);
+        value = *get_readback_vec4(&rb, 0, 0);
+        /* AMD supports B8G8R8X8_UNORM but puts garbage in the w component. */
+        if (tests[i].format == DXGI_FORMAT_B8G8R8X8_UNORM)
+            value.w = 0.0f;
+        ok(compare_vec4(&value, expect, 1),
+                    "Got {%.8e, %.8e, %.8e, %.8e}, expected {%.8e, %.8e, %.8e, %.8e}.\n",
+                    value.x, value.y, value.z, value.w, expect->x, expect->y, expect->z, expect->w);
+        release_resource_readback(&rb);
 
         ID3D11InputLayout_Release(input_layout);
 
@@ -34881,10 +35059,2214 @@ static void test_vertex_formats(void)
     release_test_context(&test_context);
 }
 
+static BOOL is_kmt_handle(HANDLE h)
+{
+    return (ULONG_PTR)h & 0xc0000000;
+}
+
+static void test_shared_resource(D3D_FEATURE_LEVEL feature_level)
+{
+    static const UINT tests[] =
+    {
+        0,
+        D3D11_RESOURCE_MISC_SHARED,
+        D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
+        D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
+        D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX,
+        D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
+        D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED,
+        D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
+    };
+    static const unsigned int sharing_type_flags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    struct device_desc device_desc = { 0 };
+    IDXGIKeyedMutex *keyed_mutex;
+    ID3D11Texture2D *tex, *tex2;
+    D3D11_TEXTURE2D_DESC desc;
+    ID3D11Device1 *device1;
+    ID3D11Device *device;
+    IDXGIResource1 *res1;
+    IDXGIResource *res;
+    unsigned int test;
+    BOOL flags_valid;
+    HANDLE handle;
+    BOOL nthandle;
+    HANDLE h, h2;
+    HRESULT hr;
+    ULONG ref;
+    BOOL bret;
+
+    device_desc.feature_level = &feature_level;
+    if (!(device = create_device(&device_desc)))
+    {
+        skip("Failed to create device, feature level %#x.\n", feature_level);
+        return;
+    }
+    device1 = NULL;
+    hr = ID3D11Device_QueryInterface(device, &IID_ID3D11Device1, (void **)&device1);
+    ok(hr == S_OK || broken(hr == E_NOINTERFACE), "got %#lx.\n", hr);
+    if (hr != S_OK)
+    {
+        win_skip("ID3D11Device1 is not supported, skipping tests.\n");
+        ID3D11Device_Release(device);
+        return;
+    }
+
+    memset(&desc, 0, sizeof(desc));
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Width = 256;
+    desc.Height = 256;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.SampleDesc.Count = 1;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    for (test = 0; test < ARRAY_SIZE(tests); ++test)
+    {
+        handle = NULL;
+        tex = NULL;
+        res = NULL;
+        res1 = NULL;
+        keyed_mutex = NULL;
+
+        desc.MiscFlags = tests[test];
+        nthandle = desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+        winetest_push_context("MiscFlags %#x, nthandle %d", tests[test], nthandle);
+
+        if (!desc.MiscFlags)
+            flags_valid = TRUE;
+        else if (feature_level < D3D_FEATURE_LEVEL_10_0)
+            flags_valid = FALSE;
+        else
+            flags_valid = (desc.MiscFlags & sharing_type_flags) == D3D11_RESOURCE_MISC_SHARED
+                    || (desc.MiscFlags & sharing_type_flags) == D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+
+        hr = ID3D11Device_CreateTexture2D(device, &desc, NULL, &tex);
+        if (flags_valid)
+            ok(hr == S_OK
+                    || broken(desc.MiscFlags == (D3D11_RESOURCE_MISC_SHARED
+                    | D3D11_RESOURCE_MISC_SHARED_NTHANDLE) && hr == E_INVALIDARG) /* software device before Win10 */
+                    || broken(hr == E_OUTOFMEMORY) /* software device before Win8 */,
+                    "got %#lx.\n", hr);
+        else
+            todo_wine ok(hr == E_INVALIDARG, "got %#lx.\n", hr);
+        if (FAILED(hr))
+            goto test_done;
+
+        keyed_mutex = NULL;
+        hr = ID3D11Texture2D_QueryInterface(tex, &IID_IDXGIKeyedMutex, (void **)&keyed_mutex);
+        if (desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)
+            todo_wine ok(hr == S_OK, "got %#lx.\n", hr);
+        else
+            ok(hr == E_NOINTERFACE, "got %#lx.\n", hr);
+
+        hr = ID3D11Texture2D_QueryInterface(tex, &IID_IDXGIResource, (void **)&res);
+        ok(hr == S_OK, "got %#lx.\n", hr);
+        hr = ID3D11Texture2D_QueryInterface(tex, &IID_IDXGIResource1, (void **)&res1);
+        todo_wine ok(hr == S_OK, "got %#lx.\n", hr);
+        if (FAILED(hr))
+            goto test_done;
+
+        h = (HANDLE)0xdeadbeef;
+        hr = IDXGIResource_GetSharedHandle(res, &h);
+        if (nthandle)
+        {
+            ok(hr == E_INVALIDARG, "got %#lx.\n", hr);
+            ok(h == (HANDLE)0xdeadbeef, "got %p.\n", h);
+        }
+        else if (desc.MiscFlags)
+        {
+            ok(hr == S_OK, "got %#lx.\n", hr);
+            ok(is_kmt_handle(h), "wrong handle %p.\n", h);
+            handle = h;
+        }
+        else
+        {
+            ok(hr == S_OK, "got %#lx.\n", hr);
+            ok(!h, "got %p.\n", h);
+        }
+
+        h = (HANDLE)0xdeadbeef;
+        hr = IDXGIResource1_CreateSharedHandle(res1, NULL, GENERIC_ALL | DXGI_SHARED_RESOURCE_READ
+                | DXGI_SHARED_RESOURCE_WRITE, NULL, &h);
+        if (nthandle)
+        {
+            ok(hr == S_OK, "got %#lx.\n", hr);
+            handle = h;
+        }
+        else
+        {
+            ok(hr == E_INVALIDARG || broken(hr == E_NOTIMPL) /* Win7 software device */, "got %#lx.\n", hr);
+            ok(!h || broken(h == (HANDLE)0xdeadbeef) /* Win7 software device */, "got %p.\n", h);
+        }
+
+        if (!desc.MiscFlags)
+            goto test_done;
+
+        bret = DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &h2, 0, FALSE, DUPLICATE_SAME_ACCESS);
+        if (nthandle)
+        {
+            char buffer[1024];
+            OBJECT_TYPE_INFORMATION *type = (OBJECT_TYPE_INFORMATION *)buffer;
+            NTSTATUS status;
+            ULONG len = 0;
+
+            ok(bret, "failed, err %lu.\n", GetLastError());
+            CloseHandle(h2);
+            status = NtQueryObject(h, ObjectTypeInformation, buffer, sizeof(buffer), &len);
+            ok(!status, "got %#lx.\n", status);
+            ok(!wcscmp(type->TypeName.Buffer, L"DxgkSharedResource"), "got %s.\n", debugstr_w(type->TypeName.Buffer));
+        }
+        else
+        {
+            ok(!bret && GetLastError() == ERROR_INVALID_HANDLE, "got bret %d, err %lu.\n", bret, GetLastError());
+        }
+
+        hr = ID3D11Device_OpenSharedResource(device, handle, &IID_ID3D11Texture2D, (void **)&tex2);
+        ok(hr == (nthandle ? E_INVALIDARG : S_OK), "got %#lx.\n", hr);
+        if (SUCCEEDED(hr))
+            ID3D11Texture2D_Release(tex2);
+        hr = ID3D11Device1_OpenSharedResource1(device1, handle, &IID_ID3D11Texture2D, (void **)&tex2);
+        ok(hr == (nthandle ? S_OK : E_INVALIDARG), "got %#lx.\n", hr);
+        if (SUCCEEDED(hr))
+            ID3D11Texture2D_Release(tex2);
+        bret = CloseHandle(handle);
+        if (nthandle)
+            ok(bret, "failed, err %lu.\n", GetLastError());
+        else
+            ok(!bret && GetLastError() == ERROR_INVALID_HANDLE, "got bret %d, err %lu.\n", bret, GetLastError());
+
+test_done:
+        if (keyed_mutex)
+            IDXGIKeyedMutex_Release(keyed_mutex);
+        if (res)
+            IDXGIResource_Release(res);
+        if (tex)
+            ID3D11Texture2D_Release(tex);
+        if (res1)
+            IDXGIResource1_Release(res1);
+        winetest_pop_context();
+    }
+
+    if (device1)
+        ID3D11Device1_Release(device1);
+    ref = ID3D11Device_Release(device);
+    ok(!ref, "got %ld.\n", ref);
+}
+
+static void test_keyed_mutex(void)
+{
+    IDXGIKeyedMutex *keyed_mutex, *keyed_mutex2;
+    ID3D11Device *device, *device2;
+    ID3D11Texture2D *tex, *tex2;
+    D3D11_TEXTURE2D_DESC desc;
+    IDXGIObject *obj1, *obj2;
+    IDXGIResource *res;
+    HANDLE handle;
+    HRESULT hr;
+    ULONG ref;
+
+    if (!(device = create_device(NULL)))
+    {
+        skip("Failed to create device.\n");
+        return;
+    }
+
+    memset(&desc, 0, sizeof(desc));
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Width = 256;
+    desc.Height = 256;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.SampleDesc.Count = 1;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    hr = ID3D11Device_CreateTexture2D(device, &desc, NULL, &tex);
+    ok(hr == S_OK || broken(hr == E_OUTOFMEMORY) /* software device before Win8 */, "got %#lx.\n", hr);
+    if (FAILED(hr))
+    {
+        skip("Shared resources are not supported.\n");
+        ID3D11Device_Release(device);
+        return;
+    }
+
+    hr = ID3D11Texture2D_QueryInterface(tex, &IID_IDXGIKeyedMutex, (void **)&keyed_mutex);
+    todo_wine ok(hr == S_OK, "got %#lx.\n", hr);
+    if (FAILED(hr))
+    {
+        ID3D11Texture2D_Release(tex);
+        ID3D11Device_Release(device);
+        return;
+    }
+    hr = IDXGIKeyedMutex_QueryInterface(keyed_mutex, &IID_IDXGIObject, (void **)&obj1);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    hr = ID3D11Texture2D_QueryInterface(tex, &IID_IDXGIResource, (void **)&res);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    hr = IDXGIResource_QueryInterface(res, &IID_IDXGIObject, (void **)&obj2);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+
+    ok(obj1 == obj2, "got %p, %p.\n", obj1, obj2);
+
+    IDXGIObject_Release(obj1);
+    IDXGIObject_Release(obj2);
+    IDXGIResource_Release(res);
+
+    /* Releasing not aquired mutex. */
+    hr = IDXGIKeyedMutex_ReleaseSync(keyed_mutex, 0);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_ReleaseSync(keyed_mutex, 1);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "got %#lx.\n", hr);
+
+    /* Initial key which mutex can be acquired with is 0. */
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex, 1, 0);
+    ok(hr == WAIT_TIMEOUT, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex, 0, 0);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+
+    /* Attempt to acquire a mutex once again on the same device fails. */
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex, 0, 0);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex, 1, 0);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "got %#lx.\n", hr);
+
+    /* May release to any value. */
+    hr = IDXGIKeyedMutex_ReleaseSync(keyed_mutex, 0);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex, 0, 0);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_ReleaseSync(keyed_mutex, 1);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+
+    /* Acquire with the last release value succeeds. */
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex, 0, 0);
+    ok(hr == WAIT_TIMEOUT, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex, 2, 0);
+    ok(hr == WAIT_TIMEOUT, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex, 1, 0);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_ReleaseSync(keyed_mutex, 0);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex, 0, 0);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+
+    device2 = create_device(NULL);
+    ok(!!device2, "got NULL.\n");
+
+    hr = ID3D11Texture2D_QueryInterface(tex, &IID_IDXGIResource, (void **)&res);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    hr = IDXGIResource_GetSharedHandle(res, &handle);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    IDXGIResource_Release(res);
+
+    hr = ID3D11Device_OpenSharedResource(device2, handle, &IID_ID3D11Texture2D, (void **)&tex2);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    hr = ID3D11Texture2D_QueryInterface(tex2, &IID_IDXGIKeyedMutex, (void **)&keyed_mutex2);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex, 0, 0);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "got %#lx.\n", hr);
+    /* Trying to acquire locked mutex on the other device. */
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex2, 0, 0);
+    ok(hr == WAIT_TIMEOUT, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex2, 1, 0);
+    ok(hr == WAIT_TIMEOUT, "got %#lx.\n", hr);
+
+    /* Trying to release locked on the other device. */
+    hr = IDXGIKeyedMutex_ReleaseSync(keyed_mutex2, 0);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_ReleaseSync(keyed_mutex2, 1);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "got %#lx.\n", hr);
+
+    /* Almost supposed usage (but using the same key to release and acquire). */
+    hr = IDXGIKeyedMutex_ReleaseSync(keyed_mutex, 0);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex2, 0, 0);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_ReleaseSync(keyed_mutex2, 0);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex, 0, 0);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+
+    IDXGIKeyedMutex_Release(keyed_mutex);
+    ID3D11Texture2D_Release(tex);
+    ref = ID3D11Device_Release(device);
+    ok(!ref, "got %ld.\n", ref);
+
+    /* Device closed while holding mutex. Now keyed mutex is broken and acquire will only return
+     * WAIT_ABANDONED, as the docs suggest, the only way out is recreating the shared resource. */
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex2, 0, 0);
+    ok(hr == WAIT_ABANDONED, "got %#lx.\n", hr);
+    /* Try twice, just in case. */
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex2, 0, 0);
+    ok(hr == WAIT_ABANDONED, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_ReleaseSync(keyed_mutex2, 0);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_ReleaseSync(keyed_mutex2, 1);
+    ok(hr == DXGI_ERROR_INVALID_CALL, "got %#lx.\n", hr);
+    hr = IDXGIKeyedMutex_AcquireSync(keyed_mutex2, 0, 0);
+    ok(hr == WAIT_ABANDONED, "got %#lx.\n", hr);
+
+    IDXGIKeyedMutex_Release(keyed_mutex2);
+    ID3D11Texture2D_Release(tex2);
+    ref = ID3D11Device_Release(device2);
+    ok(!ref, "got %ld.\n", ref);
+}
+
+static void test_clear_during_render(void)
+{
+    /* Quads only cover left half so we can see both drawn color on the left and clear color on the right. */
+    static const struct vec3 depth_quarter_quad_data[] =
+    {
+        {-1.0f, -1.0f, 0.25f},
+        {-1.0f,  1.0f, 0.25f},
+        { 0.0f, -1.0f, 0.25f},
+        { 0.0f,  1.0f, 0.25f},
+    };
+    static const struct vec3 depth_three_quarter_quad_data[] =
+    {
+        {-1.0f, -1.0f, 0.75f},
+        {-1.0f,  1.0f, 0.75f},
+        { 0.0f, -1.0f, 0.75f},
+        { 0.0f,  1.0f, 0.75f},
+    };
+    static const struct vec4 draw_color_data = {1, 0, 0, 1};
+    static const UINT vertex_stride = sizeof(depth_quarter_quad_data[0]);
+    static const UINT vertex_offset = 0;
+    static const struct vec4 initial_color = {0, 0, 0, 1};
+    static const float clear_color[] = {0, 1, 0, 1};
+    D3D11_VIEWPORT viewport = {0, 0, 0, 0, 0, 1};
+    struct d3d11_test_context test_context;
+    struct resource_readback rb;
+    ID3D11DeviceContext *context;
+    ID3D11Device *device;
+    ID3D11Texture2D *tex, *dstex;
+    ID3D11DepthStencilView *dsv;
+    ID3D11RenderTargetView *rtv;
+    ID3D11DepthStencilState *depth_none, *depth_ge, *depth_write_ge;
+    ID3D11Buffer *depth_quarter_quad, *depth_three_quarter_quad, *draw_color;
+    D3D11_DEPTH_STENCIL_DESC depth_stencil_desc;
+    D3D11_TEXTURE2D_DESC texture_desc;
+    HRESULT hr;
+    DWORD color;
+    float depth;
+
+    if (!init_test_context(&test_context, NULL))
+        return;
+
+    device = test_context.device;
+    context = test_context.immediate_context;
+    depth_quarter_quad = create_buffer(device, D3D11_BIND_VERTEX_BUFFER, sizeof(depth_quarter_quad_data), &depth_quarter_quad_data);
+    depth_three_quarter_quad = create_buffer(device, D3D11_BIND_VERTEX_BUFFER, sizeof(depth_three_quarter_quad_data), &depth_three_quarter_quad_data);
+    draw_color = create_buffer(device, D3D11_BIND_CONSTANT_BUFFER, sizeof(draw_color_data), &draw_color_data);
+
+    memset(&depth_stencil_desc, 0, sizeof(depth_stencil_desc));
+    hr = ID3D11Device_CreateDepthStencilState(device, &depth_stencil_desc, &depth_none);
+    ok(hr == S_OK, "Failed to create depth none dss: %#lx.\n", hr);
+    depth_stencil_desc.DepthEnable = TRUE;
+    depth_stencil_desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+    depth_stencil_desc.DepthFunc = D3D11_COMPARISON_ALWAYS;
+    depth_stencil_desc.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;
+    hr = ID3D11Device_CreateDepthStencilState(device, &depth_stencil_desc, &depth_write_ge);
+    ok(hr == S_OK, "Failed to create depth write ge dss: %#lx.\n", hr);
+    depth_stencil_desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    hr = ID3D11Device_CreateDepthStencilState(device, &depth_stencil_desc, &depth_ge);
+    ok(hr == S_OK, "Failed to create depth ge dss: %#lx.\n", hr);
+
+    memset(&texture_desc, 0, sizeof(texture_desc));
+    texture_desc.Width = 2;
+    texture_desc.Height = 1;
+    texture_desc.MipLevels = 1;
+    texture_desc.ArraySize = 1;
+    texture_desc.SampleDesc.Count = 1;
+    texture_desc.Usage = D3D11_USAGE_DEFAULT;
+    texture_desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    texture_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    hr = ID3D11Device_CreateTexture2D(device, &texture_desc, NULL, &tex);
+    ok(hr == S_OK, "Failed to create color texture: %#lx.\n", hr);
+    texture_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    texture_desc.Format = DXGI_FORMAT_D32_FLOAT;
+    hr = ID3D11Device_CreateTexture2D(device, &texture_desc, NULL, &dstex);
+    ok(hr == S_OK, "Failed to create depth texture: %#lx.\n", hr);
+    hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource*)tex, NULL, &rtv);
+    ok(hr == S_OK, "Failed to create rtv: %#lx.\n", hr);
+    hr = ID3D11Device_CreateDepthStencilView(device, (ID3D11Resource*)dstex, NULL, &dsv);
+    ok(hr == S_OK, "Failed to create dsv: %#lx.\n", hr);
+    viewport.Width = (float)texture_desc.Width;
+    viewport.Height = (float)texture_desc.Height;
+    ID3D11DeviceContext_RSSetViewports(context, 1, &viewport);
+    ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv, dsv);
+
+    /* Draw with succeeding depth compare. */
+    ID3D11DeviceContext_OMSetDepthStencilState(context, depth_none, 0);
+    ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_DEPTH, 0.5f, 0);
+    draw_color_quad(&test_context, &initial_color);
+    ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_DEPTH, 0.0f, 0);
+    ID3D11DeviceContext_OMSetDepthStencilState(context, depth_ge, 0);
+    ID3D11DeviceContext_IASetVertexBuffers(context, 0, 1, &depth_quarter_quad, &vertex_stride, &vertex_offset);
+    ID3D11DeviceContext_PSSetConstantBuffers(context, 0, 1, &draw_color);
+    ID3D11DeviceContext_Draw(context, 4, 0);
+    get_texture_readback(tex, 0, &rb);
+    color = get_readback_color(&rb, 0, 0, 0);
+    ok(color == 0xff0000ff, "Got unexpected color 0x%08lx instead of 0xff0000ff.\n", color);
+    color = get_readback_color(&rb, 1, 0, 0);
+    ok(color == 0xff000000, "Got unexpected color 0x%08lx instead of 0xff000000.\n", color);
+    release_resource_readback(&rb);
+    get_texture_readback(dstex, 0, &rb);
+    depth = get_readback_float(&rb, 0, 0);
+    ok(depth == 0.0f, "Got unexpected depth %.8e instead of 0.0.\n", depth);
+    depth = get_readback_float(&rb, 1, 0);
+    ok(depth == 0.0f, "Got unexpected depth %.8e instead of 0.0.\n", depth);
+    release_resource_readback(&rb);
+
+    /* Draw with failing depth compare. */
+    ID3D11DeviceContext_OMSetDepthStencilState(context, depth_none, 0);
+    ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_DEPTH, 0.5f, 0);
+    draw_color_quad(&test_context, &initial_color);
+    ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
+    ID3D11DeviceContext_OMSetDepthStencilState(context, depth_ge, 0);
+    ID3D11DeviceContext_IASetVertexBuffers(context, 0, 1, &depth_three_quarter_quad, &vertex_stride, &vertex_offset);
+    ID3D11DeviceContext_PSSetConstantBuffers(context, 0, 1, &draw_color);
+    ID3D11DeviceContext_Draw(context, 4, 0);
+    get_texture_readback(tex, 0, &rb);
+    color = get_readback_color(&rb, 0, 0, 0);
+    ok(color == 0xff000000, "Got unexpected color 0x%08lx instead of 0xff000000.\n", color);
+    color = get_readback_color(&rb, 1, 0, 0);
+    ok(color == 0xff000000, "Got unexpected color 0x%08lx instead of 0xff000000.\n", color);
+    release_resource_readback(&rb);
+    get_texture_readback(dstex, 0, &rb);
+    depth = get_readback_float(&rb, 0, 0);
+    ok(depth == 1.0f, "Got unexpected depth %.8e instead of 1.0.\n", depth);
+    depth = get_readback_float(&rb, 1, 0);
+    ok(depth == 1.0f, "Got unexpected depth %.8e instead of 1.0.\n", depth);
+    release_resource_readback(&rb);
+
+    /* Draw with depth write. */
+    ID3D11DeviceContext_OMSetDepthStencilState(context, depth_none, 0);
+    ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_DEPTH, 0.5f, 0);
+    draw_color_quad(&test_context, &initial_color);
+    ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_DEPTH, 0.0f, 0);
+    ID3D11DeviceContext_OMSetDepthStencilState(context, depth_write_ge, 0);
+    ID3D11DeviceContext_IASetVertexBuffers(context, 0, 1, &depth_quarter_quad, &vertex_stride, &vertex_offset);
+    ID3D11DeviceContext_PSSetShader(context, NULL, NULL, 0);
+    ID3D11DeviceContext_Draw(context, 4, 0);
+    get_texture_readback(tex, 0, &rb);
+    color = get_readback_color(&rb, 0, 0, 0);
+    todo_wine_if(!damavand) /* Draw with no PS doesn't write color on D3D11 but does on OpenGL. */
+    ok(color == 0xff000000, "Got unexpected color 0x%08lx instead of 0xff000000.\n", color);
+    color = get_readback_color(&rb, 1, 0, 0);
+    ok(color == 0xff000000, "Got unexpected color 0x%08lx instead of 0xff000000.\n", color);
+    release_resource_readback(&rb);
+    get_texture_readback(dstex, 0, &rb);
+    depth = get_readback_float(&rb, 0, 0);
+    ok(depth == 0.25f, "Got unexpected depth %.8e instead of 0.25.\n", depth);
+    depth = get_readback_float(&rb, 1, 0);
+    ok(depth == 0.0f, "Got unexpected depth %.8e instead of 0.0.\n", depth);
+    release_resource_readback(&rb);
+
+    /* Draw with color write. */
+    ID3D11DeviceContext_OMSetDepthStencilState(context, depth_none, 0);
+    ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_DEPTH, 0.5f, 0);
+    draw_color_quad(&test_context, &initial_color);
+    ID3D11DeviceContext_ClearRenderTargetView(context, rtv, clear_color);
+    ID3D11DeviceContext_IASetVertexBuffers(context, 0, 1, &depth_quarter_quad, &vertex_stride, &vertex_offset);
+    ID3D11DeviceContext_PSSetConstantBuffers(context, 0, 1, &draw_color);
+    ID3D11DeviceContext_Draw(context, 4, 0);
+    get_texture_readback(tex, 0, &rb);
+    color = get_readback_color(&rb, 0, 0, 0);
+    ok(color == 0xff0000ff, "Got unexpected color 0x%08lx instead of 0xff0000ff.\n", color);
+    color = get_readback_color(&rb, 1, 0, 0);
+    ok(color == 0xff00ff00, "Got unexpected color 0x%08lx instead of 0xff00ff00.\n", color);
+    release_resource_readback(&rb);
+
+    ID3D11Buffer_Release(depth_quarter_quad);
+    ID3D11Buffer_Release(depth_three_quarter_quad);
+    ID3D11Buffer_Release(draw_color);
+    ID3D11RenderTargetView_Release(rtv);
+    ID3D11DepthStencilView_Release(dsv);
+    ID3D11Texture2D_Release(tex);
+    ID3D11Texture2D_Release(dstex);
+    ID3D11DepthStencilState_Release(depth_none);
+    ID3D11DepthStencilState_Release(depth_ge);
+    ID3D11DepthStencilState_Release(depth_write_ge);
+    release_test_context(&test_context);
+}
+
+static void test_stencil_export(void)
+{
+    D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc;
+    D3D11_DEPTH_STENCIL_VIEW_DESC dsv_desc;
+    struct d3d11_test_context test_context;
+    D3D11_DEPTH_STENCIL_DESC ds_desc = {0};
+    ID3D11DepthStencilState *ds_state;
+    D3D11_TEXTURE2D_DESC texture_desc;
+    ID3D11PixelShader *ps, *ps_sample;
+    ID3D11ShaderResourceView *srv;
+    ID3D11DeviceContext *context;
+    struct resource_readback rb;
+    ID3D11DepthStencilView *dsv;
+    ID3D11RenderTargetView *rtv;
+    ID3D11Texture2D *rt, *ds;
+    ID3D11Device *device;
+    ID3D11Buffer *cb;
+    HRESULT hr;
+
+    static const DWORD ps_code[] =
+    {
+#if 0
+        uint stencil_ref;
+
+        uint main() : SV_StencilRef
+        {
+            return stencil_ref;
+        }
+#endif
+        0x43425844, 0x3980cb16, 0xbbe87d38, 0xb93f7c61, 0x200c41ed, 0x00000001, 0x000000cc, 0x00000004,
+        0x00000030, 0x00000040, 0x00000078, 0x000000bc, 0x4e475349, 0x00000008, 0x00000000, 0x00000008,
+        0x4e47534f, 0x00000030, 0x00000001, 0x00000008, 0x00000020, 0x00000000, 0x00000000, 0x00000001,
+        0xffffffff, 0x00000e01, 0x535f5653, 0x636e6574, 0x65526c69, 0xabab0066, 0x58454853, 0x0000003c,
+        0x00000050, 0x0000000f, 0x0100086a, 0x04000059, 0x00208e46, 0x00000000, 0x00000001, 0x02000065,
+        0x00029001, 0x05000036, 0x00029001, 0x0020800a, 0x00000000, 0x00000000, 0x0100003e, 0x30494653,
+        0x00000008, 0x00000200, 0x00000000,
+    };
+    static const DWORD ps_sample_code[] =
+    {
+#if 0
+        Texture2D<uint4> tex : register(t0);
+
+        uint4 main(float4 pos : SV_Position) : SV_TARGET
+        {
+            return tex[uint2(pos.xy)].g;
+        }
+#endif
+        0x43425844, 0xdd1e98d4, 0x53c81701, 0x576f6b2e, 0x040b18bb, 0x00000001, 0x0000014c, 0x00000003,
+        0x0000002c, 0x00000060, 0x00000094, 0x4e475349, 0x0000002c, 0x00000001, 0x00000008, 0x00000020,
+        0x00000000, 0x00000001, 0x00000003, 0x00000000, 0x0000030f, 0x505f5653, 0x7469736f, 0x006e6f69,
+        0x4e47534f, 0x0000002c, 0x00000001, 0x00000008, 0x00000020, 0x00000000, 0x00000000, 0x00000001,
+        0x00000000, 0x0000000f, 0x545f5653, 0x45475241, 0xabab0054, 0x58454853, 0x000000b0, 0x00000050,
+        0x0000002c, 0x0100086a, 0x04001858, 0x00107000, 0x00000000, 0x00004444, 0x04002064, 0x00101032,
+        0x00000000, 0x00000001, 0x03000065, 0x001020f2, 0x00000000, 0x02000068, 0x00000001, 0x0500001c,
+        0x00100032, 0x00000000, 0x00101046, 0x00000000, 0x08000036, 0x001000c2, 0x00000000, 0x00004002,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x8900002d, 0x800000c2, 0x00111103, 0x00100012,
+        0x00000000, 0x00100e46, 0x00000000, 0x00107e16, 0x00000000, 0x05000036, 0x001020f2, 0x00000000,
+        0x00100006, 0x00000000, 0x0100003e,
+    };
+    static const float black[] = {0.0f, 0.0f, 0.0f, 0.0f};
+    static const DWORD cb_data[4] = {0xff};
+
+    if (!init_test_context(&test_context, NULL))
+        return;
+
+    device = test_context.device;
+    context = test_context.immediate_context;
+
+    if (!check_stencil_ref_export_support(device))
+    {
+        skip("The device does not support stencil ref export.\n");
+        release_test_context(&test_context);
+        return;
+    }
+
+    ID3D11Texture2D_GetDesc(test_context.backbuffer, &texture_desc);
+    texture_desc.Format = DXGI_FORMAT_R8_UINT;
+    hr = ID3D11Device_CreateTexture2D(device, &texture_desc, NULL, &rt);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)rt, NULL, &rtv);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    ID3D11Texture2D_GetDesc(test_context.backbuffer, &texture_desc);
+    texture_desc.Format = DXGI_FORMAT_R32G8X24_TYPELESS;
+    texture_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    hr = ID3D11Device_CreateTexture2D(device, &texture_desc, NULL, &ds);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    dsv_desc.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+    dsv_desc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+    dsv_desc.Flags = 0;
+    dsv_desc.Texture2D.MipSlice = 0;
+    hr = ID3D11Device_CreateDepthStencilView(device, (ID3D11Resource *)ds, &dsv_desc, &dsv);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    srv_desc.Format = DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
+    srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+    srv_desc.Texture2D.MipLevels = 1;
+    hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)ds, &srv_desc, &srv);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    ds_desc.DepthFunc = D3D11_COMPARISON_NEVER;
+    ds_desc.StencilEnable = TRUE,
+    ds_desc.StencilReadMask = D3D11_DEFAULT_STENCIL_READ_MASK,
+    ds_desc.StencilWriteMask = D3D11_DEFAULT_STENCIL_WRITE_MASK,
+    ds_desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_REPLACE,
+    ds_desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_REPLACE,
+    ds_desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_REPLACE,
+    ds_desc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS,
+    ds_desc.BackFace = ds_desc.FrontFace;
+    hr = ID3D11Device_CreateDepthStencilState(device, &ds_desc, &ds_state);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11Device_CreatePixelShader(device, ps_code, sizeof(ps_code), NULL, &ps);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = ID3D11Device_CreatePixelShader(device, ps_sample_code, sizeof(ps_sample_code), NULL, &ps_sample);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    cb = create_buffer(device, D3D11_BIND_CONSTANT_BUFFER, sizeof(cb_data), cb_data);
+
+    ID3D11DeviceContext_ClearDepthStencilView(context, dsv, D3D11_CLEAR_STENCIL, 0.0f, 0x80);
+    ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv, dsv);
+    ID3D11DeviceContext_OMSetDepthStencilState(context, ds_state, 0);
+    ID3D11DeviceContext_PSSetShader(context, ps, NULL, 0);
+    ID3D11DeviceContext_PSSetConstantBuffers(context, 0, 1, &cb);
+    draw_quad(&test_context);
+
+    ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv, NULL);
+    ID3D11DeviceContext_ClearRenderTargetView(context, rtv, black);
+    ID3D11DeviceContext_PSSetShaderResources(context, 0, 1, &srv);
+    ID3D11DeviceContext_PSSetShader(context, ps_sample, NULL, 0);
+    draw_quad(&test_context);
+
+    get_texture_readback(rt, 0, &rb);
+    check_readback_data_u8(&rb, NULL, 0xff, 0);
+    release_resource_readback(&rb);
+
+    ID3D11ShaderResourceView_Release(srv);
+    ID3D11Buffer_Release(cb);
+    ID3D11PixelShader_Release(ps);
+    ID3D11PixelShader_Release(ps_sample);
+    ID3D11DepthStencilState_Release(ds_state);
+    ID3D11Texture2D_Release(rt);
+    ID3D11Texture2D_Release(ds);
+    ID3D11RenderTargetView_Release(rtv);
+    ID3D11DepthStencilView_Release(dsv);
+    release_test_context(&test_context);
+}
+
+static void test_high_resource_count(void)
+{
+    D3D11_TEXTURE2D_DESC texture_desc = {0};
+    struct d3d11_test_context test_context;
+    D3D11_SAMPLER_DESC sampler_desc = {0};
+    D3D11_BUFFER_DESC buffer_desc = {0};
+    ID3D11ShaderResourceView *srvs[100];
+    ID3D11Texture2D *textures[50], *rt;
+    D3D11_MAPPED_SUBRESOURCE map_desc;
+    ID3D11SamplerState *samplers[2];
+    ID3D11DeviceContext *context;
+    ID3D11RenderTargetView *rtv;
+    ID3D11Buffer *buffers[50];
+    ID3D11PixelShader *ps;
+    ID3D11Device *device;
+    float *data_ptr;
+    HRESULT hr;
+
+    static const struct vec4 expect = {1274.0f, 637.0f, 1225.0f, 0.0f};
+    static const struct vec4 expect2 = {1274.0f, 637.0f, 1325.0f, 0.0f};
+
+    static const DWORD ps_code[] =
+    {
+#if 0
+        Texture2D<float> tex[50];
+        Buffer<float> buf[50];
+
+        SamplerState point_sampler, linear_sampler;
+
+        float4 main() : SV_Target
+        {
+            float4 ret = 0;
+
+            for (uint i = 0; i < 50; ++i)
+            {
+                ret.x += tex[i].Sample(point_sampler, 0.5);
+                ret.y += tex[i].Sample(linear_sampler, 0.5);
+                ret.z += buf[i].Load(0);
+            }
+            return ret;
+        }
+#endif
+        0x43425844, 0xa909dad8, 0x13f3f278, 0x34767ac9, 0x7c08344c, 0x00000001, 0x000031a8, 0x00000003,
+        0x0000002c, 0x0000003c, 0x00000070, 0x4e475349, 0x00000008, 0x00000000, 0x00000008, 0x4e47534f,
+        0x0000002c, 0x00000001, 0x00000008, 0x00000020, 0x00000000, 0x00000000, 0x00000003, 0x00000000,
+        0x0000000f, 0x545f5653, 0x65677261, 0xabab0074, 0x52444853, 0x00003130, 0x00000040, 0x00000c4c,
+        0x0300005a, 0x00106000, 0x00000000, 0x0300005a, 0x00106000, 0x00000001, 0x04001858, 0x00107000,
+        0x00000000, 0x00005555, 0x04001858, 0x00107000, 0x00000001, 0x00005555, 0x04001858, 0x00107000,
+        0x00000002, 0x00005555, 0x04001858, 0x00107000, 0x00000003, 0x00005555, 0x04001858, 0x00107000,
+        0x00000004, 0x00005555, 0x04001858, 0x00107000, 0x00000005, 0x00005555, 0x04001858, 0x00107000,
+        0x00000006, 0x00005555, 0x04001858, 0x00107000, 0x00000007, 0x00005555, 0x04001858, 0x00107000,
+        0x00000008, 0x00005555, 0x04001858, 0x00107000, 0x00000009, 0x00005555, 0x04001858, 0x00107000,
+        0x0000000a, 0x00005555, 0x04001858, 0x00107000, 0x0000000b, 0x00005555, 0x04001858, 0x00107000,
+        0x0000000c, 0x00005555, 0x04001858, 0x00107000, 0x0000000d, 0x00005555, 0x04001858, 0x00107000,
+        0x0000000e, 0x00005555, 0x04001858, 0x00107000, 0x0000000f, 0x00005555, 0x04001858, 0x00107000,
+        0x00000010, 0x00005555, 0x04001858, 0x00107000, 0x00000011, 0x00005555, 0x04001858, 0x00107000,
+        0x00000012, 0x00005555, 0x04001858, 0x00107000, 0x00000013, 0x00005555, 0x04001858, 0x00107000,
+        0x00000014, 0x00005555, 0x04001858, 0x00107000, 0x00000015, 0x00005555, 0x04001858, 0x00107000,
+        0x00000016, 0x00005555, 0x04001858, 0x00107000, 0x00000017, 0x00005555, 0x04001858, 0x00107000,
+        0x00000018, 0x00005555, 0x04001858, 0x00107000, 0x00000019, 0x00005555, 0x04001858, 0x00107000,
+        0x0000001a, 0x00005555, 0x04001858, 0x00107000, 0x0000001b, 0x00005555, 0x04001858, 0x00107000,
+        0x0000001c, 0x00005555, 0x04001858, 0x00107000, 0x0000001d, 0x00005555, 0x04001858, 0x00107000,
+        0x0000001e, 0x00005555, 0x04001858, 0x00107000, 0x0000001f, 0x00005555, 0x04001858, 0x00107000,
+        0x00000020, 0x00005555, 0x04001858, 0x00107000, 0x00000021, 0x00005555, 0x04001858, 0x00107000,
+        0x00000022, 0x00005555, 0x04001858, 0x00107000, 0x00000023, 0x00005555, 0x04001858, 0x00107000,
+        0x00000024, 0x00005555, 0x04001858, 0x00107000, 0x00000025, 0x00005555, 0x04001858, 0x00107000,
+        0x00000026, 0x00005555, 0x04001858, 0x00107000, 0x00000027, 0x00005555, 0x04001858, 0x00107000,
+        0x00000028, 0x00005555, 0x04001858, 0x00107000, 0x00000029, 0x00005555, 0x04001858, 0x00107000,
+        0x0000002a, 0x00005555, 0x04001858, 0x00107000, 0x0000002b, 0x00005555, 0x04001858, 0x00107000,
+        0x0000002c, 0x00005555, 0x04001858, 0x00107000, 0x0000002d, 0x00005555, 0x04001858, 0x00107000,
+        0x0000002e, 0x00005555, 0x04001858, 0x00107000, 0x0000002f, 0x00005555, 0x04001858, 0x00107000,
+        0x00000030, 0x00005555, 0x04001858, 0x00107000, 0x00000031, 0x00005555, 0x04000858, 0x00107000,
+        0x00000032, 0x00005555, 0x04000858, 0x00107000, 0x00000033, 0x00005555, 0x04000858, 0x00107000,
+        0x00000034, 0x00005555, 0x04000858, 0x00107000, 0x00000035, 0x00005555, 0x04000858, 0x00107000,
+        0x00000036, 0x00005555, 0x04000858, 0x00107000, 0x00000037, 0x00005555, 0x04000858, 0x00107000,
+        0x00000038, 0x00005555, 0x04000858, 0x00107000, 0x00000039, 0x00005555, 0x04000858, 0x00107000,
+        0x0000003a, 0x00005555, 0x04000858, 0x00107000, 0x0000003b, 0x00005555, 0x04000858, 0x00107000,
+        0x0000003c, 0x00005555, 0x04000858, 0x00107000, 0x0000003d, 0x00005555, 0x04000858, 0x00107000,
+        0x0000003e, 0x00005555, 0x04000858, 0x00107000, 0x0000003f, 0x00005555, 0x04000858, 0x00107000,
+        0x00000040, 0x00005555, 0x04000858, 0x00107000, 0x00000041, 0x00005555, 0x04000858, 0x00107000,
+        0x00000042, 0x00005555, 0x04000858, 0x00107000, 0x00000043, 0x00005555, 0x04000858, 0x00107000,
+        0x00000044, 0x00005555, 0x04000858, 0x00107000, 0x00000045, 0x00005555, 0x04000858, 0x00107000,
+        0x00000046, 0x00005555, 0x04000858, 0x00107000, 0x00000047, 0x00005555, 0x04000858, 0x00107000,
+        0x00000048, 0x00005555, 0x04000858, 0x00107000, 0x00000049, 0x00005555, 0x04000858, 0x00107000,
+        0x0000004a, 0x00005555, 0x04000858, 0x00107000, 0x0000004b, 0x00005555, 0x04000858, 0x00107000,
+        0x0000004c, 0x00005555, 0x04000858, 0x00107000, 0x0000004d, 0x00005555, 0x04000858, 0x00107000,
+        0x0000004e, 0x00005555, 0x04000858, 0x00107000, 0x0000004f, 0x00005555, 0x04000858, 0x00107000,
+        0x00000050, 0x00005555, 0x04000858, 0x00107000, 0x00000051, 0x00005555, 0x04000858, 0x00107000,
+        0x00000052, 0x00005555, 0x04000858, 0x00107000, 0x00000053, 0x00005555, 0x04000858, 0x00107000,
+        0x00000054, 0x00005555, 0x04000858, 0x00107000, 0x00000055, 0x00005555, 0x04000858, 0x00107000,
+        0x00000056, 0x00005555, 0x04000858, 0x00107000, 0x00000057, 0x00005555, 0x04000858, 0x00107000,
+        0x00000058, 0x00005555, 0x04000858, 0x00107000, 0x00000059, 0x00005555, 0x04000858, 0x00107000,
+        0x0000005a, 0x00005555, 0x04000858, 0x00107000, 0x0000005b, 0x00005555, 0x04000858, 0x00107000,
+        0x0000005c, 0x00005555, 0x04000858, 0x00107000, 0x0000005d, 0x00005555, 0x04000858, 0x00107000,
+        0x0000005e, 0x00005555, 0x04000858, 0x00107000, 0x0000005f, 0x00005555, 0x04000858, 0x00107000,
+        0x00000060, 0x00005555, 0x04000858, 0x00107000, 0x00000061, 0x00005555, 0x04000858, 0x00107000,
+        0x00000062, 0x00005555, 0x04000858, 0x00107000, 0x00000063, 0x00005555, 0x03000065, 0x001020f2,
+        0x00000000, 0x02000068, 0x00000002, 0x0c000045, 0x001000f2, 0x00000000, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000000, 0x00106000, 0x00000000, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000001, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x00000002, 0x00106000, 0x00000000, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000003, 0x00106000,
+        0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000004, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000005, 0x00106000, 0x00000000, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000006,
+        0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000007, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000008, 0x00106000, 0x00000000,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000009, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x0000000a, 0x00106000, 0x00000000, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000000b, 0x00106000,
+        0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x0000000c, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000000d, 0x00106000, 0x00000000, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000000e,
+        0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x0000000f, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000010, 0x00106000, 0x00000000,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000011, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x00000012, 0x00106000, 0x00000000, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000013, 0x00106000,
+        0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000014, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000015, 0x00106000, 0x00000000, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000016,
+        0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000017, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000018, 0x00106000, 0x00000000,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000019, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x0000001a, 0x00106000, 0x00000000, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000001b, 0x00106000,
+        0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x0000001c, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000001d, 0x00106000, 0x00000000, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000001e,
+        0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x0000001f, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000020, 0x00106000, 0x00000000,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000021, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x00000022, 0x00106000, 0x00000000, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000023, 0x00106000,
+        0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000024, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000025, 0x00106000, 0x00000000, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000026,
+        0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000027, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000028, 0x00106000, 0x00000000,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000029, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x0000002a, 0x00106000, 0x00000000, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000002b, 0x00106000,
+        0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x0000002c, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000002d, 0x00106000, 0x00000000, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000002e,
+        0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x0000002f, 0x00106000, 0x00000000, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000030, 0x00106000, 0x00000000,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000031, 0x00106000, 0x00000000, 0x07000000, 0x00102012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000000, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x00000000, 0x00106000, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000001,
+        0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000002, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000003, 0x00106000, 0x00000001,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000004, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x00000005, 0x00106000, 0x00000001, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000006, 0x00106000,
+        0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000007, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000008, 0x00106000, 0x00000001, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000009,
+        0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x0000000a, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000000b, 0x00106000, 0x00000001,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x0000000c, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x0000000d, 0x00106000, 0x00000001, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000000e, 0x00106000,
+        0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x0000000f, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000010, 0x00106000, 0x00000001, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000011,
+        0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000012, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000013, 0x00106000, 0x00000001,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000014, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x00000015, 0x00106000, 0x00000001, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000016, 0x00106000,
+        0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000017, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000018, 0x00106000, 0x00000001, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000019,
+        0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x0000001a, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000001b, 0x00106000, 0x00000001,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x0000001c, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x0000001d, 0x00106000, 0x00000001, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000001e, 0x00106000,
+        0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x0000001f, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000020, 0x00106000, 0x00000001, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000021,
+        0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000022, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000023, 0x00106000, 0x00000001,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000024, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x00000025, 0x00106000, 0x00000001, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000026, 0x00106000,
+        0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000027, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000028, 0x00106000, 0x00000001, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000029,
+        0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x0000002a, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002,
+        0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000002b, 0x00106000, 0x00000001,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045,
+        0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x0000002c, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x0000002d, 0x00106000, 0x00000001, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001,
+        0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000002e, 0x00106000,
+        0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x0000002f, 0x00106000, 0x00000001, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2, 0x00000001, 0x00004002, 0x3f000000,
+        0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000030, 0x00106000, 0x00000001, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0c000045, 0x001000f2,
+        0x00000001, 0x00004002, 0x3f000000, 0x3f000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000031,
+        0x00106000, 0x00000001, 0x07000000, 0x00102022, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0a00002d, 0x001000f2, 0x00000000, 0x00004002, 0x00000000, 0x00000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000032, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000,
+        0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000033, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000034, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001,
+        0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000035, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2,
+        0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000036,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d,
+        0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000037, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000038, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000039, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x0000003a, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000,
+        0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000003b, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000003c, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001,
+        0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000003d, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2,
+        0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000003e,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d,
+        0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x0000003f, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000040, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000041, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x00000042, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000,
+        0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000043, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000044, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001,
+        0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000045, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2,
+        0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000046,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d,
+        0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000047, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000048, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000049, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x0000004a, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000,
+        0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000004b, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000004c, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001,
+        0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000004d, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2,
+        0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000004e,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d,
+        0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x0000004f, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000050, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000051, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x00000052, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000,
+        0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000053, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000054, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001,
+        0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000055, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2,
+        0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000056,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d,
+        0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x00000057, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000058, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000059, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x0000005a, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000,
+        0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000005b, 0x07000000, 0x00100012, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000005c, 0x07000000, 0x00100012,
+        0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001,
+        0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000005d, 0x07000000,
+        0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2,
+        0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x0000005e,
+        0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x0a00002d,
+        0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00107e46,
+        0x0000005f, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a, 0x00000001,
+        0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x00107e46, 0x00000060, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000, 0x0010000a,
+        0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000,
+        0x00000000, 0x00107e46, 0x00000061, 0x07000000, 0x00100012, 0x00000000, 0x0010000a, 0x00000000,
+        0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000, 0x00000000,
+        0x00000000, 0x00000000, 0x00107e46, 0x00000062, 0x07000000, 0x00100012, 0x00000000, 0x0010000a,
+        0x00000000, 0x0010000a, 0x00000001, 0x0a00002d, 0x001000f2, 0x00000001, 0x00004002, 0x00000000,
+        0x00000000, 0x00000000, 0x00000000, 0x00107e46, 0x00000063, 0x07000000, 0x00102042, 0x00000000,
+        0x0010000a, 0x00000000, 0x0010000a, 0x00000001, 0x05000036, 0x00102082, 0x00000000, 0x00004001,
+        0x00000000, 0x0100003e,
+    };
+
+    if (!init_test_context(&test_context, NULL))
+        return;
+    device = test_context.device;
+    context = test_context.immediate_context;
+
+    hr = ID3D11Device_CreatePixelShader(device, ps_code, sizeof(ps_code), NULL, &ps);
+    ok(hr == S_OK, "Failed to create pixel shader, hr %#lx.\n", hr);
+
+    texture_desc.Width = 16;
+    texture_desc.Height = 16;
+    texture_desc.MipLevels = 1;
+    texture_desc.ArraySize = 1;
+    texture_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    texture_desc.SampleDesc.Count = 1;
+    texture_desc.Usage = D3D11_USAGE_DEFAULT;
+    texture_desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    hr = ID3D11Device_CreateTexture2D(device, &texture_desc, NULL, &rt);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)rt, NULL, &rtv);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(textures); ++i)
+    {
+        float data[2] = {0.0f, i + 1};
+        D3D11_SUBRESOURCE_DATA data_desc = {data, sizeof(data), sizeof(data)};
+
+        texture_desc.Width = 2;
+        texture_desc.Height = 1;
+        texture_desc.MipLevels = 1;
+        texture_desc.ArraySize = 1;
+        texture_desc.Format = DXGI_FORMAT_R32_FLOAT;
+        texture_desc.SampleDesc.Count = 1;
+        texture_desc.Usage = D3D11_USAGE_DEFAULT;
+        texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        hr = ID3D11Device_CreateTexture2D(device, &texture_desc, &data_desc, &textures[i]);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)textures[i], NULL, &srvs[i]);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    }
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(buffers); ++i)
+    {
+        float data[2] = {i + 1, 0.0f};
+        D3D11_SUBRESOURCE_DATA data_desc = {data, sizeof(data), sizeof(data)};
+        D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc;
+
+        buffer_desc.ByteWidth = sizeof(data);
+        buffer_desc.Usage = D3D11_USAGE_DYNAMIC;
+        buffer_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        buffer_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        hr = ID3D11Device_CreateBuffer(device, &buffer_desc, &data_desc, &buffers[i]);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        srv_desc.Format = DXGI_FORMAT_R32_FLOAT;
+        srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+        srv_desc.Buffer.FirstElement = 0;
+        srv_desc.Buffer.NumElements = 2;
+        hr = ID3D11Device_CreateShaderResourceView(device,
+                (ID3D11Resource *)buffers[i], &srv_desc, &srvs[ARRAY_SIZE(textures) + i]);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    }
+
+    sampler_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    sampler_desc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    sampler_desc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    sampler_desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    sampler_desc.MaxLOD = FLT_MAX;
+    hr = ID3D11Device_CreateSamplerState(device, &sampler_desc, &samplers[0]);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    sampler_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    hr = ID3D11Device_CreateSamplerState(device, &sampler_desc, &samplers[1]);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv, NULL);
+    ID3D11DeviceContext_PSSetShader(context, ps, NULL, 0);
+    /* Deliberately make the bindings mismatch, to test that we handle NULL
+     * and unrelated bindings correctly. */
+    ID3D11DeviceContext_PSSetShaderResources(context, 1, ARRAY_SIZE(srvs) - 2, &srvs[1]);
+    ID3D11DeviceContext_PSSetShaderResources(context, ARRAY_SIZE(srvs) + 1, 1, &srvs[0]);
+    ID3D11DeviceContext_PSSetShaderResources(context, ARRAY_SIZE(srvs) + 2, 1, &srvs[ARRAY_SIZE(srvs) - 1]);
+    ID3D11DeviceContext_PSSetSamplers(context, 0, 2, samplers);
+    draw_quad(&test_context);
+
+    todo_wine_if (!damavand) check_texture_vec4(rt, &expect, 0);
+
+    /* Discard the data in one of the buffers and draw again. */
+
+    hr = ID3D11DeviceContext_Map(context, (ID3D11Resource *)buffers[1], 0, D3D11_MAP_WRITE_DISCARD, 0, &map_desc);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    data_ptr = map_desc.pData;
+    data_ptr[0] = 102.0f;
+    data_ptr[1] = 0.0f;
+    ID3D11DeviceContext_Unmap(context, (ID3D11Resource *)buffers[1], 0);
+    draw_quad(&test_context);
+
+    todo_wine_if (!damavand) check_texture_vec4(rt, &expect2, 0);
+
+    ID3D11Texture2D_Release(rt);
+    ID3D11RenderTargetView_Release(rtv);
+    for (unsigned int i = 0; i < ARRAY_SIZE(srvs); ++i)
+        ID3D11ShaderResourceView_Release(srvs[i]);
+    for (unsigned int i = 0; i < ARRAY_SIZE(buffers); ++i)
+        ID3D11Buffer_Release(buffers[i]);
+    for (unsigned int i = 0; i < ARRAY_SIZE(textures); ++i)
+        ID3D11Texture2D_Release(textures[i]);
+    for (unsigned int i = 0; i < ARRAY_SIZE(samplers); ++i)
+        ID3D11SamplerState_Release(samplers[i]);
+    ID3D11PixelShader_Release(ps);
+    release_test_context(&test_context);
+}
+
+static void test_nv12(void)
+{
+    struct d3d11_test_context test_context;
+    ID3D11PixelShader *luma_ps, *chroma_ps;
+    ID3D11DeviceContext *device_context;
+    ID3D11ComputeShader *cs;
+    unsigned int test_idx;
+    ID3D10Blob *bytecode;
+    ID3D11Device *device;
+    UINT support;
+    HRESULT hr;
+
+    static const uint32_t clear_values[4] = {0xabcdef00, 0xabcdef00, 0xabcdef00, 0xabcdef00};
+    static const float clear_values_float[4] = {100.0, 100.0, 100.0, 100.0};
+
+    static const char cs_code[] =
+            "Texture2D<uint> luma : register(t0);\n"
+            "Texture2D<uint2> chroma : register(t1);\n"
+            "RWTexture2D<uint> check : register(u1);\n"
+            "\n"
+            "uint2 size;\n"
+            "\n"
+            "[numthreads(1, 1, 1)]\n"
+            "void main(uint3 threadID : SV_DispatchThreadID)\n"
+            "{\n"
+            "    const uint2 coords = threadID.xy;\n"
+            "    check[coords] = luma[coords];\n"
+            "    if (any(coords % 2 != 0))\n"
+            "        return;\n"
+            "    const uint2 luma_coords = uint2(coords.x, size.y + coords.y / 2);\n"
+            "    check[luma_coords] = chroma[coords / 2].x;\n"
+            "    check[luma_coords + uint2(1, 0)] = chroma[coords / 2].y;\n"
+            "}\n";
+
+    static const char luma_ps_code[] =
+            "uint main(float4 pos : SV_Position) : SV_Target\n"
+            "{\n"
+            "    uint2 coords = pos.xy;\n"
+            "    return (coords.y & 7) << 3 | (coords.x & 7);\n"
+            "}\n";
+
+    static const char chroma_ps_code[] =
+            "uint2 main(float4 pos : SV_Position) : SV_Target\n"
+            "{\n"
+            "    uint2 coords = pos.xy;\n"
+            "    return uint2(1 << 6 | (coords.y & 7) << 3 | (coords.x & 7),\n"
+            "            1 << 7 | (coords.y & 7) << 3 | (coords.x & 7));\n"
+            "}\n";
+
+    static const struct
+    {
+        uint32_t width;
+        uint32_t height;
+        uint32_t copy_x;
+        uint32_t copy_y;
+        uint32_t copy_width;
+        uint32_t copy_height;
+    }
+    tests[] =
+    {
+        {640, 480, 10, 20, 4, 6},
+        {640, 480, 10, 20, 4, 7},
+        {640, 480, 10, 20, 5, 6},
+        {640, 480, 10, 20, 5, 7},
+
+        {640, 480, 10, 21, 4, 6},
+        {640, 480, 11, 20, 4, 6},
+        {640, 480, 11, 21, 4, 6},
+
+        {640, 481, 10, 20, 4, 6},
+        {641, 480, 10, 20, 4, 6},
+        {641, 481, 10, 20, 4, 6},
+        {642, 480, 10, 20, 4, 6},
+        {642, 481, 10, 20, 4, 6},
+        {642, 482, 10, 20, 4, 6},
+        {644, 482, 10, 20, 4, 6},
+        {644, 484, 10, 20, 4, 6},
+    };
+
+    if (!init_test_context(&test_context, NULL))
+        return;
+    device = test_context.device;
+    device_context = test_context.immediate_context;
+
+    hr = ID3D11Device_CheckFormatSupport(device, DXGI_FORMAT_NV12, &support);
+    todo_wine_if (!damavand) ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    if (!(support & D3D11_FORMAT_SUPPORT_TEXTURE2D))
+    {
+        skip("NV12 textures are not supported.\n");
+        release_test_context(&test_context);
+        return;
+    }
+
+    bytecode = compile_shader(cs_code, sizeof(cs_code) - 1, "cs_5_0");
+    hr = ID3D11Device_CreateComputeShader(device, ID3D10Blob_GetBufferPointer(bytecode),
+            ID3D10Blob_GetBufferSize(bytecode), NULL, &cs);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ID3D10Blob_Release(bytecode);
+
+    bytecode = compile_shader(luma_ps_code, sizeof(luma_ps_code) - 1, "ps_4_0");
+    hr = ID3D11Device_CreatePixelShader(device, ID3D10Blob_GetBufferPointer(bytecode),
+            ID3D10Blob_GetBufferSize(bytecode), NULL, &luma_ps);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ID3D10Blob_Release(bytecode);
+
+    bytecode = compile_shader(chroma_ps_code, sizeof(chroma_ps_code) - 1, "ps_4_0");
+    hr = ID3D11Device_CreatePixelShader(device, ID3D10Blob_GetBufferPointer(bytecode),
+            ID3D10Blob_GetBufferSize(bytecode), NULL, &chroma_ps);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ID3D10Blob_Release(bytecode);
+
+    for (test_idx = 0; test_idx < ARRAY_SIZE(tests); ++test_idx)
+    {
+        /* I need only two uints in the cbuffer, but the size must be a multiple of 16. */
+        ID3D11Texture2D *texture, *texture2, *check_texture, *staging_texture;
+        unsigned int i, j, image_size, broken_warp_pitch;
+        D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc = {0};
+        D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {0};
+        D3D11_SUBRESOURCE_DATA subresource_data = {0};
+        D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {0};
+        char *content, *content2, *copy_source;
+        ID3D11UnorderedAccessView *check_uav;
+        ID3D11RenderTargetView *rtv1, *rtv2;
+        ID3D11ShaderResourceView *srvs[2];
+        D3D11_MAPPED_SUBRESOURCE map_desc;
+        D3D11_TEXTURE2D_DESC desc = {0};
+        struct resource_readback rb;
+        uint32_t cbuffer_data[4];
+        ID3D11Buffer *cbuffer;
+        HRESULT expected_hr;
+        D3D11_BOX box;
+
+        const uint32_t width = tests[test_idx].width;
+        const uint32_t height = tests[test_idx].height;
+        const uint32_t copy_x = tests[test_idx].copy_x;
+        const uint32_t copy_y = tests[test_idx].copy_y;
+        const uint32_t copy_width = tests[test_idx].copy_width;
+        const uint32_t copy_height = tests[test_idx].copy_height;
+
+        winetest_push_context("test %u (%ux%u, %u,%u,%ux%u)", test_idx, width, height,
+                copy_x, copy_y, copy_width, copy_height);
+
+        desc.Width = width;
+        desc.Height = height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_NV12;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+        content = calloc(width * height * 3 / 2, 1);
+        content2 = calloc(width * height * 3 / 2, 1);
+        copy_source = calloc(copy_width * copy_height * 3 / 2, 1);
+        ok(content && content2 && copy_source, "Failed to allocate memory.\n");
+
+        for (i = 0; i < height; ++i)
+        {
+            for (j = 0; j < width; ++j)
+            {
+                unsigned int idx = i * width + j;
+
+                content[idx] = (i & 7) << 3 | (j & 7);
+            }
+        }
+
+        for (i = 0; i < height / 2; ++i)
+        {
+            for (j = 0; j < width / 2; ++j)
+            {
+                unsigned int idx = width * (height + i) + j * 2;
+
+                content[idx] = 1 << 6 | (i & 7) << 3 | (j & 7);
+                content[idx + 1] = 1 << 7 | (i & 7) << 3 | (j & 7);
+            }
+        }
+
+        subresource_data.pSysMem = content;
+        subresource_data.SysMemPitch = width;
+        subresource_data.SysMemSlicePitch = 0;
+
+        expected_hr = (width & 1 || height & 1) ? E_INVALIDARG : S_OK;
+        hr = ID3D11Device_CreateTexture2D(device, &desc, &subresource_data, &texture);
+        ok(hr == expected_hr, "Got hr %#lx, expected %#lx.\n", hr, expected_hr);
+
+        if (FAILED(hr))
+        {
+            winetest_pop_context();
+            continue;
+        }
+
+        hr = ID3D11Device_CreateTexture2D(device, &desc, &subresource_data, &texture2);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        desc.Height += height / 2;
+        desc.Format = DXGI_FORMAT_R8_UINT;
+        desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+
+        hr = ID3D11Device_CreateTexture2D(device, &desc, NULL, &check_texture);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, NULL, &srvs[0]);
+        ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
+
+        srv_desc.Format = DXGI_FORMAT_NV12;
+        srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srv_desc.Texture2D.MostDetailedMip = 0;
+        srv_desc.Texture2D.MipLevels = 1;
+
+        hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, &srv_desc, &srvs[0]);
+        ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
+
+        srv_desc.Format = DXGI_FORMAT_R8_UINT;
+        srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srv_desc.Texture2D.MostDetailedMip = 0;
+        srv_desc.Texture2D.MipLevels = 1;
+
+        hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, &srv_desc, &srvs[0]);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        srv_desc.Format = DXGI_FORMAT_R8G8_UINT;
+
+        hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, &srv_desc, &srvs[1]);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        uav_desc.Format = DXGI_FORMAT_R8_UINT;
+        uav_desc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+        uav_desc.Texture2D.MipSlice = 0;
+
+        hr = ID3D11Device_CreateUnorderedAccessView(device,
+                (ID3D11Resource *)check_texture, &uav_desc, &check_uav);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        cbuffer_data[0] = width;
+        cbuffer_data[1] = height;
+
+        cbuffer = create_buffer(device, D3D11_BIND_CONSTANT_BUFFER, sizeof(cbuffer_data), cbuffer_data);
+
+        ID3D11DeviceContext_ClearUnorderedAccessViewUint(device_context, check_uav, clear_values);
+        ID3D11DeviceContext_CSSetShader(device_context, cs, NULL, 0);
+        ID3D11DeviceContext_CSSetShaderResources(device_context, 0, ARRAY_SIZE(srvs), srvs);
+        ID3D11DeviceContext_CSSetUnorderedAccessViews(device_context, 1, 1, &check_uav, NULL);
+        ID3D11DeviceContext_CSSetConstantBuffers(device_context, 0, 1, &cbuffer);
+        ID3D11DeviceContext_Dispatch(device_context, width, height, 1);
+
+        get_texture_readback(check_texture, 0, &rb);
+        check_readback_data_u8_with_buffer(&rb, content, width, 0);
+        release_resource_readback(&rb);
+
+        memcpy(content2, content, width * height * 3 / 2);
+        if (copy_x % 2 == 0 && copy_y % 2 == 0 && copy_width % 2 == 0 && copy_height % 2 == 0)
+        {
+            for (i = copy_y; i < copy_y + copy_height; ++i)
+            {
+                for (j = copy_x; j < copy_x + copy_width; ++j)
+                {
+                    content2[i * width + j] = 0xab;
+                    if (i % 2 == 0 && j % 2 == 0)
+                    {
+                        content2[width * (height + i / 2) + j] = 0xcd;
+                        content2[width * (height + i / 2) + j + 1] = 0xef;
+                    }
+                }
+            }
+            for (i = 0; i < copy_height; ++i)
+            {
+                for (j = 0; j < copy_width; ++j)
+                {
+                    copy_source[i * copy_width + j] = 0xab;
+                    if (i % 2 == 0 && j % 2 == 0)
+                    {
+                        copy_source[copy_width * (copy_height + i / 2) + j] = 0xcd;
+                        copy_source[copy_width * (copy_height + i / 2) + j + 1] = 0xef;
+                    }
+                }
+            }
+        }
+
+        set_box(&box, copy_x, copy_y, 0, copy_x + copy_width, copy_y + copy_height, 1);
+
+        /* UpdateSubresource() copies the specified box on the luma plane and also the corresponding
+         * box on the chroma plane. It does nothing as soon as any coordinate of the box is not a
+         * multiple of 2. AMD seems to have a bug and copies data with the wrong pitch. */
+        if (!is_amd_device(device))
+        {
+            ID3D11DeviceContext_UpdateSubresource(device_context,
+                    (ID3D11Resource *)texture, 0, &box, copy_source, copy_width, 0);
+
+            ID3D11DeviceContext_ClearUnorderedAccessViewUint(device_context, check_uav, clear_values);
+            ID3D11DeviceContext_CSSetShader(device_context, cs, NULL, 0);
+            ID3D11DeviceContext_CSSetShaderResources(device_context, 0, ARRAY_SIZE(srvs), srvs);
+            ID3D11DeviceContext_CSSetUnorderedAccessViews(device_context, 1, 1, &check_uav, NULL);
+            ID3D11DeviceContext_CSSetConstantBuffers(device_context, 0, 1, &cbuffer);
+            ID3D11DeviceContext_Dispatch(device_context, width, height, 1);
+
+            get_texture_readback(check_texture, 0, &rb);
+            check_readback_data_u8_with_buffer(&rb, content2, width, 0);
+            release_resource_readback(&rb);
+        }
+
+        hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, NULL, &rtv1);
+        ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
+
+        rtv_desc.Format = DXGI_FORMAT_NV12;
+        rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        rtv_desc.Texture2D.MipSlice = 0;
+
+        hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv1);
+        ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
+
+        rtv_desc.Format = DXGI_FORMAT_R8_UINT;
+        rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        rtv_desc.Texture2D.MipSlice = 0;
+
+        hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv1);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        rtv_desc.Format = DXGI_FORMAT_R8G8_UINT;
+
+        hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv2);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        ID3D11DeviceContext_ClearRenderTargetView(device_context, rtv1, clear_values_float);
+        set_viewport(device_context, 0.0, 0.0, width, height, 0.0, 1.0);
+        ID3D11DeviceContext_OMSetRenderTargets(device_context, 1, &rtv1, NULL);
+        ID3D11DeviceContext_PSSetShader(device_context, luma_ps, NULL, 0);
+        draw_quad(&test_context);
+
+        ID3D11DeviceContext_ClearRenderTargetView(device_context, rtv2, clear_values_float);
+        set_viewport(device_context, 0.0, 0.0, width, height, 0.0, 1.0);
+        ID3D11DeviceContext_OMSetRenderTargets(device_context, 1, &rtv2, NULL);
+        ID3D11DeviceContext_PSSetShader(device_context, chroma_ps, NULL, 0);
+        draw_quad(&test_context);
+
+        ID3D11DeviceContext_OMSetRenderTargets(device_context, 0, NULL, NULL);
+
+        ID3D11DeviceContext_ClearUnorderedAccessViewUint(device_context, check_uav, clear_values);
+        ID3D11DeviceContext_CSSetShader(device_context, cs, NULL, 0);
+        ID3D11DeviceContext_CSSetShaderResources(device_context, 0, ARRAY_SIZE(srvs), srvs);
+        ID3D11DeviceContext_CSSetUnorderedAccessViews(device_context, 1, 1, &check_uav, NULL);
+        ID3D11DeviceContext_CSSetConstantBuffers(device_context, 0, 1, &cbuffer);
+        ID3D11DeviceContext_Dispatch(device_context, width, height, 1);
+
+        get_texture_readback(check_texture, 0, &rb);
+        check_readback_data_u8_with_buffer(&rb, content, width, 0);
+        release_resource_readback(&rb);
+
+        /* Staging upload, GPU blit, and staging download tests. */
+        desc.Height = height;
+        desc.Format = DXGI_FORMAT_NV12;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
+        desc.Usage = D3D11_USAGE_STAGING;
+        hr = ID3D11Device_CreateTexture2D(device, &desc, NULL, &staging_texture);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        hr = ID3D11DeviceContext_Map(device_context, (ID3D11Resource *)staging_texture, 0,
+                D3D11_MAP_WRITE, 0, &map_desc);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        /* Row pitch isn't consistent across drivers. Of the machines tested,
+         * row pitch may be aligned to a multiple of 4 (WARP), 128 (NVidia), or
+         * 256 (AMD).
+         *
+         * In all cases it seems to signify both the pitch of the Y plane, and
+         * the pitch of the U/V plane (which is 2x2 subsampled but has 2 bytes
+         * per sample, so has the same number of content bytes in a row).
+         *
+         * Slice pitch is either the size of the Y plane alone (WARP) or the
+         * size of the entire image (AMD, NVidia).
+         *
+         * Older versions of WARP (Windows 10) also calculate the size of the Y
+         * plane incorrectly, by taking the size of the entire image and
+         * multiplying by 2/3. This ends up being incorrect because said
+         * versions apparently add *vertical* alignment to 4 to only one plane,
+         * so the UV plane is not exactly half the size of the Y plane. */
+        ok(map_desc.RowPitch >= width, "Got row pitch %u.\n", map_desc.RowPitch);
+        image_size = (map_desc.RowPitch * (height * 3 / 2));
+        broken_warp_pitch = (map_desc.RowPitch * height) + (map_desc.RowPitch * ((height + 3) & ~3) / 2);
+        broken_warp_pitch = broken_warp_pitch / 3 * 2;
+        ok(map_desc.DepthPitch == image_size
+                || (is_warp_device(device) && map_desc.DepthPitch == (map_desc.RowPitch * height))
+                || broken(is_warp_device(device) && map_desc.DepthPitch == broken_warp_pitch),
+                "Got row pitch %u, slice pitch %u.\n", map_desc.RowPitch, map_desc.DepthPitch);
+
+        for (i = 0; i < height; ++i)
+        {
+            for (j = 0; j < width; ++j)
+            {
+                unsigned int idx = i * map_desc.RowPitch + j;
+                ((uint8_t *)map_desc.pData)[idx] = (j & 7) << 3 | (i & 7);
+                idx = i * width + j;
+                content2[idx] = (j & 7) << 3 | (i & 7);
+            }
+        }
+
+        for (i = 0; i < height / 2; ++i)
+        {
+            for (j = 0; j < width / 2; ++j)
+            {
+                unsigned int idx = map_desc.RowPitch * (height + i) + j * 2;
+                ((uint8_t *)map_desc.pData)[idx] = 1u << 6 | (j & 7) << 3 | (i & 7);
+                ((uint8_t *)map_desc.pData)[idx + 1] = 1u << 7 | (j & 7) << 3 | (i & 7);
+                idx = width * (height + i) + j * 2;
+                content2[idx] = 1u << 6 | (j & 7) << 3 | (i & 7);
+                content2[idx + 1] = 1u << 7 | (j & 7) << 3 | (i & 7);
+            }
+        }
+
+        ID3D11DeviceContext_Unmap(device_context, (ID3D11Resource *)staging_texture, 0);
+
+        ID3D11DeviceContext_CopyResource(device_context, (ID3D11Resource *)texture2, (ID3D11Resource *)staging_texture);
+        ID3D11DeviceContext_CopyResource(device_context, (ID3D11Resource *)texture, (ID3D11Resource *)texture2);
+
+        hr = ID3D11DeviceContext_Map(device_context, (ID3D11Resource *)staging_texture, 0,
+                D3D11_MAP_WRITE, 0, &map_desc);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        memset(map_desc.pData, 0xfe, map_desc.RowPitch * height);
+        memset((uint8_t *)map_desc.pData + map_desc.RowPitch * height, 0xdc, map_desc.RowPitch * height / 2);
+
+        /* Similarly CopySubresourceRegion() ignores boxes not aligned to 2. */
+        if (copy_x % 2 == 0 && copy_y % 2 == 0 && copy_width % 2 == 0 && copy_height % 2 == 0)
+        {
+            for (i = copy_y; i < copy_y + copy_height; ++i)
+            {
+                memset(content2 + i * width + copy_x, 0xfe, copy_width);
+                if (i % 2 == 0)
+                    memset(content2 + width * (height + i / 2) + copy_x, 0xdc, copy_width);
+            }
+        }
+
+        ID3D11DeviceContext_Unmap(device_context, (ID3D11Resource *)staging_texture, 0);
+
+        ID3D11DeviceContext_CopyResource(device_context, (ID3D11Resource *)texture2, (ID3D11Resource *)staging_texture);
+        ID3D11DeviceContext_CopySubresourceRegion(device_context, (ID3D11Resource *)texture, 0,
+                copy_x, copy_y, 0, (ID3D11Resource *)texture2, 0, &box);
+
+        ID3D11DeviceContext_ClearUnorderedAccessViewUint(device_context, check_uav, clear_values);
+        ID3D11DeviceContext_CSSetShader(device_context, cs, NULL, 0);
+        ID3D11DeviceContext_CSSetShaderResources(device_context, 0, ARRAY_SIZE(srvs), srvs);
+        ID3D11DeviceContext_CSSetUnorderedAccessViews(device_context, 1, 1, &check_uav, NULL);
+        ID3D11DeviceContext_CSSetConstantBuffers(device_context, 0, 1, &cbuffer);
+        ID3D11DeviceContext_Dispatch(device_context, width, height, 1);
+
+        get_texture_readback(check_texture, 0, &rb);
+        check_readback_data_u8_with_buffer(&rb, content2, width, 0);
+        release_resource_readback(&rb);
+
+        ID3D11DeviceContext_CopyResource(device_context, (ID3D11Resource *)staging_texture, (ID3D11Resource *)texture);
+
+        hr = ID3D11DeviceContext_Map(device_context, (ID3D11Resource *)staging_texture, 0,
+                D3D11_MAP_READ, 0, &map_desc);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        for (i = 0; i < height; ++i)
+        {
+            for (j = 0; j < width; ++j)
+            {
+                uint8_t value = ((uint8_t *)map_desc.pData)[i * map_desc.RowPitch + j];
+                uint8_t expect = content2[i * width + j];
+                ok(value == expect, "Got Y %02x, expected %02x at (%u, %u).\n", value, expect, i, j);
+                if (value != expect)
+                    goto fail_match;
+            }
+        }
+
+        for (i = 0; i < height / 2; ++i)
+        {
+            for (j = 0; j < width / 2; ++j)
+            {
+                uint8_t value = ((uint8_t *)map_desc.pData)[map_desc.RowPitch * (height + i) + j * 2];
+                uint8_t expect = content2[width * (height + i) + j * 2];
+                ok(value == expect, "Got U %02x, expected %02x at (%u, %u).\n", value, expect, i, j);
+                if (value != expect)
+                    goto fail_match;
+                value = ((uint8_t *)map_desc.pData)[map_desc.RowPitch * (height + i) + j * 2 + 1];
+                expect = content2[width * (height + i) + j * 2 + 1];
+                ok(value == expect, "Got V %02x, expected %02x at (%u, %u).\n", value, expect, i, j);
+                if (value != expect)
+                    goto fail_match;
+            }
+        }
+
+fail_match:
+        ID3D11DeviceContext_Unmap(device_context, (ID3D11Resource *)staging_texture, 0);
+
+        ID3D11RenderTargetView_Release(rtv2);
+        ID3D11RenderTargetView_Release(rtv1);
+        ID3D11Buffer_Release(cbuffer);
+        ID3D11UnorderedAccessView_Release(check_uav);
+        ID3D11ShaderResourceView_Release(srvs[1]);
+        ID3D11ShaderResourceView_Release(srvs[0]);
+        ID3D11Texture2D_Release(staging_texture);
+        ID3D11Texture2D_Release(check_texture);
+        ID3D11Texture2D_Release(texture2);
+        ID3D11Texture2D_Release(texture);
+        free(content);
+
+        winetest_pop_context();
+    }
+
+    ID3D11PixelShader_Release(chroma_ps);
+    ID3D11PixelShader_Release(luma_ps);
+    ID3D11ComputeShader_Release(cs);
+    release_test_context(&test_context);
+}
+
+struct yuv
+{
+    uint8_t y, u, v;
+};
+
+static void get_readback_nv12(struct resource_readback *rb, unsigned int x, unsigned int y, struct yuv *colour)
+{
+    colour->y = get_readback_u8(rb, x, y, 0);
+    colour->u = get_readback_u8(rb, x & ~1, rb->height + y / 2, 0);
+    colour->v = get_readback_u8(rb, (x & ~1) + 1, rb->height + y / 2, 0);
+}
+
+static void test_h264_decoder(void)
+{
+    D3D11_VIDEO_DECODER_BUFFER_DESC buffers[4] = {{0}};
+    ID3D11Texture2D *output_texture, *readback_texture;
+    ID3D11VideoDecoderOutputView *output_views[17];
+    unsigned int count, size, bitstream_size;
+    D3D11_VIDEO_DECODER_EXTENSION extension;
+    D3D11_VIDEO_DECODER_CONFIG config = {0};
+    D3D11_TEXTURE2D_DESC texture_desc = {0};
+    struct d3d11_test_context test_context;
+    DXVA_Slice_H264_Short *h264_slice;
+    ID3D11VideoContext *video_context;
+    DXVA_PicParams_H264 *h264_params;
+    ID3D11VideoDevice *video_device;
+    DXVA_Qmatrix_H264 *h264_matrix;
+    D3D11_VIDEO_DECODER_DESC desc;
+    DXVA_Status_H264 h264_status;
+    struct resource_readback rb;
+    ID3D11VideoDecoder *decoder;
+    void *bitstream, *buffer2;
+    struct yuv colour;
+    GUID profile;
+    HRESULT hr;
+    HRSRC rsrc;
+
+    DXVA_PicParams_H264 h264_params_template =
+    {
+        .wFrameWidthInMbsMinus1 = 19,
+        .wFrameHeightInMbsMinus1 = 14,
+        .num_ref_frames = 4,
+        .chroma_format_idc = 1,
+        .RefPicFlag = 1,
+        .weighted_pred_flag = 1,
+        .weighted_bipred_idc = 2,
+        .MbsConsecutiveFlag = 1,
+        .frame_mbs_only_flag = 1,
+        .transform_8x8_mode_flag = 1,
+        .Reserved16Bits = 3,
+        .chroma_qp_index_offset = -2,
+        .second_chroma_qp_index_offset = -2,
+        .ContinuationFlag = 1,
+        .num_ref_idx_l0_active_minus1 = 2,
+        .log2_max_pic_order_cnt_lsb_minus4 = 2,
+        .direct_8x8_inference_flag = 1,
+        .entropy_coding_mode_flag = 1,
+        .deblocking_filter_control_present_flag = 1,
+    };
+
+    if (!init_test_context(&test_context, NULL))
+        return;
+
+    hr = ID3D11Device_QueryInterface(test_context.device, &IID_ID3D11VideoDevice, (void **)&video_device);
+    if (hr == E_NOINTERFACE)
+    {
+        skip("Failed to get ID3D11VideoDevice.\n");
+        release_test_context(&test_context);
+        return;
+    }
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    count = ID3D11VideoDevice_GetVideoDecoderProfileCount(video_device);
+    for (unsigned int i = 0; i < count; ++i)
+    {
+        hr = ID3D11VideoDevice_GetVideoDecoderProfile(video_device, i, &profile);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    }
+    /* Native seems to have an off-by-one error; trying to pass "count"
+     * as an index succeeds and leaves a garbage GUID in the output, which is
+     * not consistent across runs. */
+    hr = ID3D11VideoDevice_GetVideoDecoderProfile(video_device, count + 1, &profile);
+    ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11DeviceContext_QueryInterface(test_context.immediate_context,
+            &IID_ID3D11VideoContext, (void **)&video_context);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    desc.Guid = DXVA_ModeH264_VLD_NoFGT;
+    desc.SampleWidth = 320;
+    desc.SampleHeight = 240;
+    desc.OutputFormat = DXGI_FORMAT_NV12;
+
+    hr = ID3D11VideoDevice_GetVideoDecoderConfigCount(video_device, &desc, &count);
+    todo_wine ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    if (hr == S_OK)
+        ok(count >= 1, "Got no configs.\n");
+    else
+        count = 0;
+
+    for (unsigned int i = 0; i < count; ++i)
+    {
+        memset(&config, 0xcc, sizeof(config));
+        hr = ID3D11VideoDevice_GetVideoDecoderConfig(video_device, &desc, 0, &config);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        ok(IsEqualGUID(&config.guidConfigBitstreamEncryption, &DXVA_NoEncrypt),
+                "Got guidConfigBitstreamEncryption %s.\n", debugstr_guid(&config.guidConfigBitstreamEncryption));
+        ok(IsEqualGUID(&config.guidConfigMBcontrolEncryption, &DXVA_NoEncrypt),
+                "Got guidConfigMBcontrolEncryption %s.\n", debugstr_guid(&config.guidConfigMBcontrolEncryption));
+        ok(IsEqualGUID(&config.guidConfigResidDiffEncryption, &DXVA_NoEncrypt),
+                "Got guidConfigResidDiffEncryption %s.\n", debugstr_guid(&config.guidConfigResidDiffEncryption));
+        /* NVidia sets 1, AMD sets 2.
+         *
+         * Nevertheless NVidia seems to be fine with short slice info. */
+        ok(config.ConfigBitstreamRaw == 1 || config.ConfigBitstreamRaw == 2,
+                "Got ConfigBitstreamRaw %u.\n", config.ConfigBitstreamRaw);
+        ok(!config.ConfigMBcontrolRasterOrder, "Got ConfigMBcontrolRasterOrder %u.\n",
+                config.ConfigMBcontrolRasterOrder);
+        ok(!config.ConfigResidDiffHost, "Got ConfigResidDiffHost %u.\n", config.ConfigResidDiffHost);
+        ok(!config.ConfigSpatialResid8, "Got ConfigSpatialResid8 %u.\n", config.ConfigSpatialResid8);
+        ok(!config.ConfigResid8Subtraction, "Got ConfigResid8Subtraction %u.\n", config.ConfigResid8Subtraction);
+        ok(!config.ConfigSpatialHost8or9Clipping, "Got ConfigSpatialHost8or9Clipping %u.\n",
+                config.ConfigSpatialHost8or9Clipping);
+        ok(!config.ConfigSpatialResidInterleaved, "Got ConfigSpatialResidInterleaved %u.\n",
+                config.ConfigSpatialResidInterleaved);
+        ok(!config.ConfigIntraResidUnsigned, "Got ConfigIntraResidUnsigned %u.\n", config.ConfigIntraResidUnsigned);
+        ok(config.ConfigResidDiffAccelerator == 1, "Got ConfigResidDiffAccelerator %u.\n",
+                config.ConfigResidDiffAccelerator);
+        ok(config.ConfigHostInverseScan == 1, "Got ConfigHostInverseScan %u.\n", config.ConfigHostInverseScan);
+        ok(config.ConfigSpecificIDCT == 2, "Got ConfigSpecificIDCT %u.\n", config.ConfigSpecificIDCT);
+        ok(!config.Config4GroupedCoefs, "Got Config4GroupedCoefs %u.\n", config.Config4GroupedCoefs);
+        /* AMD has 0 for ConfigMinRenderTargetBuffCount; NVidia has 3. */
+        /* AMD has 0x4000 for ConfigDecoderSpecific.
+         * This flag is an extension bit related to interleaved decoding. */
+        ok(!config.ConfigDecoderSpecific || config.ConfigDecoderSpecific == 0x4000,
+                "Got ConfigDecoderSpecific %u.\n", config.ConfigDecoderSpecific);
+    }
+
+    hr = ID3D11VideoDevice_GetVideoDecoderConfig(video_device, &desc, count, &config);
+    todo_wine ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
+
+    memset(&config, 0, sizeof(config));
+    config.guidConfigBitstreamEncryption = DXVA_NoEncrypt;
+    config.guidConfigMBcontrolEncryption = DXVA_NoEncrypt;
+    config.guidConfigResidDiffEncryption = DXVA_NoEncrypt;
+    config.ConfigBitstreamRaw = 2;
+    config.ConfigResidDiffAccelerator = 1;
+    config.ConfigHostInverseScan = 1;
+    config.ConfigSpecificIDCT = 2;
+    config.ConfigMinRenderTargetBuffCount = 1;
+
+    memset(&desc.Guid, 0xcc, sizeof(desc.Guid));
+    hr = ID3D11VideoDevice_CreateVideoDecoder(video_device, &desc, &config, &decoder);
+    ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
+
+    desc.Guid = DXVA_ModeH264_VLD_NoFGT;
+    hr = ID3D11VideoDevice_CreateVideoDecoder(video_device, &desc, &config, &decoder);
+    if (hr == E_INVALIDARG)
+    {
+        skip("H.264 decoding is not supported.\n");
+        ID3D11VideoContext_Release(video_context);
+        ID3D11VideoDevice_Release(video_device);
+        release_test_context(&test_context);
+        return;
+    }
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    texture_desc.Width = 320;
+    texture_desc.Height = 240;
+    texture_desc.MipLevels = 1;
+    texture_desc.ArraySize = ARRAY_SIZE(output_views);
+    texture_desc.Format = DXGI_FORMAT_NV12;
+    texture_desc.SampleDesc.Count = 1;
+    texture_desc.BindFlags = D3D11_BIND_DECODER;
+    texture_desc.Usage = D3D11_USAGE_DEFAULT;
+    hr = ID3D11Device_CreateTexture2D(test_context.device, &texture_desc, NULL, &output_texture);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    texture_desc.ArraySize = 1;
+    texture_desc.BindFlags = 0;
+    hr = ID3D11Device_CreateTexture2D(test_context.device, &texture_desc, NULL, &readback_texture);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(output_views); ++i)
+    {
+        D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC view_desc =
+        {
+            .DecodeProfile = desc.Guid,
+            .ViewDimension = D3D11_VDOV_DIMENSION_TEXTURE2D,
+            .Texture2D.ArraySlice = i,
+        };
+
+        view_desc.ViewDimension = D3D11_VDOV_DIMENSION_UNKNOWN;
+        hr = ID3D11VideoDevice_CreateVideoDecoderOutputView(video_device,
+                (ID3D11Resource *)output_texture, &view_desc, &output_views[i]);
+        ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
+
+        view_desc.ViewDimension = D3D11_VDOV_DIMENSION_TEXTURE2D;
+        hr = ID3D11VideoDevice_CreateVideoDecoderOutputView(video_device,
+                (ID3D11Resource *)output_texture, &view_desc, &output_views[i]);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    }
+
+    memset(&h264_status, 0xcc, sizeof(h264_status));
+    memset(&extension, 0, sizeof(extension));
+    extension.Function = DXVA_STATUS_REPORTING_FUNCTION;
+    extension.pPrivateOutputData = &h264_status;
+    extension.PrivateOutputDataSize = sizeof(h264_status);
+    hr = ID3D11VideoContext_DecoderExtension(video_context, decoder, &extension);
+    todo_wine ok(hr == E_FAIL /* AMD */ || hr == S_OK /* NVidia */, "Got hr %#lx.\n", hr);
+    if (hr == S_OK)
+    {
+        DXVA_Status_H264 zero_status = {0};
+
+        ok(!memcmp(&h264_status, &zero_status, sizeof(zero_status)), "Expected zeroed structure.\n");
+    }
+
+    hr = ID3D11VideoContext_DecoderBeginFrame(video_context, decoder, output_views[0], 0, NULL);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_GetDecoderBuffer(video_context, decoder,
+            D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS, &size, (void **)&h264_params);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(size >= sizeof(*h264_params), "Got size %u.\n", size);
+
+    hr = ID3D11VideoContext_GetDecoderBuffer(video_context, decoder,
+            D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS, &size, &buffer2);
+    todo_wine ok(hr == DXGI_ERROR_INVALID_CALL, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_ReleaseDecoderBuffer(video_context,
+            decoder, D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_ReleaseDecoderBuffer(video_context,
+            decoder, D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS);
+    todo_wine ok(hr == DXGI_ERROR_INVALID_CALL, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_GetDecoderBuffer(video_context, decoder,
+            D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS, &size, &buffer2);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(size >= sizeof(*h264_params), "Got size %u.\n", size);
+    ok(buffer2 == h264_params, "Buffer pointers didn't match.\n");
+
+    *h264_params = h264_params_template;
+    h264_params->CurrPic.Index7Bits = 0;
+    h264_params->IntraPicFlag = 1;
+    h264_params->StatusReportFeedbackNumber = 1;
+    for (unsigned int i = 0; i < 16; ++i)
+        h264_params->RefFrameList[i].bPicEntry = 0xff;
+    h264_params->CurrFieldOrderCnt[0] = 0;
+    h264_params->CurrFieldOrderCnt[1] = 0;
+    h264_params->frame_num = 0;
+
+    hr = ID3D11VideoContext_ReleaseDecoderBuffer(video_context,
+            decoder, D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_GetDecoderBuffer(video_context, decoder,
+            D3D11_VIDEO_DECODER_BUFFER_INVERSE_QUANTIZATION_MATRIX, &size, (void **)&h264_matrix);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(size >= sizeof(*h264_matrix), "Got size %u.\n", size);
+
+    /* All scaling list fields are UCHARs; set them all to 16. */
+    memset(h264_matrix, 16, sizeof(*h264_matrix));
+
+    hr = ID3D11VideoContext_ReleaseDecoderBuffer(video_context,
+            decoder, D3D11_VIDEO_DECODER_BUFFER_INVERSE_QUANTIZATION_MATRIX);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    rsrc = FindResourceW(NULL, L"h264_frame0", (const WCHAR *)RT_RCDATA);
+    ok(!!rsrc, "Failed to load resource, error %lu.\n", GetLastError());
+    bitstream_size = SizeofResource(NULL, rsrc);
+
+    hr = ID3D11VideoContext_GetDecoderBuffer(video_context, decoder,
+            D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL, &size, (void **)&h264_slice);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(size >= sizeof(*h264_slice) * 4, "Got size %u.\n", size);
+
+    h264_slice[0].BSNALunitDataLocation = 0;
+    h264_slice[0].SliceBytesInBuffer = bitstream_size;
+    h264_slice[0].wBadSliceChopping = 0;
+
+    hr = ID3D11VideoContext_ReleaseDecoderBuffer(video_context,
+            decoder, D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_GetDecoderBuffer(video_context, decoder,
+            D3D11_VIDEO_DECODER_BUFFER_BITSTREAM, &size, &bitstream);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(size >= bitstream_size, "Got size %u, expected at least %u.\n", size, bitstream_size);
+
+    memcpy(bitstream, LockResource(LoadResource(GetModuleHandleW(NULL), rsrc)), bitstream_size);
+
+    hr = ID3D11VideoContext_ReleaseDecoderBuffer(video_context,
+            decoder, D3D11_VIDEO_DECODER_BUFFER_BITSTREAM);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    buffers[0].BufferType = D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS;
+    buffers[0].DataSize = sizeof(*h264_params);
+    buffers[1].BufferType = D3D11_VIDEO_DECODER_BUFFER_INVERSE_QUANTIZATION_MATRIX;
+    buffers[1].DataSize = sizeof(*h264_matrix);
+    buffers[2].BufferType = D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL;
+    buffers[2].DataSize = sizeof(*h264_slice);
+    buffers[3].BufferType = D3D11_VIDEO_DECODER_BUFFER_BITSTREAM;
+    buffers[3].DataSize = bitstream_size;
+    hr = ID3D11VideoContext_SubmitDecoderBuffers(video_context, decoder, ARRAY_SIZE(buffers), buffers);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_DecoderEndFrame(video_context, decoder);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    /* Second frame. */
+
+    rsrc = FindResourceW(NULL, L"h264_frame1", (const WCHAR *)RT_RCDATA);
+    ok(!!rsrc, "Failed to load resource, error %lu.\n", GetLastError());
+    bitstream_size = SizeofResource(NULL, rsrc);
+
+    hr = ID3D11VideoContext_DecoderBeginFrame(video_context, decoder, output_views[1], 0, NULL);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_GetDecoderBuffer(video_context, decoder,
+            D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS, &size, (void **)&h264_matrix);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(size >= sizeof(*h264_matrix), "Got size %u.\n", size);
+
+    *h264_params = h264_params_template;
+    h264_params->CurrPic.Index7Bits = 1;
+    h264_params->StatusReportFeedbackNumber = 2;
+    h264_params->RefFrameList[0].Index7Bits = 0;
+    h264_params->RefFrameList[0].AssociatedFlag = 0;
+    for (unsigned int i = 1; i < 16; ++i)
+        h264_params->RefFrameList[i].bPicEntry = 0xff;
+    h264_params->CurrFieldOrderCnt[0] = 2;
+    h264_params->CurrFieldOrderCnt[1] = 2;
+    h264_params->FieldOrderCntList[0][0] = 0;
+    h264_params->FieldOrderCntList[0][1] = 0;
+    h264_params->FrameNumList[0] = 0;
+    h264_params->UsedForReferenceFlags = 0x3;
+    h264_params->frame_num = 1;
+
+    hr = ID3D11VideoContext_ReleaseDecoderBuffer(video_context,
+            decoder, D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_GetDecoderBuffer(video_context, decoder,
+            D3D11_VIDEO_DECODER_BUFFER_INVERSE_QUANTIZATION_MATRIX, &size, (void **)&h264_matrix);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(size >= sizeof(*h264_matrix), "Got size %u.\n", size);
+
+    /* All scaling list fields are UCHARs; set them all to 16. */
+    memset(h264_matrix, 16, sizeof(*h264_matrix));
+
+    hr = ID3D11VideoContext_ReleaseDecoderBuffer(video_context,
+            decoder, D3D11_VIDEO_DECODER_BUFFER_INVERSE_QUANTIZATION_MATRIX);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_GetDecoderBuffer(video_context, decoder,
+            D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL, &size, (void **)&h264_slice);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(size >= sizeof(*h264_slice) * 4, "Got size %u.\n", size);
+
+    h264_slice[0].BSNALunitDataLocation = 0;
+    h264_slice[0].SliceBytesInBuffer = bitstream_size;
+    h264_slice[0].wBadSliceChopping = 0;
+
+    hr = ID3D11VideoContext_ReleaseDecoderBuffer(video_context,
+            decoder, D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_GetDecoderBuffer(video_context, decoder,
+            D3D11_VIDEO_DECODER_BUFFER_BITSTREAM, &size, &bitstream);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(size >= bitstream_size, "Got size %u, expected at least %u.\n", size, bitstream_size);
+
+    memcpy(bitstream, LockResource(LoadResource(GetModuleHandleW(NULL), rsrc)), bitstream_size);
+
+    hr = ID3D11VideoContext_ReleaseDecoderBuffer(video_context,
+            decoder, D3D11_VIDEO_DECODER_BUFFER_BITSTREAM);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    buffers[3].DataSize = bitstream_size;
+    hr = ID3D11VideoContext_SubmitDecoderBuffers(video_context, decoder, ARRAY_SIZE(buffers), buffers);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = ID3D11VideoContext_DecoderEndFrame(video_context, decoder);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    /* We cannot use get_texture_readback() directly.
+     * Direct3D11 seems to forbid CPU NV12 arrays. */
+    ID3D11DeviceContext_CopySubresourceRegion(test_context.immediate_context,
+            (ID3D11Resource *)readback_texture, 0, 0, 0, 0, (ID3D11Resource *)output_texture, 0, NULL);
+    get_texture_readback(readback_texture, 0, &rb);
+    get_readback_nv12(&rb, 148, 109, &colour);
+    ok(colour.y == 49 && colour.u == 109 && colour.v == 184,
+            "Got (Y, U, V) values (%u, %u, %u).\n", colour.y, colour.u, colour.v);
+    get_readback_nv12(&rb, 176, 136, &colour);
+    ok(colour.y == 41 && colour.u == 240 && colour.v == 110,
+            "Got (Y, U, V) values (%u, %u, %u).\n", colour.y, colour.u, colour.v);
+    release_resource_readback(&rb);
+
+    ID3D11DeviceContext_CopySubresourceRegion(test_context.immediate_context,
+            (ID3D11Resource *)readback_texture, 0, 0, 0, 0, (ID3D11Resource *)output_texture, 1, NULL);
+    get_texture_readback(readback_texture, 0, &rb);
+    get_readback_nv12(&rb, 148, 109, &colour);
+    ok(colour.y == 41 && colour.u == 240 && colour.v == 110,
+            "Got (Y, U, V) values (%u, %u, %u).\n", colour.y, colour.u, colour.v);
+    get_readback_nv12(&rb, 176, 136, &colour);
+    ok(colour.y == 49 && colour.u == 109 && colour.v == 184,
+            "Got (Y, U, V) values (%u, %u, %u).\n", colour.y, colour.u, colour.v);
+    release_resource_readback(&rb);
+
+    /* The status query is asynchronous and does not wait for any frames to be
+     * completed. Call it after downloading the frames so we're sure that
+     * they're done. */
+
+    memset(&h264_status, 0xcc, sizeof(h264_status));
+    memset(&extension, 0, sizeof(extension));
+    extension.Function = DXVA_STATUS_REPORTING_FUNCTION;
+    extension.pPrivateOutputData = &h264_status;
+    extension.PrivateOutputDataSize = sizeof(h264_status);
+    hr = ID3D11VideoContext_DecoderExtension(video_context, decoder, &extension);
+    todo_wine ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    if (hr == S_OK)
+    {
+        ok(h264_status.StatusReportFeedbackNumber == 2, "Got number %u.\n", h264_status.StatusReportFeedbackNumber);
+        ok(h264_status.CurrPic.bPicEntry == 1, "Got index %#x.\n", h264_status.CurrPic.bPicEntry);
+        ok(!h264_status.field_pic_flag, "Got field pic flag %#x.\n", h264_status.field_pic_flag);
+        ok(h264_status.bDXVA_Func == DXVA_PICTURE_DECODING_FUNCTION, "Got function %#x.\n", h264_status.bDXVA_Func);
+        ok(h264_status.bBufType == (UCHAR)~0, "Got buffer type %#x.\n", h264_status.bBufType);
+        ok(!h264_status.bStatus, "Got status %#x.\n", h264_status.bStatus);
+        ok(!h264_status.bReserved8Bits, "Got reserved %#x.\n", h264_status.bReserved8Bits);
+        /* AMD reports that 1 macroblock was successfully decoded, which is
+         * obviously wrong.
+         * NVidia returns 0xffff, which is valid and means that no estimate was
+         * provided. */
+    }
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(output_views); ++i)
+        ID3D11VideoDecoderOutputView_Release(output_views[i]);
+    ID3D11Texture2D_Release(readback_texture);
+    ID3D11Texture2D_Release(output_texture);
+    ID3D11VideoDecoder_Release(decoder);
+    ID3D11VideoContext_Release(video_context);
+    ID3D11VideoDevice_Release(video_device);
+    release_test_context(&test_context);
+}
+
 START_TEST(d3d11)
 {
     unsigned int argc, i;
+    HMODULE wined3d;
     char **argv;
+
+    argc = winetest_get_mainargs(&argv);
+    if (argc == 3 && !strcmp(argv[2], "test_create_device_child"))
+    {
+        test_create_device_child();
+        return;
+    }
+
+    if ((wined3d = GetModuleHandleA("wined3d.dll")))
+    {
+        enum wined3d_renderer (CDECL *p_wined3d_get_renderer)(void);
+
+        if ((p_wined3d_get_renderer = (void *)GetProcAddress(wined3d, "wined3d_get_renderer"))
+                && p_wined3d_get_renderer() == WINED3D_RENDERER_VULKAN)
+            damavand = true;
+    }
 
     use_mt = !getenv("WINETEST_NO_MT_D3D");
     /* Some host drivers (MacOS, Mesa radeonsi) never unmap memory even when
@@ -34893,7 +37275,6 @@ START_TEST(d3d11)
     if (sizeof(void *) == 4 && !strcmp(winetest_platform, "wine"))
         use_mt = FALSE;
 
-    argc = winetest_get_mainargs(&argv);
     for (i = 2; i < argc; ++i)
     {
         if (!strcmp(argv[i], "--validate"))
@@ -35065,6 +37446,13 @@ START_TEST(d3d11)
     queue_test(test_rtv_depth_slice);
     queue_test(test_vertex_formats);
     queue_test(test_dxgi_resources);
+    queue_for_each_feature_level(test_shared_resource);
+    queue_test(test_keyed_mutex);
+    queue_test(test_clear_during_render);
+    queue_test(test_stencil_export);
+    queue_test(test_high_resource_count);
+    queue_test(test_nv12);
+    queue_test(test_h264_decoder);
 
     run_queued_tests();
 

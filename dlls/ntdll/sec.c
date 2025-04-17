@@ -29,7 +29,10 @@
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "windef.h"
+#include "winbase.h"
+#include "tomcrypt.h"
 #include "ntdll_misc.h"
+#include "ddk/ntddk.h"
 #include "wine/exception.h"
 #include "wine/debug.h"
 
@@ -1540,6 +1543,60 @@ NTSTATUS WINAPI RtlGetAce(PACL pAcl,DWORD dwAceIndex,LPVOID *pAce )
 	return STATUS_SUCCESS;
 }
 
+/*************************************************************************
+ * RtlAreAllAccessesGranted   [NTDLL.@]
+ */
+BOOLEAN WINAPI RtlAreAllAccessesGranted( ACCESS_MASK granted, ACCESS_MASK desired )
+{
+    return (granted & desired) == desired;
+}
+
+/*************************************************************************
+ * RtlAreAnyAccessesGranted   [NTDLL.@]
+ */
+BOOLEAN WINAPI RtlAreAnyAccessesGranted( ACCESS_MASK granted, ACCESS_MASK desired )
+{
+    return (granted & desired) != 0;
+}
+
+/*************************************************************************
+ * RtlMapGenericMask   [NTDLL.@]
+ */
+void WINAPI RtlMapGenericMask( ACCESS_MASK *mask, const GENERIC_MAPPING *mapping )
+{
+    if (*mask & GENERIC_READ) *mask |= mapping->GenericRead;
+    if (*mask & GENERIC_WRITE) *mask |= mapping->GenericWrite;
+    if (*mask & GENERIC_EXECUTE) *mask |= mapping->GenericExecute;
+    if (*mask & GENERIC_ALL) *mask |= mapping->GenericAll;
+    *mask &= ~(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL);
+}
+
+/*************************************************************************
+ * RtlCopyLuid   [NTDLL.@]
+ */
+void WINAPI RtlCopyLuid( LUID *dest, const LUID *src )
+{
+    *dest = *src;
+}
+
+/*************************************************************************
+ * RtlEqualLuid   [NTDLL.@]
+ */
+BOOLEAN WINAPI RtlEqualLuid( const LUID *luid1, const LUID *luid2 )
+{
+  return (luid1->LowPart == luid2->LowPart && luid1->HighPart == luid2->HighPart);
+}
+
+/*************************************************************************
+ * RtlCopyLuidAndAttributesArray   [NTDLL.@]
+ */
+void WINAPI RtlCopyLuidAndAttributesArray( ULONG count, const LUID_AND_ATTRIBUTES *src, PLUID_AND_ATTRIBUTES dest )
+{
+    ULONG i;
+
+    for (i = 0; i < count; i++) dest[i] = src[i];
+}
+
 /*
  *	misc
  */
@@ -1810,5 +1867,44 @@ NTSTATUS WINAPI RtlDefaultNpAcl(PACL *pAcl)
     FIXME("%p - stub\n", pAcl);
 
     *pAcl = NULL;
+    return STATUS_SUCCESS;
+}
+
+/******************************************************************************
+ * RtlDeriveCapabilitySidsFromName (NTDLL.@)
+ */
+NTSTATUS WINAPI RtlDeriveCapabilitySidsFromName( UNICODE_STRING *cap_name, PSID cap_group_sid, PSID cap_sid )
+{
+    static const SID_IDENTIFIER_AUTHORITY app_authority = { SECURITY_APP_PACKAGE_AUTHORITY };
+    static const SID_IDENTIFIER_AUTHORITY nt_authority = { SECURITY_NT_AUTHORITY };
+    UNICODE_STRING cap_upcase;
+    hash_state hash_ctx;
+    NTSTATUS status;
+    ULONG hash[8];
+    SID *sid;
+
+    TRACE( "cap_name %s, cap_group_sid %p, cap_sid %p.\n", debugstr_us(cap_name), cap_group_sid, cap_sid );
+
+    if ((status = RtlUpcaseUnicodeString( &cap_upcase, cap_name, TRUE ))) return status;
+    sha256_init( &hash_ctx );
+    sha256_process( &hash_ctx, (UCHAR *)cap_upcase.Buffer, cap_upcase.Length );
+    sha256_done( &hash_ctx, (UCHAR *)hash );
+    RtlFreeUnicodeString( &cap_upcase );
+
+    sid = cap_sid;
+    sid->Revision = SID_REVISION;
+    sid->IdentifierAuthority = app_authority;
+    sid->SubAuthorityCount = 2 + ARRAY_SIZE(hash);
+    sid->SubAuthority[0] = SECURITY_BATCH_RID;
+    sid->SubAuthority[1] = SECURITY_CAPABILITY_APP_RID;
+    memcpy( sid->SubAuthority + 2, hash, sizeof(hash) );
+
+    sid = cap_group_sid;
+    sid->Revision = SID_REVISION;
+    sid->IdentifierAuthority = nt_authority;
+    sid->SubAuthorityCount = 1 + ARRAY_SIZE(hash);
+    sid->SubAuthority[0] = SECURITY_BUILTIN_DOMAIN_RID;
+    memcpy( sid->SubAuthority + 1, hash, sizeof(hash) );
+
     return STATUS_SUCCESS;
 }

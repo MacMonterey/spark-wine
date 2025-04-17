@@ -154,7 +154,7 @@ static const struct
     },
     /* Windows 10 */
     {
-        { 10, 0, 18362 },
+        { 10, 0, 19043 },
         {0x8e0f7a12,0xbfb3,0x4fe8,{0xb9,0xa5,0x48,0xfd,0x50,0xa1,0x5a,0x9a}}
     }
 };
@@ -1069,6 +1069,7 @@ static BOOL VersionInfo16_QueryValue( const VS_VERSION_INFO_STRUCT16 *info, LPCS
 static BOOL VersionInfo32_QueryValue( const VS_VERSION_INFO_STRUCT32 *info, LPCWSTR lpSubBlock,
                                       LPVOID *lplpBuffer, UINT *puLen, BOOL *pbText )
 {
+    PVOID ptr;
     TRACE("lpSubBlock : (%s)\n", debugstr_w(lpSubBlock));
 
     while ( *lpSubBlock )
@@ -1100,7 +1101,11 @@ static BOOL VersionInfo32_QueryValue( const VS_VERSION_INFO_STRUCT32 *info, LPCW
     }
 
     /* Return value */
-    *lplpBuffer = VersionInfo32_Value( info );
+    ptr = VersionInfo32_Value(info);
+    if ((PBYTE)ptr >= ((PBYTE)info + info->wLength))  /* empty value */
+        ptr = (WCHAR*)info->szKey + wcslen(info->szKey);
+
+    *lplpBuffer = ptr;
     if (puLen)
         *puLen = info->wValueLength;
     if (pbText)
@@ -1542,6 +1547,14 @@ BOOL WINAPI GetVersionExW( OSVERSIONINFOW *info )
     return TRUE;
 }
 
+/***********************************************************************
+ *         GetCurrentApplicationUserModelId   (kernelbase.@)
+ */
+LONG WINAPI /* DECLSPEC_HOTPATCH */ GetCurrentApplicationUserModelId( UINT32 *length, WCHAR *id )
+{
+    FIXME( "(%p %p): stub\n", length, id );
+    return APPMODEL_ERROR_NO_APPLICATION;
+}
 
 /***********************************************************************
  *         GetCurrentPackageFamilyName   (kernelbase.@)
@@ -1572,6 +1585,14 @@ LONG WINAPI /* DECLSPEC_HOTPATCH */ GetCurrentPackageId( UINT32 *len, BYTE *buff
     return APPMODEL_ERROR_NO_PACKAGE;
 }
 
+/***********************************************************************
+ *         GetCurrentPackageInfo   (kernelbase.@)
+ */
+LONG WINAPI GetCurrentPackageInfo( const UINT32 flags, UINT32 *buffer_size, BYTE *buffer, UINT32 *count )
+{
+    FIXME( "(%#x %p %p %p): stub\n", flags, buffer_size, buffer, count );
+    return APPMODEL_ERROR_NO_PACKAGE;
+}
 
 /***********************************************************************
  *         GetCurrentPackagePath   (kernelbase.@)
@@ -1616,6 +1637,19 @@ LONG WINAPI DECLSPEC_HOTPATCH GetPackagesByPackageFamily(const WCHAR *family_nam
     *count = 0;
     *buffer_len = 0;
     return ERROR_SUCCESS;
+}
+
+/***********************************************************************
+ *         GetPackagePathByFullName   (kernelbase.@)
+ */
+LONG WINAPI GetPackagePathByFullName(const WCHAR *name, UINT32 *len, WCHAR *path)
+{
+    if (!len || !name)
+        return ERROR_INVALID_PARAMETER;
+
+    FIXME( "(%s %p %p): stub\n", debugstr_w(name), len, path );
+
+    return APPMODEL_ERROR_NO_PACKAGE;
 }
 
 static const struct

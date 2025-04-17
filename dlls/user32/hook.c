@@ -62,6 +62,8 @@
  *     WH_MOUSE_LL                  Implemented but should use SendMessage instead
  */
 
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
 #include "user_private.h"
 #include "wine/asm.h"
 #include "wine/debug.h"
@@ -383,15 +385,6 @@ HHOOK WINAPI SetWindowsHookExW( INT id, HOOKPROC proc, HINSTANCE inst, DWORD tid
 
 
 /***********************************************************************
- *		UnhookWindowsHook (USER32.@)
- */
-BOOL WINAPI UnhookWindowsHook( INT id, HOOKPROC proc )
-{
-    return NtUserUnhookWindowsHook( id, proc );
-}
-
-
-/***********************************************************************
  *           SetWinEventHook                            [USER32.@]
  *
  * Set up an event hook for a set of events.
@@ -430,12 +423,14 @@ HWINEVENTHOOK WINAPI SetWinEventHook(DWORD event_min, DWORD event_max,
     return NtUserSetWinEventHook( event_min, event_max, inst, &str, proc, pid, tid, flags );
 }
 
-BOOL WINAPI User32CallWinEventHook( const struct win_event_hook_params *params, ULONG size )
+NTSTATUS WINAPI User32CallWinEventHook( void *args, ULONG size )
 {
+    const struct win_event_hook_params *params = args;
     WINEVENTPROC proc = params->proc;
     HMODULE free_module = 0;
 
-    if (params->module[0] && !(proc = get_hook_proc( proc, params->module, &free_module ))) return FALSE;
+    if (params->module[0] && !(proc = get_hook_proc( proc, params->module, &free_module )))
+        return STATUS_INVALID_PARAMETER;
 
     TRACE_(relay)( "\1Call winevent hook proc %p (hhook=%p,event=%lx,hwnd=%p,object_id=%lx,child_id=%lx,tid=%04lx,time=%lx)\n",
                    proc, params->handle, params->event, params->hwnd, params->object_id,
@@ -449,56 +444,80 @@ BOOL WINAPI User32CallWinEventHook( const struct win_event_hook_params *params, 
                    params->child_id, params->tid, params->time );
 
     if (free_module) FreeLibrary( free_module );
-    return TRUE;
+    return STATUS_SUCCESS;
 }
 
-BOOL WINAPI User32CallWindowsHook( struct win_hook_params *params, ULONG size )
+NTSTATUS WINAPI User32CallWindowsHook( void *args, ULONG size )
 {
+    struct win_hook_params *params = args;
     HOOKPROC proc = params->proc;
-    const WCHAR *module = NULL;
     HMODULE free_module = 0;
-    void *ret_lparam = NULL;
+    void *ret_ptr = NULL;
     CBT_CREATEWNDW cbtc;
-    UINT ret_lparam_size = 0;
+    UINT ret_size = 0;
+    size_t lparam_offset;
     LRESULT ret;
 
-    if (size > sizeof(*params) + params->lparam_size)
-        module = (const WCHAR *)((const char *)(params + 1) + params->lparam_size);
+    lparam_offset = FIELD_OFFSET( struct win_hook_params, module[wcslen( params->module ) + 1]);
 
-    if (params->lparam_size)
+    if (lparam_offset < size)
     {
-        ret_lparam = (void *)params->lparam;
-        ret_lparam_size = params->lparam_size;
-        params->lparam = (LPARAM)(params + 1);
+        lparam_offset = (lparam_offset + 15) & ~15; /* align */
+        ret_size = size - lparam_offset;
+        ret_ptr = (char *)params + lparam_offset;
+        params->lparam = (LPARAM)ret_ptr;
 
-        if (params->id == WH_CBT && params->code == HCBT_CREATEWND)
+        switch (params->id)
         {
-            CREATESTRUCTW *cs = (CREATESTRUCTW *)params->lparam;
-            const WCHAR *ptr = (const WCHAR *)(cs + 1);
-
-            if (!IS_INTRESOURCE(cs->lpszName))
+        case WH_CBT:
+            if (params->code == HCBT_CREATEWND)
             {
-                cs->lpszName = ptr;
-                ptr += wcslen( ptr ) + 1;
+                cbtc.hwndInsertAfter = HWND_TOP;
+                unpack_message( (HWND)params->wparam, WM_CREATE, NULL, (LPARAM *)&cbtc.lpcs,
+                                ret_ptr, FALSE );
+                params->lparam = (LPARAM)&cbtc;
+                ret_size = sizeof(*cbtc.lpcs);
             }
-            if (!IS_INTRESOURCE(cs->lpszClass))
-                cs->lpszClass = ptr;
+            break;
+        case WH_CALLWNDPROC:
+            if (ret_size > sizeof(CWPSTRUCT))
+            {
+                CWPSTRUCT *cwp = (CWPSTRUCT *)params->lparam;
+                size_t offset = (lparam_offset + sizeof(*cwp) + 15) & ~15;
 
-            cbtc.hwndInsertAfter = HWND_TOP;
-            cbtc.lpcs = cs;
-            params->lparam = (LPARAM)&cbtc;
-            ret_lparam_size = sizeof(*cs);
+                unpack_message( cwp->hwnd, cwp->message, &cwp->wParam, &cwp->lParam,
+                                (char *)params + offset, !params->prev_unicode );
+                ret_size = 0;
+                break;
+            }
+        case WH_CALLWNDPROCRET:
+            if (ret_size > sizeof(CWPRETSTRUCT))
+            {
+                CWPRETSTRUCT *cwpret = (CWPRETSTRUCT *)params->lparam;
+                size_t offset = (lparam_offset + sizeof(*cwpret) + 15) & ~15;
+
+                unpack_message( cwpret->hwnd, cwpret->message, &cwpret->wParam, &cwpret->lParam,
+                                (char *)params + offset, !params->prev_unicode );
+                ret_size = 0;
+                break;
+            }
         }
     }
-    if (module && !(proc = get_hook_proc( proc, module, &free_module ))) return FALSE;
+    if (params->module[0] && !(proc = get_hook_proc( proc, params->module, &free_module )))
+        return FALSE;
 
     ret = call_hook_proc( proc, params->id, params->code, params->wparam, params->lparam,
                           params->prev_unicode, params->next_unicode );
 
     if (free_module) FreeLibrary( free_module );
-    if (ret_lparam) memcpy( ret_lparam, params + 1, ret_lparam_size );
-    else if (ret_lparam_size) NtCallbackReturn( params + 1, ret_lparam_size, ret );
-    return ret;
+
+    if (ret_size)
+    {
+        LRESULT *result_ptr = (LRESULT *)ret_ptr - 1;
+        *result_ptr = ret;
+        return NtCallbackReturn( result_ptr, sizeof(*result_ptr) + ret_size, STATUS_SUCCESS );
+    }
+    return NtCallbackReturn( &ret, sizeof(ret), STATUS_SUCCESS );
 }
 
 /***********************************************************************

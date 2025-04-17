@@ -692,8 +692,7 @@ static WCHAR *edit_line_history( struct console *console, unsigned int index )
     }
     else if(console->edit_line.current_history)
     {
-        if ((ptr = malloc( (lstrlenW(console->edit_line.current_history) + 1) * sizeof(WCHAR) )))
-            lstrcpyW( ptr, console->edit_line.current_history );
+        ptr = wcsdup( console->edit_line.current_history );
     }
     return ptr;
 }
@@ -1314,7 +1313,7 @@ static NTSTATUS process_console_input( struct console *console )
                     ctrl_value = ir.Event.KeyEvent.uChar.UnicodeChar;
                     ctrl_keyvalue = ir.Event.KeyEvent.dwControlKeyState;
                     ctx->status = STATUS_SUCCESS;
-                    TRACE("Found ctrl char in mask: ^%lc %x\n", ir.Event.KeyEvent.uChar.UnicodeChar + '@', ctx->ctrl_mask);
+                    TRACE("Found ctrl char in mask: ^%c %x\n", ir.Event.KeyEvent.uChar.UnicodeChar + '@', ctx->ctrl_mask);
                     continue;
                 }
                 if (ir.Event.KeyEvent.uChar.UnicodeChar == 10) continue;
@@ -1502,22 +1501,16 @@ NTSTATUS write_console_input( struct console *console, const INPUT_RECORD *recor
         console->records = new_rec;
         console->record_size = console->record_size * 2 + count;
     }
-    memcpy( console->records + console->record_count, records, count * sizeof(INPUT_RECORD) );
 
     if (console->mode & ENABLE_PROCESSED_INPUT)
     {
-        unsigned int i = 0;
-        while (i < count)
+        unsigned int i;
+        for (i = 0; i < count; i++)
         {
             unsigned int event;
 
-            if (map_to_ctrlevent(console, &records[i], &event))
+            if (map_to_ctrlevent( console, &records[i], &event ))
             {
-                if (i != count - 1)
-                    memcpy( &console->records[console->record_count + i],
-                            &console->records[console->record_count + i + 1],
-                            (count - i - 1) * sizeof(INPUT_RECORD) );
-                count--;
                 if (records[i].Event.KeyEvent.bKeyDown)
                 {
                     struct condrv_ctrl_event ctrl_event;
@@ -1527,13 +1520,17 @@ NTSTATUS write_console_input( struct console *console, const INPUT_RECORD *recor
                     ctrl_event.group_id = 0;
                     NtDeviceIoControlFile( console->server, NULL, NULL, NULL, &io, IOCTL_CONDRV_CTRL_EVENT,
                                            &ctrl_event, sizeof(ctrl_event), NULL, 0 );
-
                 }
             }
-            else i++;
+            else
+                console->records[console->record_count++] = records[i];
         }
     }
-    console->record_count += count;
+    else
+    {
+        memcpy( console->records + console->record_count, records, count * sizeof(INPUT_RECORD) );
+        console->record_count += count;
+    }
     return flush ? process_console_input( console ) : STATUS_SUCCESS;
 }
 
@@ -1768,6 +1765,11 @@ static DWORD WINAPI tty_input( void *param )
             switch (ch)
             {
             case 3: /* end of text */
+                if (console->is_unix && (console->mode & ENABLE_PROCESSED_INPUT))
+                {
+                    key_press( console, ch, 'C', LEFT_CTRL_PRESSED );
+                    break;
+                }
                 LeaveCriticalSection( &console_section );
                 goto done;
             case '\n':
@@ -2692,7 +2694,17 @@ static NTSTATUS console_input_ioctl( struct console *console, unsigned int code,
             if (!(info = alloc_ioctl_buffer( sizeof(*info )))) return STATUS_NO_MEMORY;
             info->input_cp    = console->input_cp;
             info->output_cp   = console->output_cp;
-            info->input_count = console->record_count;
+            return STATUS_SUCCESS;
+        }
+
+    case IOCTL_CONDRV_GET_INPUT_COUNT:
+        {
+            DWORD *count;
+            TRACE( "get input count\n" );
+            if (in_size || *out_size != sizeof(*count)) return STATUS_INVALID_PARAMETER;
+            ensure_tty_input_thread( console );
+            if (!(count = alloc_ioctl_buffer( sizeof(*count )))) return STATUS_NO_MEMORY;
+            *count = console->record_count;
             return STATUS_SUCCESS;
         }
 
@@ -2839,6 +2851,12 @@ static NTSTATUS process_console_ioctls( struct console *console )
     }
 }
 
+static BOOL is_key_message( const MSG *msg )
+{
+    return msg->message == WM_KEYDOWN || msg->message == WM_SYSKEYDOWN ||
+           msg->message == WM_KEYUP   || msg->message == WM_SYSKEYUP;
+}
+
 static int main_loop( struct console *console, HANDLE signal )
 {
     HANDLE signal_event = NULL;
@@ -2873,10 +2891,15 @@ static int main_loop( struct console *console, HANDLE signal )
         if (res == WAIT_OBJECT_0 + wait_cnt)
         {
             MSG msg;
+
             while (PeekMessageW( &msg, 0, 0, 0, PM_REMOVE ))
             {
+                BOOL translated = FALSE;
                 if (msg.message == WM_QUIT) return 0;
-                DispatchMessageW(&msg);
+                if (is_key_message( &msg ) && msg.wParam == VK_PROCESSKEY)
+                    translated = TranslateMessage( &msg );
+                if (!translated || msg.hwnd != console->win)
+                    DispatchMessageW( &msg );
             }
             continue;
         }

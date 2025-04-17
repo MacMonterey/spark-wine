@@ -1,8 +1,10 @@
 PROGRAMS = \
+	makedep \
 	make_xftmpl
 
-C_SRCS = \
-	make_xftmpl.c
+SOURCES = \
+	make_xftmpl.c \
+	makedep.c
 
-IN_SRCS = \
-	wineapploader.in
+makedep_OBJS = makedep.o
+make_xftmpl_OBJS = make_xftmpl.o

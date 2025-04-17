@@ -72,12 +72,7 @@ static NTSTATUS read_nt_symlink( const WCHAR *name, WCHAR *target, DWORD size )
     UNICODE_STRING nameW;
     HANDLE handle;
 
-    attr.Length = sizeof(attr);
-    attr.RootDirectory = 0;
-    attr.Attributes = OBJ_CASE_INSENSITIVE;
-    attr.ObjectName = &nameW;
-    attr.SecurityDescriptor = NULL;
-    attr.SecurityQualityOfService = NULL;
+    InitializeObjectAttributes( &attr, &nameW, OBJ_CASE_INSENSITIVE, 0, NULL );
     RtlInitUnicodeString( &nameW, name );
 
     if (!(status = NtOpenSymbolicLinkObject( &handle, SYMBOLIC_LINK_QUERY, &attr )))
@@ -106,13 +101,7 @@ static BOOL open_device_root( LPCWSTR root, HANDLE *handle )
         SetLastError( ERROR_PATH_NOT_FOUND );
         return FALSE;
     }
-    attr.Length = sizeof(attr);
-    attr.RootDirectory = 0;
-    attr.Attributes = OBJ_CASE_INSENSITIVE;
-    attr.ObjectName = &nt_name;
-    attr.SecurityDescriptor = NULL;
-    attr.SecurityQualityOfService = NULL;
-
+    InitializeObjectAttributes( &attr, &nt_name, OBJ_CASE_INSENSITIVE, 0, NULL );
     status = NtOpenFile( handle, SYNCHRONIZE, &attr, &io, 0,
                          FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT );
     RtlFreeUnicodeString( &nt_name );
@@ -184,13 +173,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetVolumeInformationW( LPCWSTR root, LPWSTR label,
         goto done;
     }
 
-    attr.Length = sizeof(attr);
-    attr.RootDirectory = 0;
-    attr.Attributes = OBJ_CASE_INSENSITIVE;
-    attr.ObjectName = &nt_name;
-    attr.SecurityDescriptor = NULL;
-    attr.SecurityQualityOfService = NULL;
-
+    InitializeObjectAttributes( &attr, &nt_name, OBJ_CASE_INSENSITIVE, 0, NULL );
     nt_name.Length -= sizeof(WCHAR);  /* without trailing slash */
     status = NtOpenFile( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE,
                          FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT );
@@ -199,8 +182,6 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetVolumeInformationW( LPCWSTR root, LPWSTR label,
     if (status)
     {
         TRACE( "cannot open device %s: %lx\n", debugstr_w(nt_name.Buffer), status );
-        if (status == STATUS_ACCESS_DENIED)
-            MESSAGE( "wine: Read access denied for device %s, FS volume label and serial are not available.\n", debugstr_w(nt_name.Buffer) );
         status = NtOpenFile( &handle, SYNCHRONIZE, &attr, &io, 0,
                                       FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT );
     }
@@ -400,7 +381,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH DefineDosDeviceW( DWORD flags, const WCHAR *device
     InitializeObjectAttributes( &attr, &nt_name, OBJ_CASE_INSENSITIVE | OBJ_PERMANENT, 0, NULL );
     if (flags & DDD_REMOVE_DEFINITION)
     {
-        if (!set_ntstatus( NtOpenSymbolicLinkObject( &handle, 0, &attr ) ))
+        if (!set_ntstatus( NtOpenSymbolicLinkObject( &handle, DELETE, &attr ) ))
             return FALSE;
 
         status = NtMakeTemporaryObject( handle );
@@ -475,12 +456,7 @@ DWORD WINAPI QueryDosDeviceW( LPCWSTR devname, LPWSTR target, DWORD bufsize )
         HANDLE handle;
         WCHAR *p = target;
 
-        attr.Length = sizeof(attr);
-        attr.RootDirectory = 0;
-        attr.ObjectName = &nt_name;
-        attr.Attributes = OBJ_CASE_INSENSITIVE;
-        attr.SecurityDescriptor = NULL;
-        attr.SecurityQualityOfService = NULL;
+        InitializeObjectAttributes( &attr, &nt_name, OBJ_CASE_INSENSITIVE, 0, NULL );
         status = NtOpenDirectoryObject( &handle, FILE_LIST_DIRECTORY, &attr );
         if (!status)
         {
@@ -521,12 +497,7 @@ DWORD WINAPI DECLSPEC_HOTPATCH GetLogicalDrives(void)
     HANDLE handle;
 
     nt_name.Length -= sizeof(WCHAR);  /* without trailing slash */
-    attr.Length = sizeof(attr);
-    attr.RootDirectory = 0;
-    attr.ObjectName = &nt_name;
-    attr.Attributes = OBJ_CASE_INSENSITIVE;
-    attr.SecurityDescriptor = NULL;
-    attr.SecurityQualityOfService = NULL;
+    InitializeObjectAttributes( &attr, &nt_name, OBJ_CASE_INSENSITIVE, 0, NULL );
     status = NtOpenDirectoryObject( &handle, FILE_LIST_DIRECTORY, &attr );
     if (!status)
     {
@@ -735,6 +706,43 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetDiskFreeSpaceA( LPCSTR root, LPDWORD cluster_se
 
     if (root && !(rootW = file_name_AtoW( root, FALSE ))) return FALSE;
     return GetDiskFreeSpaceW( rootW, cluster_sectors, sector_bytes, free_clusters, total_clusters );
+}
+
+
+/***********************************************************************
+ *           GetDiskSpaceInformationW   (kernelbase.@)
+ */
+HRESULT WINAPI GetDiskSpaceInformationW( LPCWSTR root, DISK_SPACE_INFORMATION *info )
+{
+    IO_STATUS_BLOCK io;
+    NTSTATUS status;
+    HANDLE handle;
+
+    TRACE( "%s,%p\n", debugstr_w(root), info );
+
+    if (!info)
+        return HRESULT_FROM_NT( ERROR_INVALID_DATA | ERROR_SEVERITY_WARNING | ERROR_SEVERITY_INFORMATIONAL );
+
+    if (!open_device_root( root, &handle )) return HRESULT_FROM_WIN32( ERROR_PATH_NOT_FOUND );
+
+    status = NtQueryVolumeInformationFile( handle, &io, (FILE_FS_FULL_SIZE_INFORMATION_EX *)info, sizeof(*info),
+                                           FileFsFullSizeInformationEx );
+    NtClose( handle );
+    if (!set_ntstatus( status )) return status;
+
+    return S_OK;
+}
+
+
+/***********************************************************************
+ *           GetDiskSpaceInformationA   (kernelbase.@)
+ */
+HRESULT WINAPI GetDiskSpaceInformationA( LPCSTR root, DISK_SPACE_INFORMATION *info )
+{
+    WCHAR *rootW = NULL;
+
+    if (root && !(rootW = file_name_AtoW( root, FALSE ))) return FALSE;
+    return GetDiskSpaceInformationW( rootW, info );
 }
 
 

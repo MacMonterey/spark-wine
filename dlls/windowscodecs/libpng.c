@@ -20,8 +20,6 @@
 #include <stdarg.h>
 #include <png.h>
 
-#define NONAMELESSUNION
-
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "windef.h"
@@ -351,6 +349,12 @@ static HRESULT CDECL png_decoder_get_frame_info(struct decoder *iface, UINT fram
     return S_OK;
 }
 
+static HRESULT CDECL png_decoder_get_decoder_palette(struct decoder *iface, UINT frame, WICColor *colors,
+        UINT *num_colors)
+{
+    return WINCODEC_ERR_PALETTEUNAVAILABLE;
+}
+
 static HRESULT CDECL png_decoder_copy_pixels(struct decoder *iface, UINT frame,
     const WICRect *prc, UINT stride, UINT buffersize, BYTE *buffer)
 {
@@ -379,10 +383,12 @@ static HRESULT CDECL png_decoder_get_metadata_blocks(struct decoder* iface,
     do
     {
         hr = stream_seek(This->stream, seek, STREAM_SEEK_SET, &chunk_start);
-        if (FAILED(hr)) goto end;
+        if (FAILED(hr))
+            break;
 
         hr = read_png_chunk(This->stream, chunk_type, NULL, &chunk_size);
-        if (FAILED(hr)) goto end;
+        if (FAILED(hr))
+            break;
 
         if (chunk_type[0] >= 'a' && chunk_type[0] <= 'z' &&
             memcmp(chunk_type, "tRNS", 4) && memcmp(chunk_type, "pHYs", 4))
@@ -391,24 +397,17 @@ static HRESULT CDECL png_decoder_get_metadata_blocks(struct decoder* iface,
             if (*count == metadata_blocks_size)
             {
                 struct decoder_block *new_metadata_blocks;
-                ULONG new_metadata_blocks_size;
 
-                new_metadata_blocks_size = 4 + metadata_blocks_size * 2;
-                new_metadata_blocks = RtlAllocateHeap(GetProcessHeap(), 0,
-                    new_metadata_blocks_size * sizeof(*new_metadata_blocks));
+                metadata_blocks_size = 4 + metadata_blocks_size * 2;
+                new_metadata_blocks = realloc(result, metadata_blocks_size * sizeof(*new_metadata_blocks));
 
                 if (!new_metadata_blocks)
                 {
                     hr = E_OUTOFMEMORY;
-                    goto end;
+                    break;
                 }
 
-                memcpy(new_metadata_blocks, result,
-                    *count * sizeof(*new_metadata_blocks));
-
-                RtlFreeHeap(GetProcessHeap(), 0, result);
                 result = new_metadata_blocks;
-                metadata_blocks_size = new_metadata_blocks_size;
             }
 
             result[*count].offset = chunk_start;
@@ -420,7 +419,6 @@ static HRESULT CDECL png_decoder_get_metadata_blocks(struct decoder* iface,
         seek = chunk_start + chunk_size + 12; /* skip data and CRC */
     } while (memcmp(chunk_type, "IEND", 4));
 
-end:
     if (SUCCEEDED(hr))
     {
         *blocks = result;
@@ -429,7 +427,7 @@ end:
     {
         *count = 0;
         *blocks = NULL;
-        RtlFreeHeap(GetProcessHeap(), 0, result);
+        free(result);
     }
     return hr;
 }
@@ -439,7 +437,7 @@ static HRESULT CDECL png_decoder_get_color_context(struct decoder* iface, UINT f
 {
     struct png_decoder *This = impl_from_decoder(iface);
 
-    *data = RtlAllocateHeap(GetProcessHeap(), 0, This->color_profile_len);
+    *data = malloc(This->color_profile_len);
     *datasize = This->color_profile_len;
 
     if (!*data)
@@ -456,12 +454,13 @@ static void CDECL png_decoder_destroy(struct decoder* iface)
 
     free(This->image_bits);
     free(This->color_profile);
-    RtlFreeHeap(GetProcessHeap(), 0, This);
+    free(This);
 }
 
 static const struct decoder_funcs png_decoder_vtable = {
     png_decoder_initialize,
     png_decoder_get_frame_info,
+    png_decoder_get_decoder_palette,
     png_decoder_copy_pixels,
     png_decoder_get_metadata_blocks,
     png_decoder_get_color_context,
@@ -472,7 +471,7 @@ HRESULT CDECL png_decoder_create(struct decoder_info *info, struct decoder **res
 {
     struct png_decoder *This;
 
-    This = RtlAllocateHeap(GetProcessHeap(), 0, sizeof(*This));
+    This = malloc(sizeof(*This));
 
     if (!This)
     {
@@ -804,7 +803,7 @@ static void CDECL png_encoder_destroy(struct encoder *encoder)
     if (This->png_ptr)
         png_destroy_write_struct(&This->png_ptr, &This->info_ptr);
     free(This->data);
-    RtlFreeHeap(GetProcessHeap(), 0, This);
+    free(This);
 }
 
 static const struct encoder_funcs png_encoder_vtable = {
@@ -821,7 +820,7 @@ HRESULT CDECL png_encoder_create(struct encoder_info *info, struct encoder **res
 {
     struct png_encoder *This;
 
-    This = RtlAllocateHeap(GetProcessHeap(), 0, sizeof(*This));
+    This = malloc(sizeof(*This));
 
     if (!This)
     {

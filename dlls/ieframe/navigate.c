@@ -16,8 +16,6 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#define NONAMELESSUNION
-
 #include "ieframe.h"
 
 #include "exdispid.h"
@@ -80,7 +78,7 @@ static void dump_BINDINFO(BINDINFO *bi)
             "}\n",
 
             bi->cbSize, debugstr_w(bi->szExtraInfo),
-            bi->stgmedData.tymed, bi->stgmedData.u.hGlobal, bi->stgmedData.pUnkForRelease,
+            bi->stgmedData.tymed, bi->stgmedData.hGlobal, bi->stgmedData.pUnkForRelease,
             bi->grfBindInfoF > BINDINFOF_URLENCODEDEXTRAINFO
                 ? "unknown" : BINDINFOF_str[bi->grfBindInfoF],
             bi->dwBindVerb > BINDVERB_CUSTOM
@@ -308,12 +306,13 @@ static HRESULT WINAPI BindStatusCallback_OnProgress(IBindStatusCallback *iface,
     return S_OK;
 }
 
-void handle_navigation_error(DocHost* doc_host, HRESULT hres, BSTR url, IHTMLWindow2 *win2)
+void handle_navigation_error(DocHost* doc_host, HRESULT status_code, BSTR url, IHTMLWindow2 *win2)
 {
     VARIANT var_status_code, var_frame_name, var_url;
     DISPPARAMS dispparams;
     VARIANTARG params[5];
     VARIANT_BOOL cancel = VARIANT_FALSE;
+    HRESULT hres;
 
     dispparams.cArgs = 5;
     dispparams.cNamedArgs = 0;
@@ -326,7 +325,7 @@ void handle_navigation_error(DocHost* doc_host, HRESULT hres, BSTR url, IHTMLWin
     V_VT(params+1) = VT_VARIANT|VT_BYREF;
     V_VARIANTREF(params+1) = &var_status_code;
     V_VT(&var_status_code) = VT_I4;
-    V_I4(&var_status_code) = hres;
+    V_I4(&var_status_code) = status_code;
 
     V_VT(params+2) = VT_VARIANT|VT_BYREF;
     V_VARIANTREF(params+2) = &var_frame_name;
@@ -349,8 +348,48 @@ void handle_navigation_error(DocHost* doc_host, HRESULT hres, BSTR url, IHTMLWin
     call_sink(doc_host->cps.wbe2, DISPID_NAVIGATEERROR, &dispparams);
     SysFreeString(V_BSTR(&var_frame_name));
 
-    if(!cancel)
-        FIXME("Navigate to error page\n");
+    if(!cancel) {
+        IHTMLPrivateWindow *priv_window;
+        IHTMLWindow2 *tmp;
+
+        if(win2)
+            hres = IHTMLWindow2_QueryInterface(win2, &IID_IHTMLPrivateWindow, (void**)&priv_window);
+        else {
+            hres = get_window(doc_host, &tmp);
+            if(SUCCEEDED(hres)) {
+                if(!tmp)
+                    hres = E_UNEXPECTED;
+                else {
+                    hres = IHTMLWindow2_QueryInterface(tmp, &IID_IHTMLPrivateWindow, (void**)&priv_window);
+                    IHTMLWindow2_Release(tmp);
+                }
+            }
+        }
+        if(SUCCEEDED(hres)) {
+            /* Error page navigation URL is a local resource (varies on native, also depending on error),
+             * with the fragment being the original URL of the page that failed to load. We add a query
+             * with the error code so the generic error page can display the actual error code there. */
+            WCHAR buf[32], sysdirbuf[MAX_PATH];
+            BSTR nav_url;
+            UINT len;
+
+            if(SUCCEEDED(status_code))
+                len = swprintf(buf, ARRAY_SIZE(buf), L"ERROR.HTM?HTTP %u", status_code);
+            else
+                len = swprintf(buf, ARRAY_SIZE(buf), L"ERROR.HTM?0x%08x", status_code);
+
+            len = 6 /* res:// */ + GetSystemDirectoryW(sysdirbuf, ARRAY_SIZE(sysdirbuf)) +
+                  ARRAY_SIZE(L"\\shdoclc.dll/")-1 + len + 1 /* # */ + wcslen(url);
+
+            nav_url = SysAllocStringLen(NULL, len);
+            if(nav_url) {
+                swprintf(nav_url, len + 1, L"res://%s\\shdoclc.dll/%s#%s", sysdirbuf, buf, url);
+                IHTMLPrivateWindow_SuperNavigate(priv_window, nav_url, NULL, NULL, NULL, NULL, NULL, 2);
+                SysFreeString(nav_url);
+            }
+            IHTMLPrivateWindow_Release(priv_window);
+        }
+    }
 }
 
 static HRESULT WINAPI BindStatusCallback_OnStopBinding(IBindStatusCallback *iface,
@@ -392,7 +431,7 @@ static HRESULT WINAPI BindStatusCallback_GetBindInfo(IBindStatusCallback *iface,
         pbindinfo->dwBindVerb = BINDVERB_POST;
 
         pbindinfo->stgmedData.tymed = TYMED_HGLOBAL;
-        pbindinfo->stgmedData.u.hGlobal = This->post_data;
+        pbindinfo->stgmedData.hGlobal = This->post_data;
         pbindinfo->cbstgmedData = This->post_data_len;
         pbindinfo->stgmedData.pUnkForRelease = (IUnknown*)&This->IBindStatusCallback_iface;
         IBindStatusCallback_AddRef(&This->IBindStatusCallback_iface);
@@ -639,8 +678,6 @@ static BOOL try_application_url(LPCWSTR url)
     DWORD res, type;
     HRESULT hres;
 
-    static const WCHAR wszURLProtocol[] = {'U','R','L',' ','P','r','o','t','o','c','o','l',0};
-
     hres = CoInternetParseUrl(url, PARSE_SCHEMA, 0, app, ARRAY_SIZE(app), NULL, 0);
     if(FAILED(hres))
         return FALSE;
@@ -649,7 +686,7 @@ static BOOL try_application_url(LPCWSTR url)
     if(res != ERROR_SUCCESS)
         return FALSE;
 
-    res = RegQueryValueExW(hkey, wszURLProtocol, NULL, &type, NULL, NULL);
+    res = RegQueryValueExW(hkey, L"URL Protocol", NULL, &type, NULL, NULL);
     RegCloseKey(hkey);
     if(res != ERROR_SUCCESS || type != REG_SZ)
         return FALSE;
@@ -1040,7 +1077,7 @@ static HRESULT navigate_hlink(DocHost *This, IMoniker *mon, IBindCtx *bindctx,
     if(bindinfo.dwBindVerb == BINDVERB_POST) {
         post_data_len = bindinfo.cbstgmedData;
         if(post_data_len)
-            post_data = bindinfo.stgmedData.u.hGlobal;
+            post_data = bindinfo.stgmedData.hGlobal;
     }
 
     if(This->doc_navigate) {
@@ -1063,22 +1100,16 @@ HRESULT go_home(DocHost *This)
     HKEY hkey;
     DWORD res, type, size;
     WCHAR wszPageName[MAX_PATH];
-    static const WCHAR wszAboutBlank[] = {'a','b','o','u','t',':','b','l','a','n','k',0};
-    static const WCHAR wszStartPage[] = {'S','t','a','r','t',' ','P','a','g','e',0};
-    static const WCHAR wszSubKey[] = {'S','o','f','t','w','a','r','e','\\',
-                                      'M','i','c','r','o','s','o','f','t','\\',
-                                      'I','n','t','e','r','n','e','t',' ','E','x','p','l','o','r','e','r','\\',
-                                      'M','a','i','n',0};
 
-    res = RegOpenKeyW(HKEY_CURRENT_USER, wszSubKey, &hkey);
+    res = RegOpenKeyW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Internet Explorer\\Main", &hkey);
     if (res != ERROR_SUCCESS)
-        return navigate_url(This, wszAboutBlank, NULL, NULL, NULL, NULL);
+        return navigate_url(This, L"about:blank", NULL, NULL, NULL, NULL);
 
     size = sizeof(wszPageName);
-    res = RegQueryValueExW(hkey, wszStartPage, NULL, &type, (LPBYTE)wszPageName, &size);
+    res = RegQueryValueExW(hkey, L"Start Page", NULL, &type, (LPBYTE)wszPageName, &size);
     RegCloseKey(hkey);
     if (res != ERROR_SUCCESS || type != REG_SZ)
-        return navigate_url(This, wszAboutBlank, NULL, NULL, NULL, NULL);
+        return navigate_url(This, L"about:blank", NULL, NULL, NULL, NULL);
 
     return navigate_url(This, wszPageName, NULL, NULL, NULL, NULL);
 }

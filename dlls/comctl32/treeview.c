@@ -47,8 +47,6 @@
 #include <limits.h>
 #include <stdlib.h>
 
-#define NONAMELESSUNION
-
 #include "windef.h"
 #include "winbase.h"
 #include "wingdi.h"
@@ -1229,7 +1227,7 @@ TREEVIEW_DoSetItemT(const TREEVIEW_INFO *infoPtr, TREEVIEW_ITEM *item,
 static LRESULT
 TREEVIEW_InsertItemT(TREEVIEW_INFO *infoPtr, const TVINSERTSTRUCTW *ptdi, BOOL isW)
 {
-    const TVITEMEXW *tvItem = &ptdi->u.itemex;
+    const TVITEMEXW *tvItem = &ptdi->itemex;
     HTREEITEM insertAfter;
     TREEVIEW_ITEM *newItem, *parentItem;
     BOOL bTextUpdated = FALSE;
@@ -2920,7 +2918,7 @@ TREEVIEW_Refresh(TREEVIEW_INFO *infoPtr, HDC hdc, const RECT *rc)
     if (infoPtr->dwStyle & TVS_HASBUTTONS && (theme = GetWindowTheme(infoPtr->hwnd)))
     {
         if (IsThemeBackgroundPartiallyTransparent(theme, TVP_GLYPH, 0))
-            DrawThemeParentBackground(infoPtr->hwnd, hdc, NULL);
+            FillRect(hdc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
     }
 
     for (item = infoPtr->root->firstChild;
@@ -3350,10 +3348,10 @@ static BOOL
 TREEVIEW_SendExpanding(const TREEVIEW_INFO *infoPtr, TREEVIEW_ITEM *item,
 		       UINT action)
 {
-    return !TREEVIEW_SendTreeviewNotify(infoPtr, TVN_ITEMEXPANDINGW, action,
-					TVIF_HANDLE | TVIF_STATE | TVIF_PARAM
-					| TVIF_IMAGE | TVIF_SELECTEDIMAGE,
-					0, item);
+    return TREEVIEW_SendTreeviewNotify(infoPtr, TVN_ITEMEXPANDINGW, action,
+                                       TVIF_HANDLE | TVIF_STATE | TVIF_PARAM
+                                       | TVIF_IMAGE | TVIF_SELECTEDIMAGE,
+                                       0, item);
 }
 
 static VOID
@@ -3385,8 +3383,8 @@ TREEVIEW_Collapse(TREEVIEW_INFO *infoPtr, TREEVIEW_ITEM *item,
     if (!TREEVIEW_HasChildren(infoPtr, item))
 	return FALSE;
 
-    if (bUser)
-	TREEVIEW_SendExpanding(infoPtr, item, action);
+    if (bUser && TREEVIEW_SendExpanding(infoPtr, item, action))
+        return TRUE;
 
     if (item->firstChild == NULL)
 	return FALSE;
@@ -3515,11 +3513,11 @@ TREEVIEW_Expand(TREEVIEW_INFO *infoPtr, TREEVIEW_ITEM *item,
                                     !(item->state & TVIS_EXPANDEDONCE));
     if (sendsNotifications)
     {
-	if (!TREEVIEW_SendExpanding(infoPtr, item, TVE_EXPAND))
-	{
-	    TRACE("  TVN_ITEMEXPANDING returned TRUE, exiting...\n");
-	    return FALSE;
-	}
+        if (TREEVIEW_SendExpanding(infoPtr, item, TVE_EXPAND))
+        {
+            TRACE("  TVN_ITEMEXPANDING returned TRUE, exiting...\n");
+            return TRUE;
+        }
     }
     if (!item->firstChild)
         return FALSE;
@@ -4118,9 +4116,11 @@ TREEVIEW_EndEditLabelNow(TREEVIEW_INFO *infoPtr, BOOL bCancel)
 static LRESULT
 TREEVIEW_HandleTimer(TREEVIEW_INFO *infoPtr, WPARAM wParam)
 {
+    static unsigned int once;
+
     if (wParam != TV_EDIT_TIMER)
     {
-	ERR("got unknown timer\n");
+	if (!once++) ERR("got unknown timer %Id\n", wParam);
 	return 1;
     }
 
@@ -4666,7 +4666,7 @@ static INT TREEVIEW_ProcessLetterKeys(TREEVIEW_INFO *infoPtr, WPARAM charCode, L
     if (!charCode || !keyData) return 0;
 
     /* only allow the valid WM_CHARs through */
-    if (!isalnum(charCode) &&
+    if (!iswalnum(charCode) &&
         charCode != '.' && charCode != '`' && charCode != '!' &&
         charCode != '@' && charCode != '#' && charCode != '$' &&
         charCode != '%' && charCode != '^' && charCode != '&' &&

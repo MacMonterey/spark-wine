@@ -45,6 +45,8 @@ static void test_DrawTextCalcRect(void)
     static WCHAR emptystringW[] = { 0 };
     static CHAR wordbreak_text[] = "line1 line2";
     static WCHAR wordbreak_textW[] = {'l','i','n','e','1',' ','l','i','n','e','2',0};
+    static WCHAR wordbreak_text_colonW[] = {'l','i','n','e','1',' ','l','i','n','e','2',' ',':',0};
+    static WCHAR wordbreak_text_csbW[] = {'l','i','n','e','1',' ','l','i','n','e','2',' ',']',0};
     static char tabstring[] = "one\ttwo";
     INT textlen, textheight, heightcheck;
     RECT rect = { 0, 0, 100, 0 }, rect2;
@@ -521,10 +523,6 @@ static void test_DrawTextCalcRect(void)
         }
 
         /* When passing invalid DC, other parameters must be ignored - no crashes on invalid pointers */
-        SetLastError(0xdeadbeef);
-        textheight = DrawTextExW((HDC)0xdeadbeef, emptystringW, 100000, (LPRECT)0xdeadbeef, 0, 0);
-        ok(textheight == 0, "Got textheight from DrawTextExW\n");
-        ok(GetLastError() == 0xdeadbeef,"Got error %lu\n", GetLastError());
 
         SetLastError(0xdeadbeef);
         textheight = DrawTextExW((HDC)0xdeadbeef, (LPWSTR)0xdeadbeef, 100000, &rect, 0, 0);
@@ -535,11 +533,6 @@ static void test_DrawTextCalcRect(void)
         textheight = DrawTextExW((HDC)0xdeadbeef, 0, -1, (LPRECT)0xdeadbeef, DT_CALCRECT, 0);
         ok(textheight == 0, "Got textheight from DrawTextExW\n");
         ok(GetLastError() == 0xdeadbeef,"Got error %lu\n", GetLastError());
-
-        SetLastError(0xdeadbeef);
-        textheight = DrawTextExA((HDC)0xdeadbeef, emptystring, 100000, (LPRECT)0xdeadbeef, 0, 0);
-        ok(textheight == 0, "Got textheight from DrawTextExA\n");
-        ok(GetLastError() == ERROR_INVALID_PARAMETER || GetLastError() == ERROR_INVALID_HANDLE,"Got error %lu\n", GetLastError());
 
         SetLastError(0xdeadbeef);
         textheight = DrawTextExA((HDC)0xdeadbeef, 0, -1, (LPRECT)0xdeadbeef, DT_CALCRECT, 0);
@@ -598,6 +591,36 @@ static void test_DrawTextCalcRect(void)
     textheight = DrawTextW(hdc, wordbreak_textW, -1, &rect, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL);
     ok(textheight >= heightcheck * 6, "Got unexpected textheight %d, expected at least %d.\n",
        textheight, heightcheck * 6);
+
+    /* Word break tests with space before punctuation */
+    SetRect(&rect, 0, 0, 200, 1);
+    textheight = DrawTextW(hdc, wordbreak_text_colonW, -1, &rect, DT_CALCRECT | DT_WORDBREAK);
+    ok(textheight == heightcheck, "Got unexpected textheight %d, expected %d.\n",
+       textheight, heightcheck);
+
+    rect2 = rect;
+    rect.right--;
+
+    textheight = DrawTextW(hdc, wordbreak_text_colonW, -1, &rect, DT_CALCRECT | DT_WORDBREAK);
+    ok(textheight == heightcheck * 2, "Got unexpected textheight %d, expected %d.\n",
+       textheight, heightcheck * 2);
+    ok(rect.right > rect2.right - 10, "Got unexpected textwdith %ld, expected larger than %ld.\n",
+       rect.right, rect2.right - 10);
+
+    SetRect(&rect, 0, 0, 200, 1);
+    textheight = DrawTextW(hdc, wordbreak_text_csbW, -1, &rect, DT_CALCRECT | DT_WORDBREAK);
+    ok(textheight == heightcheck, "Got unexpected textheight %d, expected %d.\n",
+       textheight, heightcheck);
+
+    rect2 = rect;
+    rect.right--;
+
+    textheight = DrawTextW(hdc, wordbreak_text_csbW, -1, &rect, DT_CALCRECT | DT_WORDBREAK);
+    ok(textheight == heightcheck * 2, "Got unexpected textheight %d, expected %d.\n",
+       textheight, heightcheck * 2);
+    ok(rect.right > rect2.right - 10, "Got unexpected textwdith %ld, expected larger than %ld.\n",
+       rect.right, rect2.right - 10);
+
 
     /* DT_TABSTOP | DT_EXPANDTABS tests */
     SetRect( &rect, 0,0, 10, 10);

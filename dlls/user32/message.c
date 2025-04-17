@@ -24,7 +24,6 @@
 #include "user_private.h"
 #include "controls.h"
 #include "dde.h"
-#include "wine/server.h"
 #include "wine/debug.h"
 #include "wine/exception.h"
 
@@ -183,9 +182,9 @@ BOOL map_wparam_AtoW( UINT message, WPARAM *wparam, enum wm_char_mapping mapping
  */
 static void map_wparam_WtoA( MSG *msg, BOOL remove )
 {
-    BYTE ch[4];
+    BYTE ch[4] = { 0 };
     WCHAR wch[2];
-    DWORD len;
+    DWORD i, len;
     DWORD cp;
 
     switch(msg->message)
@@ -195,7 +194,6 @@ static void map_wparam_WtoA( MSG *msg, BOOL remove )
         {
             cp = get_input_codepage();
             wch[0] = LOWORD(msg->wParam);
-            ch[0] = ch[1] = 0;
             len = WideCharToMultiByte( cp, 0, wch, 1, (LPSTR)ch, 2, NULL, NULL );
             if (len == 2)  /* DBCS char */
             {
@@ -224,14 +222,12 @@ static void map_wparam_WtoA( MSG *msg, BOOL remove )
         cp = get_input_codepage();
         wch[0] = LOWORD(msg->wParam);
         wch[1] = HIWORD(msg->wParam);
-        ch[0] = ch[1] = 0;
-        WideCharToMultiByte( cp, 0, wch, 2, (LPSTR)ch, 4, NULL, NULL );
-        msg->wParam = MAKEWPARAM( ch[0] | (ch[1] << 8), 0 );
+        len = WideCharToMultiByte( cp, 0, wch, 2, (LPSTR)ch, 4, NULL, NULL );
+        for (msg->wParam = i = 0; i < len; i++) msg->wParam |= ch[i] << (8 * i);
         break;
     case WM_IME_CHAR:
         cp = get_input_codepage();
         wch[0] = LOWORD(msg->wParam);
-        ch[0] = ch[1] = 0;
         len = WideCharToMultiByte( cp, 0, wch, 1, (LPSTR)ch, 2, NULL, NULL );
         if (len == 2)
             msg->wParam = MAKEWPARAM( (ch[0] << 8) | ch[1], HIWORD(msg->wParam) );
@@ -336,10 +332,9 @@ static HGLOBAL dde_get_pair(HGLOBAL shm)
  *
  * Post a DDE message
  */
-BOOL post_dde_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, DWORD dest_tid, DWORD type )
+NTSTATUS post_dde_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, DWORD dest_tid )
 {
-    void*       ptr = NULL;
-    int         size = 0;
+    struct post_dde_message_call_params params = { .dest_tid = dest_tid };
     UINT_PTR    uiLo, uiHi;
     LPARAM      lp;
     HGLOBAL     hunlock = 0;
@@ -347,7 +342,7 @@ BOOL post_dde_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, DWORD 
     ULONGLONG   hpack;
 
     if (!UnpackDDElParam( msg, lparam, &uiLo, &uiHi ))
-        return FALSE;
+        return STATUS_INVALID_PARAMETER;
 
     lp = lparam;
     switch (msg)
@@ -367,8 +362,8 @@ BOOL post_dde_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, DWORD 
             {
                 hpack = pack_ptr( h );
                 /* send back the value of h on the other side */
-                ptr = &hpack;
-                size = sizeof(hpack);
+                params.ptr = &hpack;
+                params.size = sizeof(hpack);
                 lp = uiLo;
                 TRACE( "send dde-ack %Ix %08Ix => %p\n", uiLo, uiHi, h );
             }
@@ -385,34 +380,34 @@ BOOL post_dde_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, DWORD 
     case WM_DDE_POKE:
         if (uiLo)
         {
-            size = GlobalSize( (HGLOBAL)uiLo ) ;
-            if ((msg == WM_DDE_ADVISE && size < sizeof(DDEADVISE)) ||
-                (msg == WM_DDE_DATA   && size < FIELD_OFFSET(DDEDATA, Value)) ||
-                (msg == WM_DDE_POKE   && size < FIELD_OFFSET(DDEPOKE, Value)))
-                return FALSE;
+            params.size = GlobalSize( (HGLOBAL)uiLo ) ;
+            if ((msg == WM_DDE_ADVISE && params.size < sizeof(DDEADVISE)) ||
+                (msg == WM_DDE_DATA   && params.size < FIELD_OFFSET(DDEDATA, Value)) ||
+                (msg == WM_DDE_POKE   && params.size < FIELD_OFFSET(DDEPOKE, Value)))
+                return STATUS_INVALID_PARAMETER;
         }
-        else if (msg != WM_DDE_DATA) return FALSE;
+        else if (msg != WM_DDE_DATA) return STATUS_INVALID_PARAMETER;
 
         lp = uiHi;
         if (uiLo)
         {
-            if ((ptr = GlobalLock( (HGLOBAL)uiLo) ))
+            if ((params.ptr = GlobalLock( (HGLOBAL)uiLo) ))
             {
-                DDEDATA *dde_data = ptr;
+                DDEDATA *dde_data = params.ptr;
                 TRACE("unused %d, fResponse %d, fRelease %d, fDeferUpd %d, fAckReq %d, cfFormat %d\n",
                        dde_data->unused, dde_data->fResponse, dde_data->fRelease,
                        dde_data->reserved, dde_data->fAckReq, dde_data->cfFormat);
                 hunlock = (HGLOBAL)uiLo;
             }
         }
-        TRACE( "send ddepack %u %Ix\n", size, uiHi );
+        TRACE( "send ddepack %u %Ix\n", params.size, uiHi );
         break;
     case WM_DDE_EXECUTE:
         if (lparam)
         {
-            if ((ptr = GlobalLock( (HGLOBAL)lparam) ))
+            if ((params.ptr = GlobalLock( (HGLOBAL)lparam) ))
             {
-                size = GlobalSize( (HGLOBAL)lparam );
+                params.size = GlobalSize( (HGLOBAL)lparam );
                 /* so that the other side can send it back on ACK */
                 lp = lparam;
                 hunlock = (HGLOBAL)lparam;
@@ -420,32 +415,12 @@ BOOL post_dde_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, DWORD 
         }
         break;
     }
-    SERVER_START_REQ( send_message )
-    {
-        req->id      = dest_tid;
-        req->type    = type;
-        req->flags   = 0;
-        req->win     = wine_server_user_handle( hwnd );
-        req->msg     = msg;
-        req->wparam  = wparam;
-        req->lparam  = lp;
-        req->timeout = TIMEOUT_INFINITE;
-        if (size) wine_server_add_data( req, ptr, size );
-        if ((res = wine_server_call( req )))
-        {
-            if (res == STATUS_INVALID_PARAMETER)
-                /* FIXME: find a STATUS_ value for this one */
-                SetLastError( ERROR_INVALID_THREAD_ID );
-            else
-                SetLastError( RtlNtStatusToDosError(res) );
-        }
-        else
-            FreeDDElParam( msg, lparam );
-    }
-    SERVER_END_REQ;
+
+    res = NtUserMessageCall( hwnd, msg, wparam, lp, &params, NtUserPostDdeCall, FALSE );
+    if (!res) FreeDDElParam( msg, lparam );
     if (hunlock) GlobalUnlock(hunlock);
 
-    return !res;
+    return res;
 }
 
 /***********************************************************************
@@ -586,11 +561,10 @@ static LRESULT dispatch_send_message( struct win_proc_params *params, WPARAM wpa
 
     thread_info->recursion_count++;
 
-    params->result = &retval;
     thread_info->msg_source = msg_source_unavailable;
     SPY_EnterMessage( SPY_SENDMESSAGE, params->hwnd, params->msg, params->wparam, params->lparam );
 
-    dispatch_win_proc_params( params );
+    retval = dispatch_win_proc_params( params );
 
     SPY_ExitMessage( SPY_RESULT_OK, params->hwnd, params->msg, retval, params->wparam, params->lparam );
     thread_info->msg_source = prev_source;
@@ -684,15 +658,6 @@ BOOL WINAPI SendMessageCallbackW( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
 
 
 /***********************************************************************
- *		ReplyMessage  (USER32.@)
- */
-BOOL WINAPI ReplyMessage( LRESULT result )
-{
-    return NtUserReplyMessage( result );
-}
-
-
-/***********************************************************************
  *		InSendMessage  (USER32.@)
  */
 BOOL WINAPI InSendMessage(void)
@@ -740,34 +705,6 @@ BOOL WINAPI PostThreadMessageA( DWORD thread, UINT msg, WPARAM wparam, LPARAM lp
 
 
 /***********************************************************************
- *		PostQuitMessage  (USER32.@)
- *
- * Posts a quit message to the current thread's message queue.
- *
- * PARAMS
- *  exit_code [I] Exit code to return from message loop.
- *
- * RETURNS
- *  Nothing.
- *
- * NOTES
- *  This function is not the same as calling:
- *|PostThreadMessage(GetCurrentThreadId(), WM_QUIT, exit_code, 0);
- *  It instead sets a flag in the message queue that signals it to generate
- *  a WM_QUIT message when there are no other pending sent or posted messages
- *  in the queue.
- */
-void WINAPI PostQuitMessage( INT exit_code )
-{
-    SERVER_START_REQ( post_quit_message )
-    {
-        req->exit_code = exit_code;
-        wine_server_call( req );
-    }
-    SERVER_END_REQ;
-}
-
-/***********************************************************************
  *		PeekMessageW  (USER32.@)
  */
 BOOL WINAPI DECLSPEC_HOTPATCH PeekMessageW( MSG *msg_out, HWND hwnd, UINT first, UINT last, UINT flags )
@@ -808,6 +745,14 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetMessageA( MSG *msg, HWND hwnd, UINT first, UINT
     return (msg->message != WM_QUIT);
 }
 
+static BOOL is_cjk(void)
+{
+    int lang_id = PRIMARYLANGID(GetUserDefaultLangID());
+
+    if (lang_id == LANG_CHINESE || lang_id == LANG_JAPANESE || lang_id == LANG_KOREAN)
+        return TRUE;
+    return FALSE;
+}
 
 /***********************************************************************
  *		IsDialogMessageA (USER32.@)
@@ -815,8 +760,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetMessageA( MSG *msg, HWND hwnd, UINT first, UINT
  */
 BOOL WINAPI IsDialogMessageA( HWND hwndDlg, LPMSG pmsg )
 {
+    enum wm_char_mapping mapping;
     MSG msg = *pmsg;
-    map_wparam_AtoW( msg.message, &msg.wParam, WMCHAR_MAP_NOMAPPING );
+
+    mapping = is_cjk() ? WMCHAR_MAP_ISDIALOGMESSAGE : WMCHAR_MAP_NOMAPPING;
+    if (!map_wparam_AtoW( msg.message, &msg.wParam, mapping ))
+        return TRUE;
     return IsDialogMessageW( hwndDlg, &msg );
 }
 
@@ -850,10 +799,9 @@ static LRESULT dispatch_message( const MSG *msg, BOOL ansi )
 
     if (!NtUserMessageCall( msg->hwnd, msg->message, msg->wParam, msg->lParam,
                             &params, NtUserGetDispatchParams, ansi )) return 0;
-    params.result = &retval;
 
     SPY_EnterMessage( SPY_DISPATCHMESSAGE, msg->hwnd, msg->message, msg->wParam, msg->lParam );
-    dispatch_win_proc_params( &params );
+    retval = dispatch_win_proc_params( &params );
     SPY_ExitMessage( SPY_RESULT_OK, msg->hwnd, msg->message, retval, msg->wParam, msg->lParam );
     return retval;
 }
@@ -990,7 +938,7 @@ DWORD WINAPI GetMessagePos(void)
  */
 LONG WINAPI GetMessageTime(void)
 {
-    return NtUserGetThreadInfo()->message_time;
+    return NtUserGetThreadState( UserThreadStateMessageTime );
 }
 
 
@@ -1000,7 +948,7 @@ LONG WINAPI GetMessageTime(void)
  */
 LPARAM WINAPI GetMessageExtraInfo(void)
 {
-    return NtUserGetThreadInfo()->message_extra;
+    return NtUserGetThreadState( UserThreadStateExtraInfo );
 }
 
 
@@ -1013,16 +961,6 @@ LPARAM WINAPI SetMessageExtraInfo(LPARAM lParam)
     LONG old_value = thread_info->message_extra;
     thread_info->message_extra = lParam;
     return old_value;
-}
-
-
-/***********************************************************************
- *		GetCurrentInputMessageSource (USER32.@)
- */
-BOOL WINAPI GetCurrentInputMessageSource( INPUT_MESSAGE_SOURCE *source )
-{
-    *source = NtUserGetThreadInfo()->msg_source;
-    return TRUE;
 }
 
 
@@ -1253,15 +1191,6 @@ BOOL WINAPI SetMessageQueue( INT size )
 }
 
 
-/***********************************************************************
- *		MessageBeep (USER32.@)
- */
-BOOL WINAPI MessageBeep( UINT i )
-{
-    return NtUserMessageBeep( i );
-}
-
-
 /******************************************************************
  *      SetTimer (USER32.@)
  */
@@ -1307,15 +1236,7 @@ BOOL WINAPI IsGUIThread( BOOL convert )
  */
 BOOL WINAPI IsHungAppWindow( HWND hWnd )
 {
-    BOOL ret;
-
-    SERVER_START_REQ( is_window_hung )
-    {
-        req->win = wine_server_user_handle( hWnd );
-        ret = !wine_server_call_err( req ) && reply->is_hung;
-    }
-    SERVER_END_REQ;
-    return ret;
+    return HandleToUlong( NtUserQueryWindow( hWnd, WindowIsHung ));
 }
 
 /******************************************************************

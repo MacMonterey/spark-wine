@@ -6,6 +6,7 @@ SOURCES = \
 	activation.idl \
 	activaut.idl \
 	activdbg.idl \
+	activeds.h \
 	activscp.idl \
 	adserr.h \
 	adshlp.h \
@@ -27,6 +28,7 @@ SOURCES = \
 	asysta.idl \
 	atlbase.h \
 	atlcom.h \
+	atldef.h \
 	atliface.idl \
 	atlthunk.h \
 	atlwin.h \
@@ -56,6 +58,8 @@ SOURCES = \
 	bits5_0.idl \
 	bitsmsg.h \
 	bluetoothapis.h \
+	bthdef.h \
+	bthioctl.h \
 	bthsdpdef.h \
 	cderr.h \
 	cdosys.idl \
@@ -116,10 +120,10 @@ SOURCES = \
 	d3d10.idl \
 	d3d10_1.idl \
 	d3d10_1shader.h \
-	d3d10effect.h \
+	d3d10effect.idl \
 	d3d10misc.h \
 	d3d10sdklayers.idl \
-	d3d10shader.h \
+	d3d10shader.idl \
 	d3d11.idl \
 	d3d11_1.idl \
 	d3d11_2.idl \
@@ -131,11 +135,13 @@ SOURCES = \
 	d3d12.idl \
 	d3d12sdklayers.idl \
 	d3d12shader.idl \
+	d3d12video.idl \
 	d3d8.h \
 	d3d8caps.h \
 	d3d8types.h \
 	d3d9.h \
 	d3d9caps.h \
+	d3d9on12.idl \
 	d3d9types.h \
 	d3dcaps.h \
 	d3dcommon.idl \
@@ -236,6 +242,7 @@ SOURCES = \
 	dinput.h \
 	dinputd.h \
 	directmanipulation.idl \
+	dispatcherqueue.idl \
 	dispdib.h \
 	dispex.idl \
 	dlgs.h \
@@ -265,6 +272,7 @@ SOURCES = \
 	dplobby.h \
 	dplobby8.h \
 	dpnathlp.h \
+	dragdropinterop.idl \
 	driverspecs.h \
 	drmexternals.idl \
 	dsclient.h \
@@ -281,6 +289,8 @@ SOURCES = \
 	dwrite_1.idl \
 	dwrite_2.idl \
 	dwrite_3.idl \
+	dxcore.h \
+	dxcore_interface.h \
 	dxdiag.h \
 	dxerr8.h \
 	dxerr9.h \
@@ -297,6 +307,7 @@ SOURCES = \
 	dxgitype.idl \
 	dxva.h \
 	dxva2api.idl \
+	dxvahd.idl \
 	dyngraph.idl \
 	endpointvolume.idl \
 	errorrep.h \
@@ -315,6 +326,7 @@ SOURCES = \
 	fci.h \
 	fdi.h \
 	featurestagingapi.h \
+	fibersapi.h \
 	fileapi.h \
 	filter.idl \
 	fltdefs.h \
@@ -323,6 +335,7 @@ SOURCES = \
 	gameux.idl \
 	gamingtcui.h \
 	gdiplus.h \
+	gdiplusbase.h \
 	gdipluscolor.h \
 	gdipluscolormatrix.h \
 	gdipluseffects.h \
@@ -341,6 +354,7 @@ SOURCES = \
 	highlevelmonitorconfigurationapi.h \
 	hlguids.h \
 	hlink.idl \
+	holographicspaceinterop.idl \
 	hrtfapoapi.idl \
 	hstring.idl \
 	htiface.idl \
@@ -371,11 +385,13 @@ SOURCES = \
 	inaddr.h \
 	indexsrv.idl \
 	initguid.h \
+	inputpaneinterop.idl \
 	inputscope.idl \
 	inseng.idl \
 	inspectable.idl \
 	interactioncontext.h \
 	intshcut.h \
+	ioringapi.h \
 	ip2string.h \
 	ipexport.h \
 	iphlpapi.h \
@@ -401,6 +417,7 @@ SOURCES = \
 	lmerr.h \
 	lmjoin.h \
 	lmmsg.h \
+	lmremutl.h \
 	lmserver.h \
 	lmshare.h \
 	lmstats.h \
@@ -435,12 +452,15 @@ SOURCES = \
 	mfplay.idl \
 	mfreadwrite.idl \
 	mftransform.idl \
+	mgmtapi.h \
 	midles.h \
 	mimeinfo.idl \
 	mimeole.idl \
 	minidumpapiset.h \
 	minmax.h \
 	minschannel.h \
+	minwinbase.h \
+	minwindef.h \
 	mlang.idl \
 	mmc.idl \
 	mmddk.h \
@@ -448,6 +468,9 @@ SOURCES = \
 	mmreg.h \
 	mmstream.idl \
 	mmsystem.h \
+	mpeg2bits.h \
+	mpeg2data.idl \
+	mpeg2structs.idl \
 	mpegtype.idl \
 	mprapi.h \
 	mprerror.h \
@@ -463,6 +486,7 @@ SOURCES = \
 	msdaguid.h \
 	msdasc.idl \
 	msdasql.h \
+	msdelta.h \
 	mshtmcid.h \
 	mshtmdid.h \
 	mshtmhst.idl \
@@ -556,6 +580,7 @@ SOURCES = \
 	ndrtypes.h \
 	netcfgx.idl \
 	netcon.idl \
+	netevent.h \
 	netfw.idl \
 	netioapi.h \
 	netiodef.h \
@@ -575,6 +600,7 @@ SOURCES = \
 	ntdef.h \
 	ntdsapi.h \
 	ntgdi.h \
+	ntioring_x.h \
 	ntlsa.h \
 	ntquery.h \
 	ntsecapi.h \
@@ -614,6 +640,7 @@ SOURCES = \
 	physicalmonitorenumerationapi.h \
 	pktdef.h \
 	poppack.h \
+	powersetting.h \
 	powrprof.h \
 	prntvpt.h \
 	processthreadsapi.h \
@@ -647,7 +674,9 @@ SOURCES = \
 	rmxfguid.h \
 	rmxftmpl.x \
 	roapi.h \
+	robuffer.idl \
 	roerrorapi.h \
+	rometadata.h \
 	rometadataresolution.h \
 	roparameterizediid.idl \
 	row.idl \
@@ -664,10 +693,15 @@ SOURCES = \
 	rpcsal.h \
 	rstbas.idl \
 	rstchg.idl \
+	rstfnd.idl \
+	rstidn.idl \
 	rstinf.idl \
 	rstloc.idl \
 	rstnot.idl \
+	rstscr.idl \
 	rstupd.idl \
+	rstxsc.idl \
+	rtlsupportapi.h \
 	rtutils.h \
 	rtworkq.idl \
 	sal.h \
@@ -688,10 +722,12 @@ SOURCES = \
 	sesprp.idl \
 	setupapi.h \
 	sfc.h \
+	shcore.h \
 	shdeprecated.idl \
 	shdispid.h \
 	shellapi.h \
 	shellscalingapi.h \
+	sherrors.h \
 	shimgdata.idl \
 	shldisp.idl \
 	shlguid.h \
@@ -708,6 +744,7 @@ SOURCES = \
 	softpub.h \
 	spatialaudioclient.idl \
 	specstrings.h \
+	specstrings_strict.h \
 	sperror.h \
 	sql.h \
 	sqlext.h \
@@ -726,6 +763,8 @@ SOURCES = \
 	structuredquerycondition.idl \
 	svrapi.h \
 	synchapi.h \
+	sysinfoapi.h \
+	systemmediatransportcontrolsinterop.idl \
 	t2embapi.h \
 	tapi.h \
 	taskschd.idl \
@@ -788,6 +827,7 @@ SOURCES = \
 	wdbgexts.h \
 	weakreference.idl \
 	webservices.h \
+	websocket.h \
 	werapi.h \
 	wfext.h \
 	wia.h \
@@ -807,12 +847,23 @@ SOURCES = \
 	windef.h \
 	windns.h \
 	windot11.h \
+	windows.applicationmodel.activation.idl \
+	windows.applicationmodel.background.idl \
+	windows.applicationmodel.core.idl \
+	windows.applicationmodel.datatransfer.dragdrop.core.idl \
+	windows.applicationmodel.datatransfer.dragdrop.idl \
+	windows.applicationmodel.datatransfer.idl \
+	windows.applicationmodel.idl \
+	windows.data.json.idl \
+	windows.data.xml.dom.idl \
 	windows.devices.bluetooth.idl \
 	windows.devices.enumeration.idl \
 	windows.devices.geolocation.idl \
 	windows.devices.haptics.idl \
+	windows.devices.input.idl \
 	windows.devices.power.idl \
 	windows.devices.radios.idl \
+	windows.devices.usb.idl \
 	windows.foundation.collections.idl \
 	windows.foundation.idl \
 	windows.foundation.metadata.idl \
@@ -828,21 +879,38 @@ SOURCES = \
 	windows.graphics.directx.idl \
 	windows.graphics.effects.idl \
 	windows.graphics.holographic.idl \
+	windows.graphics.idl \
+	windows.graphics.imaging.idl \
 	windows.h \
+	windows.management.deployment.idl \
+	windows.media.capture.idl \
 	windows.media.closedcaptioning.idl \
 	windows.media.devices.idl \
+	windows.media.effects.idl \
+	windows.media.faceanalysis.idl \
 	windows.media.idl \
+	windows.media.render.idl \
 	windows.media.speechrecognition.idl \
 	windows.media.speechsynthesis.idl \
 	windows.networking.connectivity.idl \
 	windows.networking.idl \
 	windows.perception.spatial.idl \
 	windows.perception.spatial.surfaces.idl \
+	windows.security.authentication.onlineid.idl \
+	windows.security.authorization.appcapabilityaccess.idl \
 	windows.security.credentials.idl \
+	windows.security.credentials.ui.idl \
 	windows.security.cryptography.idl \
+	windows.security.enterprisedata.idl \
+	windows.security.exchangeactivesyncprovisioning.idl \
+	windows.security.isolation.idl \
+	windows.storage.fileproperties.idl \
+	windows.storage.idl \
+	windows.storage.search.idl \
 	windows.storage.streams.idl \
 	windows.system.idl \
 	windows.system.power.idl \
+	windows.system.profile.idl \
 	windows.system.profile.systemmanufacturers.idl \
 	windows.system.threading.idl \
 	windows.system.userprofile.idl \
@@ -850,7 +918,12 @@ SOURCES = \
 	windows.ui.composition.interop.idl \
 	windows.ui.core.idl \
 	windows.ui.idl \
+	windows.ui.input.idl \
+	windows.ui.notifications.idl \
 	windows.ui.viewmanagement.idl \
+	windows.ui.xaml.hosting.desktopwindowxamlsource.idl \
+	windows.ui.xaml.idl \
+	windows.ui.xaml.interop.idl \
 	windowscontracts.idl \
 	windowsx.h \
 	wine/afd.h \
@@ -878,6 +951,7 @@ SOURCES = \
 	wine/mscvpdb.h \
 	wine/mssign.h \
 	wine/nsi.h \
+	wine/opengl_driver.h \
 	wine/orpc.idl \
 	wine/plugplay.idl \
 	wine/rbtree.h \
@@ -891,11 +965,12 @@ SOURCES = \
 	wine/vulkan.h \
 	wine/vulkan_driver.h \
 	wine/wgl.h \
-	wine/wgl_driver.h \
 	wine/winbase16.h \
 	wine/windef16.h \
 	wine/wine_common_ver.rc \
+	wine/winebth.h \
 	wine/wined3d.h \
+	wine/winedmo.h \
 	wine/winedxgi.idl \
 	wine/wingdi16.h \
 	wine/winnet16.h \
@@ -914,6 +989,7 @@ SOURCES = \
 	winnt.h \
 	winnt.rh \
 	winperf.h \
+	winppi.h \
 	winreg.h \
 	winresrc.h \
 	winsafer.h \
@@ -935,6 +1011,7 @@ SOURCES = \
 	winuser.rh \
 	winver.h \
 	wlanapi.h \
+	wldp.h \
 	wmcodecdsp.idl \
 	wmdrmsdk.idl \
 	wmistr.h \
@@ -953,6 +1030,7 @@ SOURCES = \
 	wownt16.h \
 	wownt32.h \
 	wpcapi.idl \
+	ws2bth.h \
 	ws2def.h \
 	ws2ipdef.h \
 	ws2spi.h \
@@ -976,6 +1054,7 @@ SOURCES = \
 	xact2wb.h \
 	xact3.h \
 	xact3wb.h \
+	xamlom.idl \
 	xapo.idl \
 	xapofx.h \
 	xaudio2.idl \

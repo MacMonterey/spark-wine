@@ -40,15 +40,13 @@
 #include <stdarg.h>
 #include <string.h>
 
-#define NONAMELESSUNION
-
 #include "x11drv.h"
 
 #include "wingdi.h"
 #include "winuser.h"
 #include "winreg.h"
 #include "winnls.h"
-#include "ime.h"
+#include "kbd.h"
 #include "wine/server.h"
 #include "wine/debug.h"
 
@@ -99,19 +97,6 @@ static const WORD main_key_scan_abnt_qwerty[MAIN_LEN] =
  /* \      z    x    c    v    b    n    m    ,    .    / */
    0x5e,0x2C,0x2D,0x2E,0x2F,0x30,0x31,0x32,0x33,0x34,0x35,
    0x56, /* the 102nd key (actually to the right of l-shift) */
-};
-
-static const WORD main_key_scan_dvorak[MAIN_LEN] =
-{
- /* `    1    2    3    4    5    6    7    8    9    0    [    ] */
-   0x29,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0x1A,0x1B,
- /* '    ,    .    p    y    f    g    c    r    l    /    = */
-   0x28,0x33,0x34,0x19,0x15,0x21,0x22,0x2E,0x13,0x26,0x35,0x0D,
- /* a    o    e    u    i    d    h    t    n    s    -    \ */
-   0x1E,0x18,0x12,0x16,0x17,0x20,0x23,0x14,0x31,0x1F,0x0C,0x2B,
- /* ;    q    j    k    x    b    m    w    v    z */
-   0x27,0x10,0x24,0x25,0x2D,0x30,0x32,0x11,0x2F,0x2C,
-   0x56 /* the 102nd key (actually to the right of l-shift) */
 };
 
 static const WORD main_key_scan_qwerty_jp106[MAIN_LEN] =
@@ -239,6 +224,16 @@ static const char main_key_US_dvorak[MAIN_LEN][4] =
  "'\"",",<",".>","pP","yY","fF","gG","cC","rR","lL","/?","=+",
  "aA","oO","eE","uU","iI","dD","hH","tT","nN","sS","-_","\\|",
  ";:","qQ","jJ","kK","xX","bB","mM","wW","vV","zZ"
+};
+
+/*** United States keyboard layout (dvorak phantom key version) */
+static const char main_key_US_dvorak_phantom[MAIN_LEN][4] =
+{
+ "`~","1!","2@","3#","4$","5%","6^","7&","8*","9(","0)","[{","]}",
+ "'\"",",<",".>","pP","yY","fF","gG","cC","rR","lL","/?","=+",
+ "aA","oO","eE","uU","iI","dD","hH","tT","nN","sS","-_","\\|",
+ ";:","qQ","jJ","kK","xX","bB","mM","wW","vV","zZ",
+ "<>"
 };
 
 /*** British keyboard layout */
@@ -868,7 +863,9 @@ static const struct {
 } main_key_tab[]={
  {0x0409, "United States keyboard layout", &main_key_US, &main_key_scan_qwerty, &main_key_vkey_qwerty},
  {0x0409, "United States keyboard layout (phantom key version)", &main_key_US_phantom, &main_key_scan_qwerty, &main_key_vkey_qwerty},
- {0x0409, "United States keyboard layout (dvorak)", &main_key_US_dvorak, &main_key_scan_dvorak, &main_key_vkey_dvorak},
+ /* Dvorak users tend to run QWERTY keyboards and rely on Windows/X11/Wayland to translate to the correct keysyms */
+ {0x0409, "United States keyboard layout (dvorak)", &main_key_US_dvorak, &main_key_scan_qwerty, &main_key_vkey_dvorak},
+ {0x0409, "United States keyboard layout (dvorak with phantom key)", &main_key_US_dvorak_phantom, &main_key_scan_qwerty, &main_key_vkey_dvorak},
  {0x0409, "United States International keyboard layout", &main_key_US_intl, &main_key_scan_qwerty, &main_key_vkey_qwerty},
  {0x0809, "British keyboard layout", &main_key_UK, &main_key_scan_qwerty, &main_key_vkey_qwerty},
  {0x0407, "German keyboard layout", &main_key_DE, &main_key_scan_qwerty, &main_key_vkey_qwertz},
@@ -1127,34 +1124,16 @@ static void X11DRV_send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, UINT fl
 
     TRACE_(key)( "hwnd %p vkey=%04x scan=%04x flags=%04x\n", hwnd, vkey, scan, flags );
 
-    input.type             = INPUT_KEYBOARD;
-    input.u.ki.wVk         = vkey;
-    input.u.ki.wScan       = scan;
-    input.u.ki.dwFlags     = flags;
-    input.u.ki.time        = time;
-    input.u.ki.dwExtraInfo = 0;
+    input.type           = INPUT_KEYBOARD;
+    input.ki.wVk         = vkey;
+    input.ki.wScan       = scan;
+    input.ki.dwFlags     = flags;
+    input.ki.time        = time;
+    input.ki.dwExtraInfo = 0;
 
-    __wine_send_input( hwnd, &input, NULL );
+    NtUserSendHardwareInput( hwnd, 0, &input, 0 );
 }
 
-
-/***********************************************************************
- *           get_async_key_state
- */
-static BOOL get_async_key_state( BYTE state[256] )
-{
-    BOOL ret;
-
-    SERVER_START_REQ( get_key_state )
-    {
-        req->async = 1;
-        req->key = -1;
-        wine_server_set_reply( req, state, 256 );
-        ret = !wine_server_call( req );
-    }
-    SERVER_END_REQ;
-    return ret;
-}
 
 /***********************************************************************
  *           set_async_key_state
@@ -1194,13 +1173,21 @@ BOOL X11DRV_KeymapNotify( HWND hwnd, XEvent *event )
     int i, j;
     BYTE keystate[256];
     WORD vkey;
+    DWORD flags;
+    KeyCode keycode;
+    HWND keymapnotify_hwnd;
     BOOL changed = FALSE;
     struct {
         WORD vkey;
+        WORD scan;
         WORD pressed;
     } keys[256];
+    struct x11drv_thread_data *thread_data = x11drv_thread_data();
 
-    if (!get_async_key_state( keystate )) return FALSE;
+    keymapnotify_hwnd = thread_data->keymapnotify_hwnd;
+    thread_data->keymapnotify_hwnd = NULL;
+
+    if (!NtUserGetAsyncKeyboardState( keystate )) return FALSE;
 
     memset(keys, 0, sizeof(keys));
 
@@ -1213,11 +1200,17 @@ BOOL X11DRV_KeymapNotify( HWND hwnd, XEvent *event )
     {
         for (j = 0; j < 8; j++)
         {
-            vkey = keyc2vkey[(i * 8) + j];
+            keycode = (i * 8) + j;
+            vkey = keyc2vkey[keycode];
 
             /* If multiple keys map to the same vkey, we want to report it as
              * pressed iff any of them are pressed. */
-            if (!keys[vkey & 0xff].vkey) keys[vkey & 0xff].vkey = vkey;
+            if (!keys[vkey & 0xff].vkey)
+            {
+                keys[vkey & 0xff].vkey = vkey;
+                keys[vkey & 0xff].scan = keyc2scan[keycode] & 0xff;
+            }
+
             if (event->xkeymap.key_vector[i] & (1<<j)) keys[vkey & 0xff].pressed = TRUE;
         }
     }
@@ -1228,6 +1221,31 @@ BOOL X11DRV_KeymapNotify( HWND hwnd, XEvent *event )
         {
             TRACE( "Adjusting state for vkey %#.2x. State before %#.2x\n",
                    keys[vkey].vkey, keystate[vkey]);
+
+            /* This KeymapNotify follows a FocusIn(mode=NotifyUngrab) event,
+             * which is caused by a keyboard grab being released.
+             * See XGrabKeyboard().
+             *
+             * We might have missed some key press/release events while the
+             * keyboard was grabbed, but keyboard grab doesn't generate focus
+             * lost / focus gained events on the Windows side, so the affected
+             * program is not aware that it needs to resync the keyboard state.
+             *
+             * This, for example, may cause Alt being stuck after using Alt+Tab.
+             *
+             * To work around that problem we sync any possible key releases.
+             *
+             * Syncing key presses is not feasible as window managers differ in
+             * event sequences, e.g. KDE performs two keyboard grabs for
+             * Alt+Tab, which would sync the Tab press.
+             */
+            if (keymapnotify_hwnd && !keys[vkey].pressed)
+            {
+                TRACE( "Sending KEYUP for a modifier %#.2x\n", vkey);
+                flags = KEYEVENTF_KEYUP;
+                if (keys[vkey].vkey & 0x1000) flags |= KEYEVENTF_EXTENDEDKEY;
+                X11DRV_send_keyboard_input( keymapnotify_hwnd, vkey, keys[vkey].scan, flags, NtGetTickCount() );
+            }
 
             update_key_state( keystate, vkey, keys[vkey].pressed );
             changed = TRUE;
@@ -1256,7 +1274,7 @@ static void adjust_lock_state( BYTE *keystate, HWND hwnd, WORD vkey, WORD scan, 
      * to block changing state, we can't prevent it on X server side. Having
      * different states would cause us to try to adjust it again on the next
      * key event. We prevent that by overriding hooks and setting key states here. */
-    if (get_async_key_state( keystate ) && (keystate[vkey] & 0x01) == prev_state)
+    if (NtUserGetAsyncKeyboardState( keystate ) && (keystate[vkey] & 0x01) == prev_state)
     {
         WARN("keystate %x not changed (%#.2x), probably blocked by hooks\n", vkey, keystate[vkey]);
         keystate[vkey] ^= 0x01;
@@ -1271,7 +1289,7 @@ static void update_lock_state( HWND hwnd, WORD vkey, UINT state, UINT time )
     /* Note: X sets the below states on key down and clears them on key up.
        Windows triggers them on key down. */
 
-    if (!get_async_key_state( keystate )) return;
+    if (!NtUserGetAsyncKeyboardState( keystate )) return;
 
     /* Adjust the CAPSLOCK state if it has been changed outside wine */
     if (!(keystate[VK_CAPITAL] & 0x01) != !(state & LockMask) && vkey != VK_CAPITAL)
@@ -1317,12 +1335,17 @@ BOOL X11DRV_KeyEvent( HWND hwnd, XEvent *xev )
     int ascii_chars;
     XIC xic = X11DRV_get_ic( hwnd );
     DWORD event_time = EVENT_x11_time_to_win32_time(event->time);
+    struct x11drv_win_data *data;
     Status status = 0;
 
     TRACE_(key)("type %d, window %lx, state 0x%04x, keycode %u\n",
 		event->type, event->window, event->state, event->keycode);
 
-    if (event->type == KeyPress) update_user_time( event->time );
+    if (event->type == KeyPress && (data = get_win_data( hwnd )))
+    {
+        window_set_user_time( data, event->time, FALSE );
+        release_win_data( data );
+    }
 
     /* Clients should pass only KeyPress events to XmbLookupString */
     if (xic && event->type == KeyPress)
@@ -1497,8 +1520,7 @@ X11DRV_KEYBOARD_DetectLayout( Display *display )
     }
     TRACE("matches=%d, mismatches=%d, seq=%d, score=%d\n",
 	   match, mismatch, seq, score);
-    if ((score > max_score) ||
-	((score == max_score) && (seq > max_seq))) {
+    if (score + (int)seq > max_score + (int)max_seq) {
       /* best match so far */
       kbd_layout = current;
       max_score = score;

@@ -30,6 +30,9 @@
 #include "wine/asm.h"
 #include "wine/debug.h"
 
+#include "initguid.h"
+DEFINE_GUID(IID_CMetaBitmapRenderTarget, 0x0ccd7824,0xdc16,0x4d09,0xbc,0xa8,0x6b,0x09,0xc4,0xef,0x55,0x35);
+
 WINE_DEFAULT_DEBUG_CHANNEL(wincodecs);
 
 /* WARNING: .NET Media Integration Layer (MIL) directly dereferences
@@ -162,7 +165,7 @@ static ULONG WINAPI BitmapLockImpl_Release(IWICBitmapLock *iface)
     {
         BitmapImpl_ReleaseLock(This->parent);
         IWICBitmap_Release(&This->parent->IWICBitmap_iface);
-        HeapFree(GetProcessHeap(), 0, This);
+        free(This);
     }
 
     return ref;
@@ -253,7 +256,10 @@ static HRESULT WINAPI BitmapImpl_QueryInterface(IWICBitmap *iface, REFIID iid,
     }
     else
     {
-        FIXME("unknown interface %s\n", debugstr_guid(iid));
+        if (IsEqualIID(&IID_CMetaBitmapRenderTarget, iid))
+            WARN("Ignoring interface %s\n", debugstr_guid(iid));
+        else
+            FIXME("unknown interface %s\n", debugstr_guid(iid));
         *ppv = NULL;
         return E_NOINTERFACE;
     }
@@ -287,8 +293,8 @@ static ULONG WINAPI BitmapImpl_Release(IWICBitmap *iface)
         if (This->view)
             UnmapViewOfFile(This->view);
         else
-            HeapFree(GetProcessHeap(), 0, This->data);
-        HeapFree(GetProcessHeap(), 0, This);
+            free(This->data);
+        free(This);
     }
 
     return ref;
@@ -392,13 +398,13 @@ static HRESULT WINAPI BitmapImpl_Lock(IWICBitmap *iface, const WICRect *prcLock,
         return E_FAIL;
     }
 
-    result = HeapAlloc(GetProcessHeap(), 0, sizeof(BitmapLockImpl));
+    result = malloc(sizeof(BitmapLockImpl));
     if (!result)
         return E_OUTOFMEMORY;
 
     if (!BitmapImpl_AcquireLock(This, flags & WICBitmapLockWrite))
     {
-        HeapFree(GetProcessHeap(), 0, result);
+        free(result);
         return WINCODEC_ERR_ALREADYLOCKED;
     }
 
@@ -667,7 +673,7 @@ static ULONG WINAPI IMILUnknown1Impl_Release(IMILUnknown1 *iface)
 }
 
 DEFINE_THISCALL_WRAPPER(IMILUnknown1Impl_unknown1, 8)
-DECLSPEC_HIDDEN void __thiscall IMILUnknown1Impl_unknown1(IMILUnknown1 *iface, void *arg)
+void __thiscall IMILUnknown1Impl_unknown1(IMILUnknown1 *iface, void *arg)
 {
     FIXME("(%p,%p): stub\n", iface, arg);
 }
@@ -679,7 +685,7 @@ static HRESULT WINAPI IMILUnknown1Impl_unknown2(IMILUnknown1 *iface, void *arg1,
 }
 
 DEFINE_THISCALL_WRAPPER(IMILUnknown1Impl_unknown3, 8)
-DECLSPEC_HIDDEN HRESULT __thiscall IMILUnknown1Impl_unknown3(IMILUnknown1 *iface, void *arg)
+HRESULT __thiscall IMILUnknown1Impl_unknown3(IMILUnknown1 *iface, void *arg)
 {
     FIXME("(%p,%p): stub\n", iface, arg);
     return E_NOTIMPL;
@@ -710,7 +716,7 @@ static HRESULT WINAPI IMILUnknown1Impl_unknown7(IMILUnknown1 *iface, void *arg)
 }
 
 DEFINE_THISCALL_WRAPPER(IMILUnknown1Impl_unknown8, 4)
-DECLSPEC_HIDDEN HRESULT __thiscall IMILUnknown1Impl_unknown8(IMILUnknown1 *iface)
+HRESULT __thiscall IMILUnknown1Impl_unknown8(IMILUnknown1 *iface)
 {
     FIXME("(%p): stub\n", iface);
     return E_NOTIMPL;
@@ -798,13 +804,13 @@ HRESULT BitmapImpl_Create(UINT uiWidth, UINT uiHeight, UINT stride, UINT datasiz
     if (datasize < stride * uiHeight) return WINCODEC_ERR_INSUFFICIENTBUFFER;
     if (stride < ((bpp*uiWidth)+7)/8) return E_INVALIDARG;
 
-    This = HeapAlloc(GetProcessHeap(), 0, sizeof(BitmapImpl));
+    This = malloc(sizeof(BitmapImpl));
     if (!This) return E_OUTOFMEMORY;
 
     if (view) data = (BYTE *)view + offset;
-    else if (!(data = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, datasize)))
+    else if (!(data = calloc(1, datasize)))
     {
-        HeapFree(GetProcessHeap(), 0, This);
+        free(This);
         return E_OUTOFMEMORY;
     }
 
@@ -825,7 +831,7 @@ HRESULT BitmapImpl_Create(UINT uiWidth, UINT uiHeight, UINT stride, UINT datasiz
     This->bpp = bpp;
     memcpy(&This->pixelformat, pixelFormat, sizeof(GUID));
     This->dpix = This->dpiy = 0.0;
-    InitializeCriticalSection(&This->cs);
+    InitializeCriticalSectionEx(&This->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO);
     This->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": BitmapImpl.lock");
 
     *ppIBitmap = &This->IWICBitmap_iface;

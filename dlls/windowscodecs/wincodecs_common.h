@@ -26,6 +26,11 @@ HRESULT CDECL decoder_get_frame_info(struct decoder *decoder, UINT frame, struct
     return decoder->vtable->get_frame_info(decoder, frame, info);
 }
 
+HRESULT CDECL decoder_get_decoder_palette(struct decoder *decoder, UINT frame, WICColor *colors, UINT *num_colors)
+{
+    return decoder->vtable->get_decoder_palette(decoder, frame, colors, num_colors);
+}
+
 HRESULT CDECL decoder_copy_pixels(struct decoder *decoder, UINT frame,
     const WICRect *prc, UINT stride, UINT buffersize, BYTE *buffer)
 {
@@ -173,7 +178,7 @@ HRESULT read_png_chunk(IStream *stream, BYTE *type, BYTE **data, ULONG *data_siz
 
     if (data)
     {
-        *data = RtlAllocateHeap(GetProcessHeap(), 0, *data_size);
+        *data = malloc(*data_size);
         if (!*data)
             return E_OUTOFMEMORY;
 
@@ -183,7 +188,7 @@ HRESULT read_png_chunk(IStream *stream, BYTE *type, BYTE **data, ULONG *data_siz
         {
             if (SUCCEEDED(hr))
                 hr = E_FAIL;
-            RtlFreeHeap(GetProcessHeap(), 0, *data);
+            free(*data);
             *data = NULL;
             return hr;
         }
@@ -201,7 +206,7 @@ void reverse_bgr8(UINT bytesperpixel, LPBYTE bits, UINT width, UINT height, INT 
 
     for (y=0; y<height; y++)
     {
-        pixel = bits + stride * y;
+        pixel = bits + stride * (INT)y;
 
         for (x=0; x<width; x++)
         {

@@ -98,13 +98,9 @@ static BOOL load_driver(const WCHAR *name, DriverFuncs *driver)
 
 #define LDFC(n) do { driver->p##n = (void*)GetProcAddress(driver->module, #n);\
         if(!driver->p##n) { goto fail; } } while(0)
-    LDFC(GetEndpointIDs);
-    LDFC(GetAudioEndpoint);
-    LDFC(GetAudioSessionWrapper);
+    LDFC(get_device_guid);
+    LDFC(get_device_name_from_guid);
 #undef LDFC
-
-    /* optional - do not fail if not found */
-    driver->pGetPropValue = (void*)GetProcAddress(driver->module, "GetPropValue");
 
     GetModuleFileNameW(NULL, path, ARRAY_SIZE(path));
     params.name     = wcsrchr(path, '\\');
@@ -182,6 +178,11 @@ static BOOL WINAPI init_driver(INIT_ONCE *once, void *param, void **context)
         load_driver_devices(eRender);
         load_driver_devices(eCapture);
     }
+
+    if (drvs.module == 0)
+        ERR("No driver from %s could be initialized. "
+            "Maybe check dependencies with WINEDEBUG=warn+module.\n",
+            wine_dbgstr_w(driver_list));
 
     return drvs.module != 0;
 }
@@ -299,10 +300,7 @@ HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
     unsigned int i = 0;
     TRACE("(%s, %s, %p)\n", debugstr_guid(rclsid), debugstr_guid(riid), ppv);
 
-    if(!InitOnceExecuteOnce(&init_once, init_driver, NULL, NULL)) {
-        ERR("Driver initialization failed\n");
-        return E_FAIL;
-    }
+    InitOnceExecuteOnce(&init_once, init_driver, NULL, NULL);
 
     if (ppv == NULL) {
         WARN("invalid parameter\n");
@@ -384,7 +382,7 @@ static ULONG WINAPI activate_async_op_Release(IActivateAudioInterfaceAsyncOperat
         if(This->result_iface)
             IUnknown_Release(This->result_iface);
         IActivateAudioInterfaceCompletionHandler_Release(This->callback);
-        HeapFree(GetProcessHeap(), 0, This);
+        free(This);
     }
     return ref;
 }
@@ -481,7 +479,7 @@ HRESULT WINAPI ActivateAudioInterfaceAsync(const WCHAR *path, REFIID riid,
     TRACE("(%s, %s, %p, %p, %p)\n", debugstr_w(path), debugstr_guid(riid),
             params, done_handler, op_out);
 
-    op = HeapAlloc(GetProcessHeap(), 0, sizeof(*op));
+    op = malloc(sizeof(*op));
     if (!op)
         return E_OUTOFMEMORY;
 

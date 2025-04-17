@@ -305,7 +305,7 @@ interface IMFMediaEngineEx : IMFMediaEngine
     HRESULT GetStreamSelection([in] DWORD stream_index, [out] BOOL *enabled);
     HRESULT SetStreamSelection([in] DWORD stream_index, [in] BOOL enabled);
     HRESULT ApplyStreamSelections();
-    HRESULT IsProtected([out] BOOL *protected);
+    HRESULT IsProtected([out] BOOL *is_protected);
     HRESULT InsertVideoEffect([in] IUnknown *effect, [in] BOOL is_optional);
     HRESULT InsertAudioEffect([in] IUnknown *effect, [in] BOOL is_optional);
     HRESULT RemoveAllEffects();
@@ -352,4 +352,31 @@ interface IMFMediaEngineClassFactory : IUnknown
 interface IMFMediaEngineNotify : IUnknown
 {
     HRESULT EventNotify([in] DWORD event, [in] DWORD_PTR param1, [in] DWORD param2);
+}
+
+[
+    object,
+    uuid(7a3bac98-0e76-49fb-8c20-8a86fd98eaf2),
+    local,
+    pointer_default(unique)
+]
+interface IMFMediaEngineAudioEndpointId : IUnknown
+{
+    HRESULT SetAudioEndpointId([in] LPCWSTR id);
+    HRESULT GetAudioEndpointId([out] LPWSTR *id);
+}
+
+[
+    object,
+    uuid(2f69d622-20b5-41e9-afdf-89ced1dda04e),
+    local,
+    pointer_default(unique)
+]
+interface IMFMediaEngineExtension : IUnknown
+{
+    HRESULT CanPlayType([in] BOOL audio_only, [in] BSTR mime_type, [out] MF_MEDIA_ENGINE_CANPLAY *answer);
+    HRESULT BeginCreateObject([in] BSTR url, [in] IMFByteStream *bytestream, [in] MF_OBJECT_TYPE type,
+            [out] IUnknown **cancel_cookie, [in] IMFAsyncCallback *callback, [in] IUnknown *state);
+    HRESULT CancelObjectCreation([in] IUnknown *cancel_cookie);
+    HRESULT EndCreateObject([in] IMFAsyncResult *result, [out] IUnknown **object);
 }

@@ -170,10 +170,6 @@ static void PSDRV_DumpFontList(void)
                     afmle->afm->FontName, afmle->afm->NumofMetrics,
                     debugstr_w(afmle->afm->EncodingScheme));
 
-	    /* Uncomment to regenerate font data; see afm2c.c */
-
-	    /* PSDRV_AFM2C(afmle->afm); */
-
 #if 0
 	    for (i = 0; i < afmle->afm->NumofMetrics; ++i)
 	    {
@@ -310,16 +306,11 @@ static BOOL AddBuiltinAFMs(void)
 
 BOOL PSDRV_GetFontMetrics(void)
 {
-    if (PSDRV_GlyphListInit() != 0)
-    	return FALSE;
-
     if (PSDRV_GetType1Metrics() == FALSE)
     	return FALSE;
 
     if (AddBuiltinAFMs() == FALSE)
     	return FALSE;
-
-    PSDRV_IndexGlyphList(); 	    /* Enable fast searching of glyph names */
 
     PSDRV_DumpFontList();
 

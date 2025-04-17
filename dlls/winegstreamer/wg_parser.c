@@ -49,7 +49,7 @@ typedef enum
     GST_AUTOPLUG_SELECT_SKIP,
 } GstAutoplugSelectResult;
 
-typedef BOOL (*init_gst_cb)(struct wg_parser *parser);
+struct wg_parser;
 
 struct input_cache_chunk
 {
@@ -57,10 +57,10 @@ struct input_cache_chunk
     uint8_t *data;
 };
 
+static BOOL decodebin_parser_init_gst(struct wg_parser *parser);
+
 struct wg_parser
 {
-    init_gst_cb init_gst;
-
     struct wg_parser_stream **streams;
     unsigned int stream_count;
 
@@ -70,12 +70,14 @@ struct wg_parser
 
     guint64 file_size, start_offset, next_offset, stop_offset;
     guint64 next_pull_offset;
+    gchar *uri;
 
     pthread_t push_thread;
 
     pthread_mutex_t mutex;
 
     pthread_cond_t init_cond;
+    bool output_compressed;
     bool no_more_pads, has_duration, error;
     bool err_on, warn_on;
 
@@ -91,8 +93,6 @@ struct wg_parser
 
     bool sink_connected;
 
-    bool unlimited_buffering;
-
     gchar *sink_caps;
 
     struct input_cache_chunk input_cache_chunks[4];
@@ -107,30 +107,48 @@ struct wg_parser_stream
     GstPad *my_sink;
     GstElement *flip, *decodebin;
     GstSegment segment;
-    struct wg_format preferred_format, current_format, codec_format;
+    GstCaps *codec_caps;
+    GstCaps *current_caps;
+    GstCaps *desired_caps;
 
     pthread_cond_t event_cond, event_empty_cond;
     GstBuffer *buffer;
     GstMapInfo map_info;
 
-    bool flushing, eos, enabled, has_caps, has_tags, has_buffer, no_more_pads;
+    bool flushing, eos, enabled, has_tags, has_buffer, no_more_pads;
 
     uint64_t duration;
     gchar *tags[WG_PARSER_TAG_COUNT];
 };
 
-static bool format_is_compressed(struct wg_format *format)
+static struct wg_parser *get_parser(wg_parser_t parser)
 {
-    return format->major_type != WG_MAJOR_TYPE_UNKNOWN
-            && format->major_type != WG_MAJOR_TYPE_VIDEO
-            && format->major_type != WG_MAJOR_TYPE_AUDIO;
+    return (struct wg_parser *)(ULONG_PTR)parser;
+}
+
+static struct wg_parser_stream *get_stream(wg_parser_stream_t stream)
+{
+    return (struct wg_parser_stream *)(ULONG_PTR)stream;
+}
+
+static bool caps_is_compressed(GstCaps *caps)
+{
+    struct wg_format format;
+
+    if (!caps)
+        return false;
+    wg_format_from_caps(&format, caps);
+
+    return format.major_type != WG_MAJOR_TYPE_UNKNOWN
+            && format.major_type != WG_MAJOR_TYPE_VIDEO
+            && format.major_type != WG_MAJOR_TYPE_AUDIO;
 }
 
 static NTSTATUS wg_parser_get_stream_count(void *args)
 {
     struct wg_parser_get_stream_count_params *params = args;
 
-    params->count = params->parser->stream_count;
+    params->count = get_parser(params->parser)->stream_count;
     return S_OK;
 }
 
@@ -138,14 +156,14 @@ static NTSTATUS wg_parser_get_stream(void *args)
 {
     struct wg_parser_get_stream_params *params = args;
 
-    params->stream = params->parser->streams[params->index];
+    params->stream = (wg_parser_stream_t)(ULONG_PTR)get_parser(params->parser)->streams[params->index];
     return S_OK;
 }
 
 static NTSTATUS wg_parser_get_next_read_offset(void *args)
 {
     struct wg_parser_get_next_read_offset_params *params = args;
-    struct wg_parser *parser = params->parser;
+    struct wg_parser *parser = get_parser(params->parser);
 
     pthread_mutex_lock(&parser->mutex);
 
@@ -168,7 +186,7 @@ static NTSTATUS wg_parser_get_next_read_offset(void *args)
 static NTSTATUS wg_parser_push_data(void *args)
 {
     const struct wg_parser_push_data_params *params = args;
-    struct wg_parser *parser = params->parser;
+    struct wg_parser *parser = get_parser(params->parser);
     const void *data = params->data;
     uint32_t size = params->size;
 
@@ -208,34 +226,44 @@ static NTSTATUS wg_parser_push_data(void *args)
     return S_OK;
 }
 
-static NTSTATUS wg_parser_stream_get_preferred_format(void *args)
+static NTSTATUS wg_parser_stream_get_current_format(void *args)
 {
-    const struct wg_parser_stream_get_preferred_format_params *params = args;
+    const struct wg_parser_stream_get_current_format_params *params = args;
+    struct wg_parser_stream *stream = get_stream(params->stream);
 
-    *params->format = params->stream->preferred_format;
+    if (stream->current_caps)
+        wg_format_from_caps(params->format, stream->current_caps);
+    else
+        memset(params->format, 0, sizeof(*params->format));
+
     return S_OK;
 }
 
 static NTSTATUS wg_parser_stream_get_codec_format(void *args)
 {
     struct wg_parser_stream_get_codec_format_params *params = args;
+    struct wg_parser_stream *stream = get_stream(params->stream);
 
-    *params->format = format_is_compressed(&params->stream->codec_format) ?
-            params->stream->codec_format :
-            params->stream->preferred_format;
+    if (caps_is_compressed(stream->codec_caps))
+        wg_format_from_caps(params->format, stream->codec_caps);
+    else if (stream->current_caps)
+        wg_format_from_caps(params->format, stream->current_caps);
+    else
+        memset(params->format, 0, sizeof(*params->format));
+
     return S_OK;
 }
 
 static NTSTATUS wg_parser_stream_enable(void *args)
 {
     const struct wg_parser_stream_enable_params *params = args;
-    struct wg_parser_stream *stream = params->stream;
+    struct wg_parser_stream *stream = get_stream(params->stream);
     const struct wg_format *format = params->format;
     struct wg_parser *parser = stream->parser;
 
     pthread_mutex_lock(&parser->mutex);
 
-    stream->current_format = *format;
+    stream->desired_caps = wg_format_to_caps(format);
     stream->enabled = true;
 
     pthread_mutex_unlock(&parser->mutex);
@@ -247,18 +275,22 @@ static NTSTATUS wg_parser_stream_enable(void *args)
         gst_util_set_object_arg(G_OBJECT(stream->flip), "method", flip ? "vertical-flip" : "none");
     }
 
-    gst_pad_push_event(stream->my_sink, gst_event_new_reconfigure());
+    push_event(stream->my_sink, gst_event_new_reconfigure());
     return S_OK;
 }
 
 static NTSTATUS wg_parser_stream_disable(void *args)
 {
-    struct wg_parser_stream *stream = args;
+    struct wg_parser_stream *stream = get_stream(*(wg_parser_stream_t *)args);
     struct wg_parser *parser = stream->parser;
 
     pthread_mutex_lock(&parser->mutex);
     stream->enabled = false;
-    stream->current_format.major_type = WG_MAJOR_TYPE_UNKNOWN;
+    if (stream->desired_caps)
+    {
+        gst_caps_unref(stream->desired_caps);
+        stream->desired_caps = NULL;
+    }
     pthread_mutex_unlock(&parser->mutex);
     pthread_cond_signal(&stream->event_empty_cond);
     return S_OK;
@@ -281,8 +313,8 @@ static NTSTATUS wg_parser_stream_get_buffer(void *args)
 {
     const struct wg_parser_stream_get_buffer_params *params = args;
     struct wg_parser_buffer *wg_buffer = params->buffer;
-    struct wg_parser_stream *stream = params->stream;
-    struct wg_parser *parser = params->parser;
+    struct wg_parser_stream *stream = get_stream(params->stream);
+    struct wg_parser *parser = get_parser(params->parser);
     GstBuffer *buffer;
     unsigned int i;
 
@@ -352,7 +384,7 @@ static NTSTATUS wg_parser_stream_get_buffer(void *args)
 static NTSTATUS wg_parser_stream_copy_buffer(void *args)
 {
     const struct wg_parser_stream_copy_buffer_params *params = args;
-    struct wg_parser_stream *stream = params->stream;
+    struct wg_parser_stream *stream = get_stream(params->stream);
     struct wg_parser *parser = stream->parser;
     uint32_t offset = params->offset;
     uint32_t size = params->size;
@@ -375,16 +407,17 @@ static NTSTATUS wg_parser_stream_copy_buffer(void *args)
 
 static NTSTATUS wg_parser_stream_release_buffer(void *args)
 {
-    struct wg_parser_stream *stream = args;
+    struct wg_parser_stream *stream = get_stream(*(wg_parser_stream_t *)args);
     struct wg_parser *parser = stream->parser;
 
     pthread_mutex_lock(&parser->mutex);
 
-    assert(stream->buffer);
-
-    gst_buffer_unmap(stream->buffer, &stream->map_info);
-    gst_buffer_unref(stream->buffer);
-    stream->buffer = NULL;
+    if (stream->buffer)
+    {
+        gst_buffer_unmap(stream->buffer, &stream->map_info);
+        gst_buffer_unref(stream->buffer);
+        stream->buffer = NULL;
+    }
 
     pthread_mutex_unlock(&parser->mutex);
     pthread_cond_signal(&stream->event_empty_cond);
@@ -396,25 +429,26 @@ static NTSTATUS wg_parser_stream_get_duration(void *args)
 {
     struct wg_parser_stream_get_duration_params *params = args;
 
-    params->duration = params->stream->duration;
+    params->duration = get_stream(params->stream)->duration;
     return S_OK;
 }
 
 static NTSTATUS wg_parser_stream_get_tag(void *args)
 {
     struct wg_parser_stream_get_tag_params *params = args;
+    struct wg_parser_stream *stream = get_stream(params->stream);
     uint32_t len;
 
     if (params->tag >= WG_PARSER_TAG_COUNT)
         return STATUS_INVALID_PARAMETER;
-    if (!params->stream->tags[params->tag])
+    if (!stream->tags[params->tag])
         return STATUS_NOT_FOUND;
-    if ((len = strlen(params->stream->tags[params->tag]) + 1) > *params->size)
+    if ((len = strlen(stream->tags[params->tag]) + 1) > *params->size)
     {
         *params->size = len;
         return STATUS_BUFFER_TOO_SMALL;
     }
-    memcpy(params->buffer, params->stream->tags[params->tag], len);
+    memcpy(params->buffer, stream->tags[params->tag], len);
     return STATUS_SUCCESS;
 }
 
@@ -424,7 +458,10 @@ static NTSTATUS wg_parser_stream_seek(void *args)
     const struct wg_parser_stream_seek_params *params = args;
     DWORD start_flags = params->start_flags;
     DWORD stop_flags = params->stop_flags;
+    const struct wg_parser_stream *stream;
     GstSeekFlags flags = 0;
+
+    stream = get_stream(params->stream);
 
     if (start_flags & AM_SEEKING_SeekToKeyFrame)
         flags |= GST_SEEK_FLAG_KEY_UNIT;
@@ -438,9 +475,10 @@ static NTSTATUS wg_parser_stream_seek(void *args)
     if ((stop_flags & AM_SEEKING_PositioningBitsMask) == AM_SEEKING_NoPositioning)
         stop_type = GST_SEEK_TYPE_NONE;
 
-    if (!gst_pad_push_event(params->stream->my_sink, gst_event_new_seek(params->rate, GST_FORMAT_TIME,
-            flags, start_type, params->start_pos * 100, stop_type, params->stop_pos * 100)))
-        GST_ERROR("Failed to seek.\n");
+    if (!push_event(stream->my_sink, gst_event_new_seek(params->rate, GST_FORMAT_TIME,
+            flags, start_type, params->start_pos * 100, stop_type,
+            params->stop_pos == stream->duration ? -1 : params->stop_pos * 100)))
+        GST_ERROR("Failed to seek.");
 
     return S_OK;
 }
@@ -448,7 +486,8 @@ static NTSTATUS wg_parser_stream_seek(void *args)
 static NTSTATUS wg_parser_stream_notify_qos(void *args)
 {
     const struct wg_parser_stream_notify_qos_params *params = args;
-    struct wg_parser_stream *stream = params->stream;
+    struct wg_parser_stream *stream = get_stream(params->stream);
+    GstClockTimeDiff diff = params->diff * 100;
     GstClockTime stream_time;
     GstEvent *event;
 
@@ -456,19 +495,18 @@ static NTSTATUS wg_parser_stream_notify_qos(void *args)
      * file (or other medium), but gst_event_new_qos() expects the timestamp in
      * running time. */
     stream_time = gst_segment_to_running_time(&stream->segment, GST_FORMAT_TIME, params->timestamp * 100);
+    if (diff < (GstClockTimeDiff)-stream_time)
+        diff = -stream_time;
     if (stream_time == -1)
     {
         /* This can happen legitimately if the sample falls outside of the
          * segment bounds. GStreamer elements shouldn't present the sample in
          * that case, but DirectShow doesn't care. */
-        GST_LOG("Ignoring QoS event.\n");
+        GST_LOG("Ignoring QoS event.");
         return S_OK;
     }
-
-    if (!(event = gst_event_new_qos(params->underflow ? GST_QOS_TYPE_UNDERFLOW : GST_QOS_TYPE_OVERFLOW,
-            params->proportion, params->diff * 100, stream_time)))
-        GST_ERROR("Failed to create QOS event.\n");
-    gst_pad_push_event(stream->my_sink, event);
+    event = gst_event_new_qos(params->underflow ? GST_QOS_TYPE_UNDERFLOW : GST_QOS_TYPE_OVERFLOW, params->proportion, diff, stream_time);
+    push_event(stream->my_sink, event);
 
     return S_OK;
 }
@@ -488,11 +526,7 @@ static bool parser_no_more_pads(struct wg_parser *parser)
 
 static gboolean autoplug_continue_cb(GstElement * decodebin, GstPad *pad, GstCaps * caps, gpointer user)
 {
-    struct wg_format format;
-
-    wg_format_from_caps(&format, caps);
-
-    return !format_is_compressed(&format);
+    return !caps_is_compressed(caps);
 }
 
 static GstAutoplugSelectResult autoplug_select_cb(GstElement *bin, GstPad *pad,
@@ -533,6 +567,12 @@ static void no_more_pads_cb(GstElement *element, gpointer user)
     pthread_cond_signal(&parser->init_cond);
 }
 
+static void deep_element_added_cb(GstBin *self, GstBin *sub_bin, GstElement *element, gpointer user)
+{
+    if (element)
+        set_max_threads(element);
+}
+
 static gboolean sink_event_cb(GstPad *pad, GstObject *parent, GstEvent *event)
 {
     struct wg_parser_stream *stream = gst_pad_get_element_private(pad);
@@ -543,24 +583,20 @@ static gboolean sink_event_cb(GstPad *pad, GstObject *parent, GstEvent *event)
     switch (event->type)
     {
         case GST_EVENT_SEGMENT:
-            pthread_mutex_lock(&parser->mutex);
-            if (stream->enabled)
+        {
+            const GstSegment *segment;
+
+            gst_event_parse_segment(event, &segment);
+            if (segment->format != GST_FORMAT_TIME)
             {
-                const GstSegment *segment;
-
-                gst_event_parse_segment(event, &segment);
-
-                if (segment->format != GST_FORMAT_TIME)
-                {
-                    pthread_mutex_unlock(&parser->mutex);
-                    GST_FIXME("Unhandled format \"%s\".", gst_format_get_name(segment->format));
-                    break;
-                }
-
-                gst_segment_copy_into(segment, &stream->segment);
+                GST_FIXME("Unhandled format \"%s\".", gst_format_get_name(segment->format));
+                break;
             }
+            pthread_mutex_lock(&parser->mutex);
+            gst_segment_copy_into(segment, &stream->segment);
             pthread_mutex_unlock(&parser->mutex);
             break;
+        }
 
         case GST_EVENT_EOS:
             pthread_mutex_lock(&parser->mutex);
@@ -575,17 +611,14 @@ static gboolean sink_event_cb(GstPad *pad, GstObject *parent, GstEvent *event)
         case GST_EVENT_FLUSH_START:
             pthread_mutex_lock(&parser->mutex);
 
-            if (stream->enabled)
-            {
-                stream->flushing = true;
-                pthread_cond_signal(&stream->event_empty_cond);
+            stream->flushing = true;
+            pthread_cond_signal(&stream->event_empty_cond);
 
-                if (stream->buffer)
-                {
-                    gst_buffer_unmap(stream->buffer, &stream->map_info);
-                    gst_buffer_unref(stream->buffer);
-                    stream->buffer = NULL;
-                }
+            if (stream->buffer)
+            {
+                gst_buffer_unmap(stream->buffer, &stream->map_info);
+                gst_buffer_unref(stream->buffer);
+                stream->buffer = NULL;
             }
 
             pthread_mutex_unlock(&parser->mutex);
@@ -603,8 +636,7 @@ static gboolean sink_event_cb(GstPad *pad, GstObject *parent, GstEvent *event)
             pthread_mutex_lock(&parser->mutex);
 
             stream->eos = false;
-            if (stream->enabled)
-                stream->flushing = false;
+            stream->flushing = false;
 
             pthread_mutex_unlock(&parser->mutex);
             break;
@@ -616,8 +648,7 @@ static gboolean sink_event_cb(GstPad *pad, GstObject *parent, GstEvent *event)
 
             gst_event_parse_caps(event, &caps);
             pthread_mutex_lock(&parser->mutex);
-            wg_format_from_caps(&stream->preferred_format, caps);
-            stream->has_caps = true;
+            stream->current_caps = gst_caps_ref(caps);
             pthread_mutex_unlock(&parser->mutex);
             pthread_cond_signal(&parser->init_cond);
             break;
@@ -660,6 +691,7 @@ static GstFlowReturn sink_chain_cb(GstPad *pad, GstObject *parent, GstBuffer *bu
 
     if (!stream->enabled)
     {
+        GST_LOG("Stream is disabled; discarding buffer.");
         pthread_mutex_unlock(&parser->mutex);
         gst_buffer_unref(buffer);
         return GST_FLOW_OK;
@@ -676,7 +708,7 @@ static GstFlowReturn sink_chain_cb(GstPad *pad, GstObject *parent, GstBuffer *bu
     if (!gst_buffer_map(buffer, &stream->map_info, GST_MAP_READ))
     {
         pthread_mutex_unlock(&parser->mutex);
-        GST_ERROR("Failed to map buffer.\n");
+        GST_ERROR("Failed to map buffer.");
         gst_buffer_unref(buffer);
         return GST_FLOW_ERROR;
     }
@@ -706,26 +738,24 @@ static gboolean sink_query_cb(GstPad *pad, GstObject *parent, GstQuery *query)
         case GST_QUERY_CAPS:
         {
             GstCaps *caps, *filter, *temp;
-            gchar *str;
             gsize i;
 
             gst_query_parse_caps(query, &filter);
 
             pthread_mutex_lock(&parser->mutex);
-            caps = wg_format_to_caps(&stream->current_format);
-            pthread_mutex_unlock(&parser->mutex);
-
-            if (!caps)
+            if (!stream->desired_caps || !(caps = gst_caps_copy(stream->desired_caps)))
+            {
+                pthread_mutex_unlock(&parser->mutex);
                 return FALSE;
+            }
+            pthread_mutex_unlock(&parser->mutex);
 
             /* Clear some fields that shouldn't prevent us from connecting. */
             for (i = 0; i < gst_caps_get_size(caps); ++i)
                 gst_structure_remove_fields(gst_caps_get_structure(caps, i),
                         "framerate", "pixel-aspect-ratio", NULL);
 
-            str = gst_caps_to_string(caps);
-            GST_LOG("Stream caps are \"%s\".", str);
-            g_free(str);
+            GST_LOG("Stream caps are \"%" GST_PTR_FORMAT "\".", caps);
 
             if (filter)
             {
@@ -741,13 +771,13 @@ static gboolean sink_query_cb(GstPad *pad, GstObject *parent, GstQuery *query)
 
         case GST_QUERY_ACCEPT_CAPS:
         {
-            struct wg_format format;
+            struct wg_format format, current_format;
             gboolean ret = TRUE;
             GstCaps *caps;
 
             pthread_mutex_lock(&parser->mutex);
 
-            if (stream->current_format.major_type == WG_MAJOR_TYPE_UNKNOWN)
+            if (!stream->desired_caps)
             {
                 pthread_mutex_unlock(&parser->mutex);
                 gst_query_set_accept_caps_result(query, TRUE);
@@ -756,16 +786,13 @@ static gboolean sink_query_cb(GstPad *pad, GstObject *parent, GstQuery *query)
 
             gst_query_parse_accept_caps(query, &caps);
             wg_format_from_caps(&format, caps);
-            ret = wg_format_compare(&format, &stream->current_format);
+            wg_format_from_caps(&current_format, stream->desired_caps);
+            ret = wg_format_compare(&format, &current_format);
 
             pthread_mutex_unlock(&parser->mutex);
 
-            if (!ret && gst_debug_category_get_threshold(GST_CAT_DEFAULT) >= GST_LEVEL_WARNING)
-            {
-                gchar *str = gst_caps_to_string(caps);
-                GST_WARNING("Rejecting caps \"%s\".", str);
-                g_free(str);
-            }
+            if (!ret)
+                GST_WARNING("Rejecting caps \"%" GST_PTR_FORMAT "\".", caps);
             gst_query_set_accept_caps_result(query, ret);
             return TRUE;
         }
@@ -792,7 +819,6 @@ static struct wg_parser_stream *create_stream(struct wg_parser *parser)
     stream->parser = parser;
     stream->number = parser->stream_count;
     stream->no_more_pads = true;
-    stream->current_format.major_type = WG_MAJOR_TYPE_UNKNOWN;
     pthread_cond_init(&stream->event_cond, NULL);
     pthread_cond_init(&stream->event_empty_cond, NULL);
 
@@ -837,7 +863,6 @@ static bool stream_create_post_processing_elements(GstPad *pad, struct wg_parser
     struct wg_parser *parser = stream->parser;
     const char *name;
     GstCaps *caps;
-    int ret;
 
     caps = gst_pad_query_caps(pad, NULL);
     name = gst_structure_get_name(gst_caps_get_structure(caps, 0));
@@ -858,6 +883,9 @@ static bool stream_create_post_processing_elements(GstPad *pad, struct wg_parser
                 || !append_element(parser->container, element, &first, &last))
             return false;
 
+        /* Let GStreamer choose a default number of threads. */
+        gst_util_set_object_arg(G_OBJECT(element), "n-threads", "0");
+
         /* GStreamer outputs RGB video top-down, but DirectShow expects bottom-up. */
         if (!(element = create_element("videoflip", "good"))
                 || !append_element(parser->container, element, &first, &last))
@@ -869,6 +897,9 @@ static bool stream_create_post_processing_elements(GstPad *pad, struct wg_parser
         if (!(element = create_element("videoconvert", "base"))
                 || !append_element(parser->container, element, &first, &last))
             return false;
+
+        /* Let GStreamer choose a default number of threads. */
+        gst_util_set_object_arg(G_OBJECT(element), "n-threads", "0");
 
         if (!link_src_to_element(pad, first) || !link_element_to_sink(last, stream->my_sink))
             return false;
@@ -886,11 +917,9 @@ static bool stream_create_post_processing_elements(GstPad *pad, struct wg_parser
         if (!link_src_to_element(pad, first) || !link_element_to_sink(last, stream->my_sink))
             return false;
     }
-    else if ((ret = gst_pad_link(pad, stream->my_sink)) < 0)
+    else
     {
-        GST_ERROR("Failed to link decodebin source pad to our sink pad, error %s.",
-                gst_pad_link_get_name(ret));
-        return false;
+        return link_src_to_sink(pad, stream->my_sink);
     }
 
     return true;
@@ -952,7 +981,6 @@ static void pad_added_cb(GstElement *element, GstPad *pad, gpointer user)
 {
     struct wg_parser_stream *stream;
     struct wg_parser *parser = user;
-    GstCaps *caps;
 
     GST_LOG("parser %p, element %p, pad %p.", parser, element, pad);
 
@@ -961,13 +989,10 @@ static void pad_added_cb(GstElement *element, GstPad *pad, gpointer user)
 
     if (!(stream = create_stream(parser)))
         return;
-
-    caps = gst_pad_query_caps(pad, NULL);
-    wg_format_from_caps(&stream->codec_format, caps);
-    gst_caps_unref(caps);
+    stream->codec_caps = gst_pad_query_caps(pad, NULL);
 
     /* For compressed stream, create an extra decodebin to decode it. */
-    if (format_is_compressed(&stream->codec_format))
+    if (!parser->output_compressed && caps_is_compressed(stream->codec_caps))
     {
         if (!stream_decodebin_create(stream))
         {
@@ -1231,6 +1256,15 @@ static gboolean src_query_cb(GstPad *pad, GstObject *parent, GstQuery *query)
             gst_query_add_scheduling_mode(query, GST_PAD_MODE_PULL);
             return TRUE;
 
+        case GST_QUERY_URI:
+            if (parser->uri)
+            {
+                gst_query_set_uri(query, parser->uri);
+                GST_LOG_OBJECT(pad, "Responding with %" GST_PTR_FORMAT, query);
+                return TRUE;
+            }
+            return FALSE;
+
         default:
             GST_WARNING("Unhandled query type %s.", GST_QUERY_TYPE_NAME(query));
             return FALSE;
@@ -1280,7 +1314,7 @@ static void *push_data(void *arg)
 
     gst_buffer_unref(buffer);
 
-    gst_pad_push_event(parser->my_src, gst_event_new_eos());
+    push_event(parser->my_src, gst_event_new_eos());
 
     GST_DEBUG("Stopping push thread.");
 
@@ -1409,7 +1443,7 @@ static gboolean src_perform_seek(struct wg_parser *parser, GstEvent *event)
     {
         flush_event = gst_event_new_flush_start();
         gst_event_set_seqnum(flush_event, seqnum);
-        gst_pad_push_event(parser->my_src, flush_event);
+        push_event(parser->my_src, flush_event);
         if (thread)
             gst_pad_set_active(parser->my_src, 1);
     }
@@ -1421,7 +1455,7 @@ static gboolean src_perform_seek(struct wg_parser *parser, GstEvent *event)
     {
         flush_event = gst_event_new_flush_stop(TRUE);
         gst_event_set_seqnum(flush_event, seqnum);
-        gst_pad_push_event(parser->my_src, flush_event);
+        push_event(parser->my_src, flush_event);
         if (thread)
             gst_pad_set_active(parser->my_src, 1);
     }
@@ -1535,12 +1569,22 @@ static NTSTATUS wg_parser_connect(void *args)
     GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("quartz_src",
             GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS_ANY);
     const struct wg_parser_connect_params *params = args;
-    struct wg_parser *parser = params->parser;
+    struct wg_parser *parser = get_parser(params->parser);
+    const WCHAR *uri = params->uri;
     unsigned int i;
     int ret;
 
     parser->file_size = params->file_size;
     parser->sink_connected = true;
+    if (uri)
+    {
+        parser->uri = malloc(wcslen(uri) * 3 + 1);
+        ntdll_wcstoumbs(uri, wcslen(uri) + 1, parser->uri, wcslen(uri) * 3 + 1, FALSE);
+    }
+    else
+    {
+        parser->uri = NULL;
+    }
 
     if (!parser->bus)
     {
@@ -1562,14 +1606,14 @@ static NTSTATUS wg_parser_connect(void *args)
     parser->next_pull_offset = 0;
     parser->error = false;
 
-    if (!parser->init_gst(parser))
+    if (!decodebin_parser_init_gst(parser))
         goto out;
 
     gst_element_set_state(parser->container, GST_STATE_PAUSED);
     ret = gst_element_get_state(parser->container, NULL, NULL, -1);
     if (ret == GST_STATE_CHANGE_FAILURE)
     {
-        GST_ERROR("Failed to play stream.\n");
+        GST_ERROR("Failed to play stream.");
         goto out;
     }
 
@@ -1589,7 +1633,7 @@ static NTSTATUS wg_parser_connect(void *args)
         gint64 duration;
 
         /* If we received a buffer, waiting for tags or caps does not make sense anymore. */
-        while ((!stream->has_caps || !stream->has_tags) && !parser->error && !stream->has_buffer)
+        while ((!stream->current_caps || !stream->has_tags) && !parser->error && !stream->has_buffer)
             pthread_cond_wait(&parser->init_cond, &parser->mutex);
 
         /* GStreamer doesn't actually provide any guarantees about when duration
@@ -1632,7 +1676,7 @@ static NTSTATUS wg_parser_connect(void *args)
             if (stream->eos)
             {
                 stream->duration = 0;
-                GST_WARNING("Failed to query duration.\n");
+                GST_WARNING("Failed to query duration.");
                 break;
             }
 
@@ -1700,7 +1744,7 @@ out:
 
 static NTSTATUS wg_parser_disconnect(void *args)
 {
-    struct wg_parser *parser = args;
+    struct wg_parser *parser = get_parser(*(wg_parser_t *)args);
     unsigned int i;
 
     /* Unblock all of our streams. */
@@ -1737,11 +1781,8 @@ static NTSTATUS wg_parser_disconnect(void *args)
 
     for (i = 0; i < ARRAY_SIZE(parser->input_cache_chunks); i++)
     {
-        if (parser->input_cache_chunks[i].data)
-        {
-            free(parser->input_cache_chunks[i].data);
-            parser->input_cache_chunks[i].data = NULL;
-        }
+        free(parser->input_cache_chunks[i].data);
+        parser->input_cache_chunks[i].data = NULL;
     }
 
     return S_OK;
@@ -1757,18 +1798,12 @@ static BOOL decodebin_parser_init_gst(struct wg_parser *parser)
     gst_bin_add(GST_BIN(parser->container), element);
     parser->decodebin = element;
 
-    if (parser->unlimited_buffering)
-    {
-        g_object_set(parser->decodebin, "max-size-buffers", G_MAXUINT, NULL);
-        g_object_set(parser->decodebin, "max-size-time", G_MAXUINT64, NULL);
-        g_object_set(parser->decodebin, "max-size-bytes", G_MAXUINT, NULL);
-    }
-
     g_signal_connect(element, "pad-added", G_CALLBACK(pad_added_cb), parser);
     g_signal_connect(element, "pad-removed", G_CALLBACK(pad_removed_cb), parser);
     g_signal_connect(element, "autoplug-continue", G_CALLBACK(autoplug_continue_cb), parser);
     g_signal_connect(element, "autoplug-select", G_CALLBACK(autoplug_select_cb), parser);
     g_signal_connect(element, "no-more-pads", G_CALLBACK(no_more_pads_cb), parser);
+    g_signal_connect(element, "deep-element-added", G_CALLBACK(deep_element_added_cb), parser);
 
     pthread_mutex_lock(&parser->mutex);
     parser->no_more_pads = false;
@@ -1780,89 +1815,9 @@ static BOOL decodebin_parser_init_gst(struct wg_parser *parser)
     return TRUE;
 }
 
-static BOOL avi_parser_init_gst(struct wg_parser *parser)
-{
-    GstElement *element;
-
-    if (!(element = create_element("avidemux", "good")))
-        return FALSE;
-
-    gst_bin_add(GST_BIN(parser->container), element);
-
-    g_signal_connect(element, "pad-added", G_CALLBACK(pad_added_cb), parser);
-    g_signal_connect(element, "pad-removed", G_CALLBACK(pad_removed_cb), parser);
-    g_signal_connect(element, "no-more-pads", G_CALLBACK(no_more_pads_cb), parser);
-
-    pthread_mutex_lock(&parser->mutex);
-    parser->no_more_pads = false;
-    pthread_mutex_unlock(&parser->mutex);
-
-    if (!link_src_to_element(parser->my_src, element))
-        return FALSE;
-
-    return TRUE;
-}
-
-static BOOL mpeg_audio_parser_init_gst(struct wg_parser *parser)
-{
-    struct wg_parser_stream *stream;
-    GstElement *element;
-
-    if (!(element = create_element("mpegaudioparse", "good")))
-        return FALSE;
-
-    gst_bin_add(GST_BIN(parser->container), element);
-
-    if (!link_src_to_element(parser->my_src, element))
-        return FALSE;
-
-    if (!(stream = create_stream(parser)))
-        return FALSE;
-
-    if (!link_element_to_sink(element, stream->my_sink))
-        return FALSE;
-    gst_pad_set_active(stream->my_sink, 1);
-
-    parser->no_more_pads = true;
-
-    return TRUE;
-}
-
-static BOOL wave_parser_init_gst(struct wg_parser *parser)
-{
-    struct wg_parser_stream *stream;
-    GstElement *element;
-
-    if (!(element = create_element("wavparse", "good")))
-        return FALSE;
-
-    gst_bin_add(GST_BIN(parser->container), element);
-
-    if (!link_src_to_element(parser->my_src, element))
-        return FALSE;
-
-    if (!(stream = create_stream(parser)))
-        return FALSE;
-
-    if (!link_element_to_sink(element, stream->my_sink))
-        return FALSE;
-    gst_pad_set_active(stream->my_sink, 1);
-
-    parser->no_more_pads = true;
-
-    return TRUE;
-}
 
 static NTSTATUS wg_parser_create(void *args)
 {
-    static const init_gst_cb init_funcs[] =
-    {
-        [WG_PARSER_DECODEBIN] = decodebin_parser_init_gst,
-        [WG_PARSER_AVIDEMUX] = avi_parser_init_gst,
-        [WG_PARSER_MPEGAUDIOPARSE] = mpeg_audio_parser_init_gst,
-        [WG_PARSER_WAVPARSE] = wave_parser_init_gst,
-    };
-
     struct wg_parser_create_params *params = args;
     struct wg_parser *parser;
 
@@ -1873,18 +1828,17 @@ static NTSTATUS wg_parser_create(void *args)
     pthread_cond_init(&parser->init_cond, NULL);
     pthread_cond_init(&parser->read_cond, NULL);
     pthread_cond_init(&parser->read_done_cond, NULL);
-    parser->init_gst = init_funcs[params->type];
-    parser->unlimited_buffering = params->unlimited_buffering;
+    parser->output_compressed = params->output_compressed;
     parser->err_on = params->err_on;
     parser->warn_on = params->warn_on;
     GST_DEBUG("Created winegstreamer parser %p.", parser);
-    params->parser = parser;
+    params->parser = (wg_parser_t)(ULONG_PTR)parser;
     return S_OK;
 }
 
 static NTSTATUS wg_parser_destroy(void *args)
 {
-    struct wg_parser *parser = args;
+    struct wg_parser *parser = get_parser(*(wg_parser_t *)args);
 
     if (parser->bus)
     {
@@ -1897,6 +1851,7 @@ static NTSTATUS wg_parser_destroy(void *args)
     pthread_cond_destroy(&parser->read_cond);
     pthread_cond_destroy(&parser->read_done_cond);
 
+    free(parser->uri);
     free(parser);
     return S_OK;
 }
@@ -1918,7 +1873,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     X(wg_parser_get_stream_count),
     X(wg_parser_get_stream),
 
-    X(wg_parser_stream_get_preferred_format),
+    X(wg_parser_stream_get_current_format),
     X(wg_parser_stream_get_codec_format),
     X(wg_parser_stream_enable),
     X(wg_parser_stream_disable),
@@ -1934,11 +1889,422 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
 
     X(wg_transform_create),
     X(wg_transform_destroy),
-    X(wg_transform_set_output_format),
+    X(wg_transform_get_output_type),
+    X(wg_transform_set_output_type),
 
     X(wg_transform_push_data),
     X(wg_transform_read_data),
     X(wg_transform_get_status),
     X(wg_transform_drain),
     X(wg_transform_flush),
+    X(wg_transform_notify_qos),
+
+    X(wg_muxer_create),
+    X(wg_muxer_destroy),
+    X(wg_muxer_add_stream),
+    X(wg_muxer_start),
+    X(wg_muxer_push_sample),
+    X(wg_muxer_read_data),
+    X(wg_muxer_finalize),
 };
+
+C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == unix_wg_funcs_count);
+
+#ifdef _WIN64
+
+typedef ULONG PTR32;
+
+struct wg_media_type32
+{
+    GUID major;
+    UINT32 format_size;
+    PTR32 format;
+};
+
+static NTSTATUS wow64_wg_parser_connect(void *args)
+{
+    struct
+    {
+        wg_parser_t parser;
+        PTR32 uri;
+        UINT64 file_size;
+    } *params32 = args;
+    struct wg_parser_connect_params params =
+    {
+        .parser = params32->parser,
+        .uri = ULongToPtr(params32->uri),
+        .file_size = params32->file_size,
+    };
+
+    return wg_parser_connect(&params);
+}
+
+static NTSTATUS wow64_wg_parser_push_data(void *args) {
+    struct
+    {
+        wg_parser_t parser;
+        PTR32 data;
+        UINT32 size;
+    } *params32 = args;
+    struct wg_parser_push_data_params params =
+    {
+        .parser = params32->parser,
+        .data = ULongToPtr(params32->data),
+        .size = params32->size,
+    };
+
+    return wg_parser_push_data(&params);
+}
+
+static NTSTATUS wow64_wg_parser_stream_get_current_format(void *args)
+{
+    struct
+    {
+        wg_parser_stream_t stream;
+        PTR32 format;
+    } *params32 = args;
+    struct wg_parser_stream_get_current_format_params params =
+    {
+        .stream = params32->stream,
+        .format = ULongToPtr(params32->format),
+    };
+
+    return wg_parser_stream_get_current_format(&params);
+}
+
+static NTSTATUS wow64_wg_parser_stream_get_codec_format(void *args)
+{
+    struct
+    {
+        wg_parser_stream_t stream;
+        PTR32 format;
+    } *params32 = args;
+    struct wg_parser_stream_get_codec_format_params params =
+    {
+        .stream = params32->stream,
+        .format = ULongToPtr(params32->format),
+    };
+
+    return wg_parser_stream_get_codec_format(&params);
+}
+
+static NTSTATUS wow64_wg_parser_stream_enable(void *args)
+{
+    struct
+    {
+        wg_parser_stream_t stream;
+        PTR32 format;
+    } *params32 = args;
+    struct wg_parser_stream_enable_params params =
+    {
+        .stream = params32->stream,
+        .format = ULongToPtr(params32->format),
+    };
+
+    return wg_parser_stream_enable(&params);
+}
+
+static NTSTATUS wow64_wg_parser_stream_get_buffer(void *args)
+{
+    struct
+    {
+        wg_parser_t parser;
+        wg_parser_stream_t stream;
+        PTR32 buffer;
+    } *params32 = args;
+    struct wg_parser_stream_get_buffer_params params =
+    {
+        .parser = params32->parser,
+        .stream = params32->stream,
+        .buffer = ULongToPtr(params32->buffer),
+    };
+    return wg_parser_stream_get_buffer(&params);
+}
+
+static NTSTATUS wow64_wg_parser_stream_copy_buffer(void *args)
+{
+    struct
+    {
+        wg_parser_stream_t stream;
+        PTR32 data;
+        UINT32 offset;
+        UINT32 size;
+    } *params32 = args;
+    struct wg_parser_stream_copy_buffer_params params =
+    {
+        .stream = params32->stream,
+        .data = ULongToPtr(params32->data),
+        .offset = params32->offset,
+        .size = params32->size,
+    };
+    return wg_parser_stream_copy_buffer(&params);
+}
+
+static NTSTATUS wow64_wg_parser_stream_get_tag(void *args)
+{
+    struct
+    {
+        wg_parser_stream_t stream;
+        wg_parser_tag tag;
+        PTR32 buffer;
+        PTR32 size;
+    } *params32 = args;
+    struct wg_parser_stream_get_tag_params params =
+    {
+        .stream = params32->stream,
+        .tag = params32->tag,
+        .buffer = ULongToPtr(params32->buffer),
+        .size = ULongToPtr(params32->size),
+    };
+
+    return wg_parser_stream_get_tag(&params);
+}
+
+NTSTATUS wow64_wg_transform_create(void *args)
+{
+    struct
+    {
+        wg_transform_t transform;
+        struct wg_media_type32 input_type;
+        struct wg_media_type32 output_type;
+        struct wg_transform_attrs attrs;
+    } *params32 = args;
+    struct wg_transform_create_params params =
+    {
+        .input_type =
+        {
+            .major = params32->input_type.major,
+            .format_size = params32->input_type.format_size,
+            .u.format = ULongToPtr(params32->input_type.format),
+        },
+        .output_type =
+        {
+            .major = params32->output_type.major,
+            .format_size = params32->output_type.format_size,
+            .u.format = ULongToPtr(params32->output_type.format),
+        },
+        .attrs = params32->attrs,
+    };
+    NTSTATUS ret;
+
+    ret = wg_transform_create(&params);
+    params32->transform = params.transform;
+    return ret;
+}
+
+NTSTATUS wow64_wg_transform_get_output_type(void *args)
+{
+    struct
+    {
+        wg_transform_t transform;
+        struct wg_media_type32 media_type;
+    } *params32 = args;
+    struct wg_transform_get_output_type_params params =
+    {
+        .transform = params32->transform,
+        .media_type =
+        {
+            .major = params32->media_type.major,
+            .format_size = params32->media_type.format_size,
+            .u.format = ULongToPtr(params32->media_type.format),
+        },
+    };
+    NTSTATUS status;
+
+    status = wg_transform_get_output_type(&params);
+    params32->media_type.major = params.media_type.major;
+    params32->media_type.format_size = params.media_type.format_size;
+    return status;
+}
+
+NTSTATUS wow64_wg_transform_set_output_type(void *args)
+{
+    struct
+    {
+        wg_transform_t transform;
+        struct wg_media_type32 media_type;
+    } *params32 = args;
+    struct wg_transform_set_output_type_params params =
+    {
+        .transform = params32->transform,
+        .media_type =
+        {
+            .major = params32->media_type.major,
+            .format_size = params32->media_type.format_size,
+            .u.format = ULongToPtr(params32->media_type.format),
+        },
+    };
+    return wg_transform_set_output_type(&params);
+}
+
+NTSTATUS wow64_wg_transform_push_data(void *args)
+{
+    struct
+    {
+        wg_transform_t transform;
+        PTR32 sample;
+        HRESULT result;
+    } *params32 = args;
+    struct wg_transform_push_data_params params =
+    {
+        .transform = params32->transform,
+        .sample = ULongToPtr(params32->sample),
+    };
+    NTSTATUS ret;
+
+    ret = wg_transform_push_data(&params);
+    params32->result = params.result;
+    return ret;
+}
+
+NTSTATUS wow64_wg_transform_read_data(void *args)
+{
+    struct
+    {
+        wg_transform_t transform;
+        PTR32 sample;
+        HRESULT result;
+    } *params32 = args;
+    struct wg_transform_read_data_params params =
+    {
+        .transform = params32->transform,
+        .sample = ULongToPtr(params32->sample),
+    };
+    NTSTATUS ret;
+
+    ret = wg_transform_read_data(&params);
+    params32->result = params.result;
+    return ret;
+}
+
+NTSTATUS wow64_wg_muxer_create(void *args)
+{
+    struct
+    {
+        wg_muxer_t muxer;
+        PTR32 format;
+    } *params32 = args;
+    struct wg_muxer_create_params params =
+    {
+        .format = ULongToPtr(params32->format),
+    };
+    NTSTATUS ret;
+
+    ret = wg_muxer_create(&params);
+    params32->muxer = params.muxer;
+    return ret;
+}
+
+NTSTATUS wow64_wg_muxer_add_stream(void *args)
+{
+    struct
+    {
+        wg_muxer_t muxer;
+        UINT32 stream_id;
+        PTR32 format;
+    } *params32 = args;
+    struct wg_muxer_add_stream_params params =
+    {
+        .muxer = params32->muxer,
+        .stream_id = params32->stream_id,
+        .format = ULongToPtr(params32->format),
+    };
+    return wg_muxer_add_stream(&params);
+}
+
+NTSTATUS wow64_wg_muxer_push_sample(void *args)
+{
+    struct
+    {
+        wg_muxer_t muxer;
+        PTR32 sample;
+        UINT32 stream_id;
+    } *params32 = args;
+    struct wg_muxer_push_sample_params params =
+    {
+        .muxer = params32->muxer,
+        .sample = ULongToPtr(params32->sample),
+        .stream_id = params32->stream_id,
+    };
+    return wg_muxer_push_sample(&params);
+}
+
+NTSTATUS wow64_wg_muxer_read_data(void *args)
+{
+    struct
+    {
+        wg_muxer_t muxer;
+        PTR32 buffer;
+        UINT32 size;
+        UINT64 offset;
+    } *params32 = args;
+    struct wg_muxer_read_data_params params =
+    {
+        .muxer = params32->muxer,
+        .buffer = ULongToPtr(params32->buffer),
+        .size = params32->size,
+        .offset = params32->offset,
+    };
+    NTSTATUS ret;
+
+    ret = wg_muxer_read_data(&params);
+    params32->size = params.size;
+    params32->offset = params.offset;
+    return ret;
+}
+
+const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
+{
+#define X64(name) [unix_ ## name] = wow64_ ## name
+    X(wg_init_gstreamer),
+
+    X(wg_parser_create),
+    X(wg_parser_destroy),
+
+    X64(wg_parser_connect),
+    X(wg_parser_disconnect),
+
+    X(wg_parser_get_next_read_offset),
+    X64(wg_parser_push_data),
+
+    X(wg_parser_get_stream_count),
+    X(wg_parser_get_stream),
+
+    X64(wg_parser_stream_get_current_format),
+    X64(wg_parser_stream_get_codec_format),
+    X64(wg_parser_stream_enable),
+    X(wg_parser_stream_disable),
+
+    X64(wg_parser_stream_get_buffer),
+    X64(wg_parser_stream_copy_buffer),
+    X(wg_parser_stream_release_buffer),
+    X(wg_parser_stream_notify_qos),
+
+    X(wg_parser_stream_get_duration),
+    X64(wg_parser_stream_get_tag),
+    X(wg_parser_stream_seek),
+
+    X64(wg_transform_create),
+    X(wg_transform_destroy),
+    X64(wg_transform_get_output_type),
+    X64(wg_transform_set_output_type),
+
+    X64(wg_transform_push_data),
+    X64(wg_transform_read_data),
+    X(wg_transform_get_status),
+    X(wg_transform_drain),
+    X(wg_transform_flush),
+    X(wg_transform_notify_qos),
+
+    X64(wg_muxer_create),
+    X(wg_muxer_destroy),
+    X64(wg_muxer_add_stream),
+    X(wg_muxer_start),
+    X64(wg_muxer_push_sample),
+    X64(wg_muxer_read_data),
+    X(wg_muxer_finalize),
+};
+
+C_ASSERT(ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_wg_funcs_count);
+
+#endif  /* _WIN64 */

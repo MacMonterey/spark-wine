@@ -278,6 +278,152 @@ static void test_suminfo(void)
     r = MsiCloseHandle(hsuminfo);
     ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
 
+    /* try persisting on transacted msi */
+    r = MsiOpenDatabaseW(msifileW, MSIDBOPEN_TRANSACT, &hdb);
+    ok(r == ERROR_SUCCESS, "MsiOpenDatabase failed\n");
+
+    r = MsiGetSummaryInformationA(hdb, NULL, 1, &hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiGetSummaryInformation wrong error\n");
+
+    r = MsiSummaryInfoSetPropertyA(hsuminfo, PID_AUTHOR, VT_LPSTR, 1, &ft, "Fabian");
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoSetProperty wrong error\n");
+
+    r = MsiSummaryInfoPersist(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoPersist wrong error %u\n", r);
+
+    r = MsiCloseHandle(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    r = MsiCloseHandle(hdb);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    r = MsiOpenDatabaseW(msifileW, MSIDBOPEN_READONLY, &hdb);
+    ok(r == ERROR_SUCCESS, "MsiOpenDatabase failed\n");
+
+    r = MsiGetSummaryInformationA(hdb, NULL, 1, &hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiGetSummaryInformation wrong error\n");
+
+    sz = 0x10;
+    strcpy(buf,"x");
+    r = MsiSummaryInfoGetPropertyA(hsuminfo, PID_AUTHOR, &type, NULL, NULL, buf, &sz);
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoGetPropertyA wrong error\n");
+    ok(!strcmp(buf,"Mike"), "buffer was wrong: %s\n", buf);
+
+    r = MsiCloseHandle(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    r = MsiCloseHandle(hdb);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    /* try persisting on transacted msi with commit */
+    r = MsiOpenDatabaseW(msifileW, MSIDBOPEN_TRANSACT, &hdb);
+    ok(r == ERROR_SUCCESS, "MsiOpenDatabase failed\n");
+
+    r = MsiGetSummaryInformationA(hdb, NULL, 1, &hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiGetSummaryInformation wrong error\n");
+
+    r = MsiSummaryInfoSetPropertyA(hsuminfo, PID_AUTHOR, VT_LPSTR, 1, &ft, "Fabian");
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoSetProperty wrong error\n");
+
+    r = MsiSummaryInfoPersist(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoPersist wrong error %u\n", r);
+
+    r = MsiCloseHandle(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    r = MsiDatabaseCommit(hdb);
+    ok(r == ERROR_SUCCESS, "MsiDatabaseCommit wrong error %u\n", r);
+
+    r = MsiCloseHandle(hdb);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    r = MsiOpenDatabaseW(msifileW, MSIDBOPEN_READONLY, &hdb);
+    ok(r == ERROR_SUCCESS, "MsiOpenDatabase failed\n");
+
+    r = MsiGetSummaryInformationA(hdb, NULL, 1, &hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiGetSummaryInformation wrong error\n");
+
+    sz = 0x10;
+    strcpy(buf,"x");
+    r = MsiSummaryInfoGetPropertyA(hsuminfo, PID_AUTHOR, &type, NULL, NULL, buf, &sz);
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoGetPropertyA wrong error\n");
+    ok(!strcmp(buf,"Fabian"), "buffer was wrong: %s\n", buf);
+
+    r = MsiCloseHandle(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    r = MsiCloseHandle(hdb);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    /* try persisting on direct msi */
+    r = MsiOpenDatabaseW(msifileW, MSIDBOPEN_DIRECT, &hdb);
+    ok(r == ERROR_SUCCESS, "MsiOpenDatabase failed\n");
+
+    r = MsiGetSummaryInformationA(hdb, NULL, 1, &hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiGetSummaryInformation wrong error\n");
+
+    r = MsiSummaryInfoSetPropertyA(hsuminfo, PID_AUTHOR, VT_LPSTR, 1, &ft, "Fabian2");
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoSetProperty wrong error\n");
+
+    r = MsiSummaryInfoPersist(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoPersist wrong error %u\n", r);
+
+    r = MsiCloseHandle(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    r = MsiCloseHandle(hdb);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    r = MsiOpenDatabaseW(msifileW, MSIDBOPEN_READONLY, &hdb);
+    ok(r == ERROR_SUCCESS, "MsiOpenDatabase failed\n");
+
+    r = MsiGetSummaryInformationA(hdb, NULL, 1, &hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiGetSummaryInformation wrong error\n");
+
+    sz = 0x10;
+    strcpy(buf,"x");
+    r = MsiSummaryInfoGetPropertyA(hsuminfo, PID_AUTHOR, &type, NULL, NULL, buf, &sz);
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoGetPropertyA wrong error\n");
+    ok(!strcmp(buf,"Fabian2"), "buffer was wrong: %s\n", buf);
+
+    r = MsiCloseHandle(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    r = MsiCloseHandle(hdb);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    /* try persisting on indirectly opened msi */
+    r = MsiGetSummaryInformationA(0, msifile, 2, &hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiGetSummaryInformation wrong error %u\n", r);
+
+    r = MsiSummaryInfoSetPropertyA(hsuminfo, PID_AUTHOR, VT_LPSTR, 1, &ft, "Fabian3");
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoSetProperty wrong error\n");
+
+    r = MsiSummaryInfoPersist(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoPersist wrong error %u\n", r);
+
+    r = MsiCloseHandle(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    r = MsiOpenDatabaseW(msifileW, MSIDBOPEN_READONLY, &hdb);
+    ok(r == ERROR_SUCCESS, "MsiOpenDatabase failed\n");
+
+    r = MsiGetSummaryInformationA(hdb, NULL, 1, &hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiGetSummaryInformation wrong error\n");
+
+    sz = 0x10;
+    strcpy(buf,"x");
+    r = MsiSummaryInfoGetPropertyA(hsuminfo, PID_AUTHOR, &type, NULL, NULL, buf, &sz);
+    ok(r == ERROR_SUCCESS, "MsiSummaryInfoGetPropertyA wrong error\n");
+    ok(!strcmp(buf,"Fabian3"), "buffer was wrong: %s\n", buf);
+
+    r = MsiCloseHandle(hsuminfo);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    r = MsiCloseHandle(hdb);
+    ok(r == ERROR_SUCCESS, "MsiCloseHandle failed\n");
+
+    /* Cleanup */
     r = DeleteFileA(msifile);
     ok(r, "DeleteFile failed\n");
 }
@@ -343,45 +489,45 @@ static void test_create_database_binary(void)
     ok( r == S_OK, "failed to set class\n");
 
     propspec[0].ulKind = PRSPEC_PROPID;
-    U(propspec[0]).propid = PID_TITLE;
+    propspec[0].propid = PID_TITLE;
     propvar[0].vt = VT_LPSTR;
-    U(propvar[0]).pszVal = LOSE_CONST("test title");
+    propvar[0].pszVal = LOSE_CONST("test title");
 
     propspec[1].ulKind = PRSPEC_PROPID;
-    U(propspec[1]).propid = PID_SUBJECT;
+    propspec[1].propid = PID_SUBJECT;
     propvar[1].vt = VT_LPSTR;
-    U(propvar[1]).pszVal = LOSE_CONST("msi suminfo / property storage test");
+    propvar[1].pszVal = LOSE_CONST("msi suminfo / property storage test");
 
     propspec[2].ulKind = PRSPEC_PROPID;
-    U(propspec[2]).propid = PID_AUTHOR;
+    propspec[2].propid = PID_AUTHOR;
     propvar[2].vt = VT_LPSTR;
-    U(propvar[2]).pszVal = LOSE_CONST("mike_m");
+    propvar[2].pszVal = LOSE_CONST("mike_m");
 
     propspec[3].ulKind = PRSPEC_PROPID;
-    U(propspec[3]).propid = PID_TEMPLATE;
+    propspec[3].propid = PID_TEMPLATE;
     propvar[3].vt = VT_LPSTR;
-    U(propvar[3]).pszVal = LOSE_CONST(";1033");  /* actually the string table's codepage */
+    propvar[3].pszVal = LOSE_CONST(";1033");  /* actually the string table's codepage */
 
     propspec[4].ulKind = PRSPEC_PROPID;
-    U(propspec[4]).propid = PID_REVNUMBER;
+    propspec[4].propid = PID_REVNUMBER;
     propvar[4].vt = VT_LPSTR;
-    U(propvar[4]).pszVal = LOSE_CONST("{913B8D18-FBB6-4CAC-A239-C74C11E3FA74}");
+    propvar[4].pszVal = LOSE_CONST("{913B8D18-FBB6-4CAC-A239-C74C11E3FA74}");
 
     propspec[5].ulKind = PRSPEC_PROPID;
-    U(propspec[5]).propid = PID_PAGECOUNT;
+    propspec[5].propid = PID_PAGECOUNT;
     propvar[5].vt = VT_I4;
-    U(propvar[5]).lVal = 100;
+    propvar[5].lVal = 100;
 
     propspec[6].ulKind = PRSPEC_PROPID;
-    U(propspec[6]).propid = PID_WORDCOUNT;
+    propspec[6].propid = PID_WORDCOUNT;
     propvar[6].vt = VT_I4;
-    U(propvar[6]).lVal = 0;
+    propvar[6].lVal = 0;
 
     /* MSDN says that PID_LASTPRINTED should be a VT_FILETIME... */
     propspec[7].ulKind = PRSPEC_PROPID;
-    U(propspec[7]).propid = PID_LASTPRINTED;
+    propspec[7].propid = PID_LASTPRINTED;
     propvar[7].vt = VT_LPSTR;
-    U(propvar[7]).pszVal = LOSE_CONST("7/1/1999 5:17");
+    propvar[7].pszVal = LOSE_CONST("7/1/1999 5:17");
 
     r = IPropertyStorage_WriteMultiple( ps, 8, propspec, propvar, PID_FIRST_USABLE );
     ok( r == S_OK, "failed to write properties\n");

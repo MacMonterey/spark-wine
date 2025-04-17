@@ -19,8 +19,6 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#define NONAMELESSUNION
-#define NONAMELESSSTRUCT
 #include <stdarg.h>
 
 #include "windef.h"
@@ -375,7 +373,7 @@ struct REG_RF
 
 struct REG_RFP
 {
-    BYTE signature[4]; /* e.g. "0pi3" */
+    DWORD signature; /* e.g. '0pi3' */
     DWORD dwFlags;
     DWORD dwInstances;
     DWORD dwMediaTypes;
@@ -386,7 +384,7 @@ struct REG_RFP
 
 struct REG_TYPE
 {
-    BYTE signature[4]; /* e.g. "0ty3" */
+    DWORD signature; /* e.g. '0ty3' */
     DWORD dwUnused;
     DWORD dwOffsetMajor;
     DWORD dwOffsetMinor;
@@ -615,11 +613,7 @@ static HRESULT FM2_WriteFilterData(const REGFILTER2 * prf2, BYTE **ppData, ULONG
         REGFILTERPINS2 rgPin2 = prf2->rgPins2[i];
         unsigned int j;
 
-        rrfp.signature[0] = '0';
-        rrfp.signature[1] = 'p';
-        rrfp.signature[2] = 'i';
-        rrfp.signature[3] = '3';
-        rrfp.signature[0] += i;
+        rrfp.signature = MAKEFOURCC('0'+i,'p','i','3');
         rrfp.dwFlags = rgPin2.dwFlags;
         rrfp.dwInstances = rgPin2.cInstances;
         rrfp.dwMediaTypes = rgPin2.nMediaTypes;
@@ -641,11 +635,7 @@ static HRESULT FM2_WriteFilterData(const REGFILTER2 * prf2, BYTE **ppData, ULONG
         {
             struct REG_TYPE rt;
             const CLSID * clsMinorType = rgPin2.lpMediaType[j].clsMinorType ? rgPin2.lpMediaType[j].clsMinorType : &MEDIASUBTYPE_NULL;
-            rt.signature[0] = '0';
-            rt.signature[1] = 't';
-            rt.signature[2] = 'y';
-            rt.signature[3] = '3';
-            rt.signature[0] += j;
+            rt.signature = MAKEFOURCC('0'+j,'t','y','3');
             rt.dwUnused = 0;
             rt.dwOffsetMajor = find_data(&clsidStore, rgPin2.lpMediaType[j].clsMajorType, sizeof(CLSID));
             if (rt.dwOffsetMajor == -1)
@@ -728,7 +718,7 @@ static HRESULT FM2_ReadFilterData(BYTE *pData, REGFILTER2 * prf2)
 
             /* FIXME: check signature */
 
-            TRACE("\tsignature = %s\n", debugstr_an((const char*)prrfp->signature, 4));
+            TRACE("\tsignature = %s\n", debugstr_fourcc(prrfp->signature));
 
             TRACE("\tPin %lu: dwFlags %#lx, dwInstances %lu, dwMediaTypes %lu, dwMediums %lu.\n",
                 i, prrfp->dwFlags, prrfp->dwInstances, prrfp->dwMediaTypes, prrfp->dwMediums);
@@ -762,7 +752,7 @@ static HRESULT FM2_ReadFilterData(BYTE *pData, REGFILTER2 * prf2)
                 CLSID * clsMinor = CoTaskMemAlloc(sizeof(CLSID));
 
                 /* FIXME: check signature */
-                TRACE("\t\tsignature = %s\n", debugstr_an((const char*)prt->signature, 4));
+                TRACE("\t\tsignature = %s\n", debugstr_fourcc(prt->signature));
 
                 memcpy(clsMajor, pData + prt->dwOffsetMajor, sizeof(CLSID));
                 memcpy(clsMinor, pData + prt->dwOffsetMinor, sizeof(CLSID));
@@ -1480,7 +1470,7 @@ static HRESULT WINAPI FilterMapper_RegisterPin(IFilterMapper *iface, CLSID clsid
     if ((ret = RegSetValueExW(pin_key, L"IsRendered", 0, REG_DWORD, (const BYTE *)&rendered, sizeof(DWORD))))
         ERR("Failed to set IsRendered value, error %lu.\n", ret);
 
-    if (!(ret = RegCreateKeyExW(pin_key, L"Types", 0, NULL, 0, 0, NULL, &type_key, NULL)))
+    if (!(ret = RegCreateKeyExW(pin_key, L"Types", 0, NULL, 0, KEY_ENUMERATE_SUB_KEYS, NULL, &type_key, NULL)))
         RegCloseKey(type_key);
     else
         ERR("Failed to create Types subkey, error %lu.\n", ret);
@@ -1522,7 +1512,7 @@ static HRESULT WINAPI FilterMapper_RegisterPinType(IFilterMapper *iface,
     StringFromGUID2(&majortype, type_keypath, ARRAY_SIZE(type_keypath));
     wcscat(type_keypath, L"\\");
     StringFromGUID2(&subtype, type_keypath + wcslen(type_keypath), ARRAY_SIZE(type_keypath) - wcslen(type_keypath));
-    if (!(ret = RegCreateKeyExW(key, type_keypath, 0, NULL, 0, 0, NULL, &type_key, NULL)))
+    if (!(ret = RegCreateKeyExW(key, type_keypath, 0, NULL, 0, KEY_ENUMERATE_SUB_KEYS, NULL, &type_key, NULL)))
         RegCloseKey(type_key);
     else
         ERR("Failed to create type key, error %lu.\n", ret);
@@ -1541,7 +1531,7 @@ static HRESULT WINAPI FilterMapper_UnregisterFilter(IFilterMapper *iface, CLSID 
 
     StringFromGUID2(&clsid, guidstr, ARRAY_SIZE(guidstr));
 
-    if ((ret = RegOpenKeyExW(HKEY_CLASSES_ROOT, L"Filter", 0, 0, &key)))
+    if ((ret = RegOpenKeyExW(HKEY_CLASSES_ROOT, L"Filter", 0, KEY_ENUMERATE_SUB_KEYS, &key)))
         return HRESULT_FROM_WIN32(ret);
     if ((ret = RegDeleteKeyW(key, guidstr)))
         ERR("Failed to delete filter key, error %lu.\n", ret);
@@ -1586,7 +1576,7 @@ static HRESULT WINAPI FilterMapper_UnregisterPin(IFilterMapper * iface, CLSID cl
     wcscpy(keypath, L"CLSID\\");
     StringFromGUID2(&clsid, keypath + wcslen(keypath), ARRAY_SIZE(keypath) - wcslen(keypath));
     wcscat(keypath, L"\\Pins");
-    if ((ret = RegOpenKeyExW(HKEY_CLASSES_ROOT, keypath, 0, 0, &key)))
+    if ((ret = RegOpenKeyExW(HKEY_CLASSES_ROOT, keypath, 0, KEY_ENUMERATE_SUB_KEYS, &key)))
         return HRESULT_FROM_WIN32(ret);
 
     if ((ret = RegDeleteTreeW(key, name)))

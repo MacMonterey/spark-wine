@@ -187,7 +187,11 @@ static RTL_USER_PROCESS_PARAMETERS *create_process_params( const WCHAR *filename
     }
     RtlFreeUnicodeString( &newdirW );
 
-    if (flags & CREATE_NEW_PROCESS_GROUP) params->ConsoleFlags = 1;
+    if (!(flags & CREATE_NEW_PROCESS_GROUP))
+        params->ProcessGroupId = NtCurrentTeb()->Peb->ProcessParameters->ProcessGroupId;
+    else if (!(flags & CREATE_NEW_CONSOLE))
+        params->ConsoleFlags = 1;
+
     if (flags & CREATE_NEW_CONSOLE) params->ConsoleHandle = CONSOLE_HANDLE_ALLOC;
     else if (!(flags & DETACHED_PROCESS))
     {
@@ -205,18 +209,16 @@ static RTL_USER_PROCESS_PARAMETERS *create_process_params( const WCHAR *filename
         params->hStdOutput = startup->hStdOutput;
         params->hStdError  = startup->hStdError;
     }
-    else if (flags & (DETACHED_PROCESS | CREATE_NEW_CONSOLE))
-    {
-        params->hStdInput  = INVALID_HANDLE_VALUE;
-        params->hStdOutput = INVALID_HANDLE_VALUE;
-        params->hStdError  = INVALID_HANDLE_VALUE;
-    }
-    else
+    else if (!(flags & (DETACHED_PROCESS | CREATE_NEW_CONSOLE)))
     {
         params->hStdInput  = NtCurrentTeb()->Peb->ProcessParameters->hStdInput;
         params->hStdOutput = NtCurrentTeb()->Peb->ProcessParameters->hStdOutput;
         params->hStdError  = NtCurrentTeb()->Peb->ProcessParameters->hStdError;
     }
+
+    if (params->hStdInput  == INVALID_HANDLE_VALUE) params->hStdInput  = NULL;
+    if (params->hStdOutput == INVALID_HANDLE_VALUE) params->hStdOutput = NULL;
+    if (params->hStdError  == INVALID_HANDLE_VALUE) params->hStdError  = NULL;
 
     params->dwX             = startup->dwX;
     params->dwY             = startup->dwY;
@@ -593,6 +595,9 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
                             goto done;
                         }
                         break;
+                    case PROC_THREAD_ATTRIBUTE_EXTENDED_FLAGS:
+                        FIXME("PROC_THREAD_ATTRIBUTE_EXTENDED_FLAGS %lx.\n", *(ULONG *)attrs->attrs[i].value);
+                        break;
                     case PROC_THREAD_ATTRIBUTE_HANDLE_LIST:
                         handle_list = &attrs->attrs[i];
                         TRACE("PROC_THREAD_ATTRIBUTE_HANDLE_LIST handle count %Iu.\n", attrs->attrs[i].size / sizeof(HANDLE));
@@ -735,15 +740,6 @@ BOOL WINAPI DECLSPEC_HOTPATCH DuplicateHandle( HANDLE source_process, HANDLE sou
 }
 
 
-/****************************************************************************
- *           FlushInstructionCache   (kernelbase.@)
- */
-BOOL WINAPI DECLSPEC_HOTPATCH FlushInstructionCache( HANDLE process, LPCVOID addr, SIZE_T size )
-{
-    return set_ntstatus( NtFlushInstructionCache( process, addr, size ));
-}
-
-
 /***********************************************************************
  *           GetApplicationRestartSettings   (kernelbase.@)
  */
@@ -805,15 +801,15 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetExitCodeProcess( HANDLE process, LPDWORD exit_c
  */
 BOOL WINAPI DECLSPEC_HOTPATCH GetHandleInformation( HANDLE handle, DWORD *flags )
 {
-    OBJECT_DATA_INFORMATION info;
+    OBJECT_HANDLE_FLAG_INFORMATION info;
 
-    if (!set_ntstatus( NtQueryObject( handle, ObjectDataInformation, &info, sizeof(info), NULL )))
+    if (!set_ntstatus( NtQueryObject( handle, ObjectHandleFlagInformation, &info, sizeof(info), NULL )))
         return FALSE;
 
     if (flags)
     {
         *flags = 0;
-        if (info.InheritHandle) *flags |= HANDLE_FLAG_INHERIT;
+        if (info.Inherit) *flags |= HANDLE_FLAG_INHERIT;
         if (info.ProtectFromClose) *flags |= HANDLE_FLAG_PROTECT_FROM_CLOSE;
     }
     return TRUE;
@@ -825,13 +821,13 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetHandleInformation( HANDLE handle, DWORD *flags 
  */
 DWORD WINAPI DECLSPEC_HOTPATCH GetPriorityClass( HANDLE process )
 {
-    PROCESS_BASIC_INFORMATION pbi;
+    PROCESS_PRIORITY_CLASS priority;
 
-    if (!set_ntstatus( NtQueryInformationProcess( process, ProcessBasicInformation,
-                                                  &pbi, sizeof(pbi), NULL )))
+    if (!set_ntstatus( NtQueryInformationProcess( process, ProcessPriorityClass,
+                                                  &priority, sizeof(priority), NULL )))
         return 0;
 
-    switch (pbi.BasePriority)
+    switch (priority.PriorityClass)
     {
     case PROCESS_PRIOCLASS_IDLE: return IDLE_PRIORITY_CLASS;
     case PROCESS_PRIOCLASS_BELOW_NORMAL: return BELOW_NORMAL_PRIORITY_CLASS;
@@ -1034,6 +1030,57 @@ BOOL WINAPI DECLSPEC_HOTPATCH IsWow64Process( HANDLE process, PBOOL wow64 )
     return set_ntstatus( status );
 }
 
+/*********************************************************************
+ *           GetProcessInformation   (kernelbase.@)
+ */
+BOOL WINAPI GetProcessInformation( HANDLE process, PROCESS_INFORMATION_CLASS info_class, void *data, DWORD size )
+{
+    switch (info_class)
+    {
+        case ProcessMachineTypeInfo:
+        {
+            PROCESS_MACHINE_INFORMATION *mi = data;
+            SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION machines[8];
+            NTSTATUS status;
+            ULONG i;
+
+            if (size != sizeof(*mi))
+            {
+                SetLastError(ERROR_BAD_LENGTH);
+                return FALSE;
+            }
+
+            status = NtQuerySystemInformationEx( SystemSupportedProcessorArchitectures, &process, sizeof(process),
+                    machines, sizeof(machines), NULL );
+            if (status) return set_ntstatus( status );
+
+            for (i = 0; machines[i].Machine; i++)
+            {
+                if (machines[i].Process)
+                {
+                    mi->ProcessMachine = machines[i].Machine;
+                    mi->Res0 = 0;
+                    mi->MachineAttributes = 0;
+                    if (machines[i].KernelMode)
+                        mi->MachineAttributes |= KernelEnabled;
+                    if (machines[i].UserMode)
+                        mi->MachineAttributes |= UserEnabled;
+                    if (machines[i].WoW64Container)
+                        mi->MachineAttributes |= Wow64Container;
+
+                    return TRUE;
+                }
+            }
+
+            break;
+        }
+        default:
+            FIXME("Unsupported information class %d.\n", info_class);
+    }
+
+    return FALSE;
+}
+
 
 /*********************************************************************
  *           OpenProcess   (kernelbase.@)
@@ -1046,12 +1093,7 @@ HANDLE WINAPI DECLSPEC_HOTPATCH OpenProcess( DWORD access, BOOL inherit, DWORD i
 
     if (GetVersion() & 0x80000000) access = PROCESS_ALL_ACCESS;
 
-    attr.Length = sizeof(OBJECT_ATTRIBUTES);
-    attr.RootDirectory = 0;
-    attr.Attributes = inherit ? OBJ_INHERIT : 0;
-    attr.ObjectName = NULL;
-    attr.SecurityDescriptor = NULL;
-    attr.SecurityQualityOfService = NULL;
+    InitializeObjectAttributes( &attr, NULL, inherit ? OBJ_INHERIT : 0, 0, NULL );
 
     cid.UniqueProcess = ULongToHandle(id);
     cid.UniqueThread  = 0;
@@ -1123,21 +1165,21 @@ UINT WINAPI DECLSPEC_HOTPATCH SetHandleCount( UINT count )
  */
 BOOL WINAPI DECLSPEC_HOTPATCH SetHandleInformation( HANDLE handle, DWORD mask, DWORD flags )
 {
-    OBJECT_DATA_INFORMATION info;
+    OBJECT_HANDLE_FLAG_INFORMATION info;
 
     /* if not setting both fields, retrieve current value first */
     if ((mask & (HANDLE_FLAG_INHERIT | HANDLE_FLAG_PROTECT_FROM_CLOSE)) !=
         (HANDLE_FLAG_INHERIT | HANDLE_FLAG_PROTECT_FROM_CLOSE))
     {
-        if (!set_ntstatus( NtQueryObject( handle, ObjectDataInformation, &info, sizeof(info), NULL )))
+        if (!set_ntstatus( NtQueryObject( handle, ObjectHandleFlagInformation, &info, sizeof(info), NULL )))
             return FALSE;
     }
     if (mask & HANDLE_FLAG_INHERIT)
-        info.InheritHandle = (flags & HANDLE_FLAG_INHERIT) != 0;
+        info.Inherit = (flags & HANDLE_FLAG_INHERIT) != 0;
     if (mask & HANDLE_FLAG_PROTECT_FROM_CLOSE)
         info.ProtectFromClose = (flags & HANDLE_FLAG_PROTECT_FROM_CLOSE) != 0;
 
-    return set_ntstatus( NtSetInformationObject( handle, ObjectDataInformation, &info, sizeof(info) ));
+    return set_ntstatus( NtSetInformationObject( handle, ObjectHandleFlagInformation, &info, sizeof(info) ));
 }
 
 
@@ -1250,7 +1292,6 @@ BOOL WINAPI DECLSPEC_HOTPATCH TerminateProcess( HANDLE handle, DWORD exit_code )
  ***********************************************************************/
 
 
-static STARTUPINFOW startup_infoW;
 static char *command_lineA;
 static WCHAR *command_lineW;
 
@@ -1260,25 +1301,6 @@ static WCHAR *command_lineW;
 void init_startup_info( RTL_USER_PROCESS_PARAMETERS *params )
 {
     ANSI_STRING ansi;
-
-    startup_infoW.cb              = sizeof(startup_infoW);
-    startup_infoW.lpReserved      = NULL;
-    startup_infoW.lpDesktop       = params->Desktop.Buffer;
-    startup_infoW.lpTitle         = params->WindowTitle.Buffer;
-    startup_infoW.dwX             = params->dwX;
-    startup_infoW.dwY             = params->dwY;
-    startup_infoW.dwXSize         = params->dwXSize;
-    startup_infoW.dwYSize         = params->dwYSize;
-    startup_infoW.dwXCountChars   = params->dwXCountChars;
-    startup_infoW.dwYCountChars   = params->dwYCountChars;
-    startup_infoW.dwFillAttribute = params->dwFillAttribute;
-    startup_infoW.dwFlags         = params->dwFlags;
-    startup_infoW.wShowWindow     = params->wShowWindow;
-    startup_infoW.cbReserved2     = params->RuntimeInfo.MaximumLength;
-    startup_infoW.lpReserved2     = params->RuntimeInfo.MaximumLength ? (void *)params->RuntimeInfo.Buffer : NULL;
-    startup_infoW.hStdInput       = params->hStdInput ? params->hStdInput : INVALID_HANDLE_VALUE;
-    startup_infoW.hStdOutput      = params->hStdOutput ? params->hStdOutput : INVALID_HANDLE_VALUE;
-    startup_infoW.hStdError       = params->hStdError ? params->hStdError : INVALID_HANDLE_VALUE;
 
     command_lineW = params->CommandLine.Buffer;
     if (!RtlUnicodeStringToAnsiString( &ansi, &params->CommandLine, TRUE )) command_lineA = ansi.Buffer;
@@ -1319,7 +1341,34 @@ LPWSTR WINAPI GetCommandLineW(void)
  */
 void WINAPI DECLSPEC_HOTPATCH GetStartupInfoW( STARTUPINFOW *info )
 {
-    *info = startup_infoW;
+    RTL_USER_PROCESS_PARAMETERS *params;
+
+    RtlAcquirePebLock();
+
+    params = RtlGetCurrentPeb()->ProcessParameters;
+
+    info->cb              = sizeof(*info);
+    info->lpReserved      = NULL;
+    info->lpDesktop       = params->Desktop.Buffer;
+    info->lpTitle         = params->WindowTitle.Buffer;
+    info->dwX             = params->dwX;
+    info->dwY             = params->dwY;
+    info->dwXSize         = params->dwXSize;
+    info->dwYSize         = params->dwYSize;
+    info->dwXCountChars   = params->dwXCountChars;
+    info->dwYCountChars   = params->dwYCountChars;
+    info->dwFillAttribute = params->dwFillAttribute;
+    info->dwFlags         = params->dwFlags;
+    info->wShowWindow     = params->wShowWindow;
+    info->cbReserved2     = params->RuntimeInfo.MaximumLength;
+    info->lpReserved2     = params->RuntimeInfo.MaximumLength ? (void *)params->RuntimeInfo.Buffer : NULL;
+    if (params->dwFlags & STARTF_USESTDHANDLES)
+    {
+        info->hStdInput   = params->hStdInput;
+        info->hStdOutput  = params->hStdOutput;
+        info->hStdError   = params->hStdError;
+    }
+    RtlReleasePebLock();
 }
 
 
@@ -1396,20 +1445,32 @@ DWORD WINAPI DECLSPEC_HOTPATCH ExpandEnvironmentStringsA( LPCSTR src, LPSTR dst,
 {
     UNICODE_STRING us_src;
     PWSTR dstW = NULL;
-    DWORD ret;
+    DWORD count_neededW;
+    DWORD count_neededA = 0;
 
     RtlCreateUnicodeStringFromAsciiz( &us_src, src );
-    if (count)
-    {
-        if (!(dstW = HeapAlloc(GetProcessHeap(), 0, count * sizeof(WCHAR)))) return 0;
-        ret = ExpandEnvironmentStringsW( us_src.Buffer, dstW, count);
-        if (ret) WideCharToMultiByte( CP_ACP, 0, dstW, ret, dst, count, NULL, NULL );
-    }
-    else ret = ExpandEnvironmentStringsW( us_src.Buffer, NULL, 0 );
 
+    /* We always need to call ExpandEnvironmentStringsW, since we need the result to calculate the needed buffer size */
+    count_neededW = ExpandEnvironmentStringsW( us_src.Buffer, NULL, 0 );
+    if (!(dstW = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, count_neededW * sizeof(WCHAR) ))) goto cleanup;
+    count_neededW = ExpandEnvironmentStringsW( us_src.Buffer, dstW, count_neededW );
+
+    /* Calculate needed buffer */
+    count_neededA = WideCharToMultiByte( CP_ACP, 0, dstW, count_neededW, NULL, 0, NULL, NULL );
+
+    /* If provided buffer is enough, do actual conversion */
+    if (count > count_neededA)
+        count_neededA = WideCharToMultiByte( CP_ACP, 0, dstW, count_neededW, dst, count, NULL, NULL );
+    else if(dst)
+        *dst = 0;
+
+cleanup:
     RtlFreeUnicodeString( &us_src );
     HeapFree( GetProcessHeap(), 0, dstW );
-    return ret;
+
+    if (count_neededA >= count) /* When the buffer is too small, native over-reports by one byte */
+        return count_neededA + 1;
+    return count_neededA;
 }
 
 
@@ -1436,10 +1497,10 @@ DWORD WINAPI DECLSPEC_HOTPATCH ExpandEnvironmentStringsW( LPCWSTR src, LPWSTR ds
     res = 0;
     status = RtlExpandEnvironmentStrings_U( NULL, &us_src, &us_dst, &res );
     res /= sizeof(WCHAR);
-    if (!set_ntstatus( status ))
+    if (status != STATUS_BUFFER_TOO_SMALL)
     {
-        if (status != STATUS_BUFFER_TOO_SMALL) return 0;
-        if (len && dst) dst[len - 1] = 0;
+        if(!set_ntstatus( status ))
+            return 0;
     }
     return res;
 }
@@ -1714,6 +1775,9 @@ static inline DWORD validate_proc_thread_attribute( DWORD_PTR attr, SIZE_T size 
     {
     case PROC_THREAD_ATTRIBUTE_PARENT_PROCESS:
         if (size != sizeof(HANDLE)) return ERROR_BAD_LENGTH;
+        break;
+    case PROC_THREAD_ATTRIBUTE_EXTENDED_FLAGS:
+        if (size != sizeof(ULONG)) return ERROR_BAD_LENGTH;
         break;
     case PROC_THREAD_ATTRIBUTE_HANDLE_LIST:
         if ((size / sizeof(HANDLE)) * sizeof(HANDLE) != size) return ERROR_BAD_LENGTH;

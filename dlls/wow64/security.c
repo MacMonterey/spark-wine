@@ -155,6 +155,42 @@ NTSTATUS WINAPI wow64_NtCreateLowBoxToken( UINT *args )
 
 
 /**********************************************************************
+ *           wow64_NtCreateToken
+ */
+NTSTATUS WINAPI wow64_NtCreateToken( UINT *args )
+{
+    ULONG *handle_ptr = get_ptr( &args );
+    ACCESS_MASK access = get_ulong( &args );
+    OBJECT_ATTRIBUTES32 *attr32 = get_ptr( &args );
+    TOKEN_TYPE type = get_ulong( &args );
+    LUID *luid = get_ptr( &args );
+    LARGE_INTEGER *expire = get_ptr( &args );
+    TOKEN_USER32 *user32 = get_ptr( &args );
+    TOKEN_GROUPS32 *groups32 = get_ptr( &args );
+    TOKEN_PRIVILEGES *privs = get_ptr( &args );
+    TOKEN_OWNER32 *owner32 = get_ptr( &args );
+    TOKEN_PRIMARY_GROUP32 *group32 = get_ptr( &args );
+    TOKEN_DEFAULT_DACL32 *dacl32 = get_ptr( &args );
+    TOKEN_SOURCE *source = get_ptr( &args );
+
+    struct object_attr64 attr;
+    TOKEN_USER user;
+    TOKEN_OWNER owner;
+    TOKEN_PRIMARY_GROUP group;
+    TOKEN_DEFAULT_DACL dacl;
+    HANDLE handle = 0;
+    NTSTATUS status;
+
+    status = NtCreateToken( &handle, access, objattr_32to64( &attr, attr32 ), type, luid, expire,
+                            token_user_32to64( &user, user32 ), token_groups_32to64( groups32 ), privs,
+                            token_owner_32to64( &owner, owner32 ), token_primary_group_32to64( &group, group32 ),
+                            token_default_dacl_32to64( &dacl, dacl32 ), source );
+    put_handle( handle_ptr, handle );
+    return status;
+}
+
+
+/**********************************************************************
  *           wow64_NtDuplicateToken
  */
 NTSTATUS WINAPI wow64_NtDuplicateToken( UINT *args )
@@ -199,6 +235,18 @@ NTSTATUS WINAPI wow64_NtFilterToken( UINT *args )
     return status;
 }
 
+
+/**********************************************************************
+ *           wow64_NtCompareTokens
+ */
+NTSTATUS WINAPI wow64_NtCompareTokens( UINT *args )
+{
+    HANDLE first = get_handle( &args );
+    HANDLE second = get_handle( &args );
+    BOOLEAN *equal = get_ptr( &args );
+
+    return NtCompareTokens( first, second, equal );
+}
 
 /**********************************************************************
  *           wow64_NtImpersonateAnonymousToken
@@ -328,6 +376,7 @@ NTSTATUS WINAPI wow64_NtQueryInformationToken( UINT *args )
     case TokenElevation: /* TOKEN_ELEVATION */
     case TokenSessionId:  /* ULONG */
     case TokenVirtualizationEnabled:  /* ULONG */
+    case TokenUIAccess:  /* ULONG */
     case TokenIsAppContainer:  /* ULONG */
         /* nothing to map */
         return NtQueryInformationToken( handle, class, info, len, retlen );
@@ -422,7 +471,7 @@ NTSTATUS WINAPI wow64_NtQueryInformationToken( UINT *args )
         if (!status)
         {
             dacl32->DefaultDacl = dacl->DefaultDacl ? PtrToUlong( dacl32 + 1 ) : 0;
-            memcpy( dacl32 + 1, dacl->DefaultDacl, ret_size - sizeof(*dacl) );
+            if (dacl->DefaultDacl) memcpy( dacl32 + 1, dacl->DefaultDacl, ret_size - sizeof(*dacl) );
         }
         if (retlen) *retlen = ret_size + sizeof(*dacl32) - sizeof(*dacl);
         return status;
@@ -473,6 +522,18 @@ NTSTATUS WINAPI wow64_NtSetInformationToken( UINT *args )
 
     switch (class)
     {
+    case TokenIntegrityLevel: /* TOKEN_MANDATORY_LABEL */
+        if (len >= sizeof(TOKEN_MANDATORY_LABEL32))
+        {
+            TOKEN_MANDATORY_LABEL32 *label32 = ptr;
+            TOKEN_MANDATORY_LABEL label;
+
+            label.Label.Sid = ULongToPtr( label32->Label.Sid );
+            label.Label.Attributes = label32->Label.Attributes;
+            return NtSetInformationToken( handle, class, &label, sizeof(label) );
+        }
+        else return STATUS_INFO_LENGTH_MISMATCH;
+
     case TokenSessionId:   /* ULONG */
         return NtSetInformationToken( handle, class, ptr, len );
 
@@ -488,7 +549,7 @@ NTSTATUS WINAPI wow64_NtSetInformationToken( UINT *args )
 
     default:
         FIXME( "unsupported class %u\n", class );
-        return STATUS_INVALID_INFO_CLASS;
+        return STATUS_NOT_IMPLEMENTED;
     }
 }
 

@@ -67,6 +67,7 @@ static int (__cdecl *p_fopen_s)(FILE**, const char*, const char*);
 static int (__cdecl *p__wfopen_s)(FILE**, const wchar_t*, const wchar_t*);
 static errno_t (__cdecl *p__get_fmode)(int*);
 static errno_t (__cdecl *p__set_fmode)(int);
+static int (__cdecl *p__setmaxstdio)(int);
 
 static const char* get_base_name(const char *path)
 {
@@ -91,6 +92,7 @@ static void init(void)
     __pioinfo = (void*)GetProcAddress(hmod, "__pioinfo");
     p__get_fmode = (void*)GetProcAddress(hmod, "_get_fmode");
     p__set_fmode = (void*)GetProcAddress(hmod, "_set_fmode");
+    p__setmaxstdio = (void*)GetProcAddress(hmod, "_setmaxstdio");
 }
 
 static void test_filbuf( void )
@@ -226,7 +228,50 @@ static void test_fileops( void )
     ok(fread(buffer, sizeof(buffer), 1, file) == 0, "fread test failed\n");
     /* feof should be set now */
     ok(feof(file), "feof after fread failed\n");
-    fclose (file);
+    clearerr(file);
+    ok(!feof(file), "feof after clearerr failed\n");
+    fclose(file);
+
+    file = fopen("fdopen.tst", "rb");
+    ok( file != NULL, "fopen failed\n");
+    /* sizeof(buffer) > content of file */
+    ok(fread(buffer, sizeof(buffer), 1, file) == 0, "fread test failed\n");
+    /* feof should be set now */
+    ok(feof(file), "feof after fread failed\n");
+    rewind(file);
+    ok(!feof(file), "feof after rewind failed\n");
+    fclose(file);
+
+    file = fopen("fdopen.tst", "rb");
+    ok( file != NULL, "fopen failed\n");
+    /* sizeof(buffer) > content of file */
+    ok(fread(buffer, sizeof(buffer), 1, file) == 0, "fread test failed\n");
+    /* feof should be set now */
+    ok(feof(file), "feof after fread failed\n");
+    fseek(file, 0, SEEK_SET);
+    ok(!feof(file), "feof after fseek failed\n");
+    fclose(file);
+
+    file = fopen("fdopen.tst", "rb");
+    ok( file != NULL, "fopen failed\n");
+    /* sizeof(buffer) > content of file */
+    ok(fread(buffer, sizeof(buffer), 1, file) == 0, "fread test failed\n");
+    /* feof should be set now */
+    ok(feof(file), "feof after fread failed\n");
+    fgetpos(file, &pos);
+    fsetpos(file, &pos);
+    ok(!feof(file), "feof after fsetpos failed\n");
+    fclose(file);
+
+    file = fopen("fdopen.tst", "rb");
+    ok( file != NULL, "fopen failed\n");
+    /* sizeof(buffer) > content of file */
+    ok(fread(buffer, sizeof(buffer), 1, file) == 0, "fread test failed\n");
+    /* feof should be set now */
+    ok(feof(file), "feof after fread failed\n");
+    fsetpos(file, &pos);
+    ok(!feof(file), "feof after fsetpos failed\n");
+    fclose(file);
 
     unlink ("fdopen.tst");
 }
@@ -650,11 +695,9 @@ static void test_fputc( void )
 
 static void test_flsbuf( void )
 {
+  int bufmode, ret, c, pos;
   char* tempf;
   FILE *tempfh;
-  int  c;
-  int  ret;
-  int  bufmode;
   static const int bufmodes[] = {_IOFBF,_IONBF};
 
   tempf=_tempnam(".","wne");
@@ -709,6 +752,16 @@ static void test_flsbuf( void )
   ok(c == 'Q', "first byte should be 'Q'\n");
   c = fgetc(tempfh);
   ok(c == EOF, "there should only be one byte\n");
+  fclose(tempfh);
+
+  tempfh = fopen(tempf,"ab");
+  ok(tempfh != NULL, "fopen failed\n");
+  pos = _lseek(_fileno(tempfh), 0, SEEK_CUR);
+  ok(!pos, "incorrect stream position: %d\n", pos);
+  ret = _flsbuf(0, tempfh);
+  ok(!ret, "_flsbuf returned %x\n", ret);
+  pos = _lseek(_fileno(tempfh), 0, SEEK_CUR);
+  ok(pos == 1, "incorrect stream position: %d\n", pos);
   fclose(tempfh);
 
   unlink(tempf);
@@ -1165,6 +1218,98 @@ static void test_fputwc(void)
     }
 
     _unlink(tempfile);
+}
+
+static void test_freopen( void )
+{
+    char filename1[8] = "AXXXXXX";
+    char filename2[8] = "BXXXXXX";
+    FILE *file;
+    FILE *new;
+    int ret;
+    int fd;
+    char ch;
+    long pos;
+
+    mktemp(filename1);
+    mktemp(filename2);
+
+    file = fopen(filename1, "wt");
+    ok(file != NULL, "fopen(filename1) returned NULL\n");
+    ret = fwrite("1", 1, 1, file);
+    ok(ret == 1, "fwrite() returned %d (%d)\n", ret, errno);
+    ret = fclose(file);
+    ok(ret == 0, "fclose() returned %d\n", ret);
+
+    file = fopen(filename2, "wt");
+    ok(file != NULL, "fopen(filename1) returned NULL\n");
+    ret = fwrite("2", 1, 1, file);
+    ok(ret == 1, "fwrite() returned %d (%d)\n", ret, errno);
+    ret = fclose(file);
+    ok(ret == 0, "fclose() returned %d\n", ret);
+
+    file = fopen(filename1, "rt");
+    ok(file != NULL, "fopen(filename1) returned NULL\n");
+    file = freopen(filename2, "rt", file);
+    ok(file != NULL, "fopen(filename2) returned NULL\n");
+    ch = '#';
+    ret = fread(&ch, 1, 1, file);
+    ok(ret == 1, "fread() returned %d\n", ret);
+    ok(ch == '2', "fread() read %c\n", ch);
+    ret = fclose(file);
+    ok(ret == 0, "fclose() returned %d\n", ret);
+
+    file = fopen(filename1, "at");
+    ok(file != NULL, "fopen(filename1) returned NULL\n");
+    file = freopen(filename1, "rt", file);
+    ok(file != NULL, "fopen(filename1) returned NULL\n");
+    pos = ftell(file);
+    ok(pos == 0, "ftell() returned %ld\n", pos);
+    ch = '#';
+    ret = fread(&ch, 1, 1, file);
+    ok(ret == 1, "fread() returned %d\n", ret);
+    ok(ch == '1', "fread() read %c\n", ch);
+    ret = fclose(file);
+    ok(ret == 0, "fclose() returned %d\n", ret);
+
+    file = fopen(filename1, "rt");
+    ok(file != NULL, "fopen(filename1) returned NULL\n");
+    fd = fileno(file);
+    ok(fd > 0, "fileno() returned %d\n", fd);
+    /* invalid filename */
+    new = freopen("_:", "rt", file);
+    ok(new == NULL, "fopen(_:) returned non NULL\n");
+    errno = 0xdeadbeef;
+    ch = '#';
+    ret = read(fd, &ch, 1);
+    ok(ret == -1, "read() returned %d\n", ret);
+    ok(errno == EBADF, "errno is %d\n", errno);
+    errno = 0xdeadbeef;
+    ret = fclose(file);
+    ok(ret == EOF, "fclose(file) succeeded\n");
+    ok(errno == 0xdeadbeef, "errno is %d\n", errno);
+
+    file = fopen(filename1, "rb");
+    ok(file != NULL, "couldn't open %s\n", filename1);
+    close(file->_file);
+    file->_file = -1;
+
+    new = freopen(filename2, "rb", file);
+    ok(new == file, "freopen() didn't return same FILE*\n");
+
+    fd = fileno(file);
+    ok(fd > 0, "fileno() returned %d\n", fd);
+
+    ch = '#';
+    ret = fread(&ch, 1, 1, file);
+    ok(ret == 1, "fread() returned %d\n", ret);
+    ok(ch == '2', "Unexpected char\n");
+
+    ret = fclose(file);
+    ok(ret == 0, "fclose(file) returned %d\n", ret);
+
+    unlink(filename1);
+    unlink(filename2);
 }
 
 static void test_ctrlz( void )
@@ -1761,6 +1906,8 @@ static void test_invalid_stdin_child( void )
     handle = (HANDLE)_get_osfhandle(STDIN_FILENO);
     ok(handle == (HANDLE)-2, "handle = %p\n", handle);
     ok(errno == 0xdeadbeef, "errno = %d\n", errno);
+    handle = GetStdHandle(STD_INPUT_HANDLE);
+    ok((LONG_PTR)handle > 0, "Expecting passed handle to be untouched\n");
 
     info = &__pioinfo[STDIN_FILENO/MSVCRT_FD_BLOCK_SIZE][STDIN_FILENO%MSVCRT_FD_BLOCK_SIZE];
     ok(info->handle == (HANDLE)-2, "info->handle = %p\n", info->handle);
@@ -1837,6 +1984,10 @@ static void test_invalid_stdin( const char* selfname )
     ret = RegOpenCurrentUser(KEY_READ, &key);
     ok(!ret, "RegOpenCurrentUser failed: %lx\n", ret);
 
+    ret = DuplicateHandle(GetCurrentProcess(), key, GetCurrentProcess(),
+            (HANDLE *)&key, GENERIC_READ, TRUE, DUPLICATE_CLOSE_SOURCE);
+    ok(ret, "DuplicateHandle failed: %lx\n", GetLastError());
+
     sa.nLength = sizeof(sa);
     sa.lpSecurityDescriptor = NULL;
     sa.bInheritHandle = TRUE;
@@ -1882,8 +2033,8 @@ static void test_chsize( void )
     LONG cur, pos, count;
     char temptext[] = "012345678";
     char *tempfile = _tempnam( ".", "tst" );
-    
-    ok( tempfile != NULL, "Couldn't create test file: %s\n", tempfile );
+
+    ok( tempfile != NULL, "Couldn't create test file\n" );
 
     fd = _open( tempfile, _O_CREAT|_O_TRUNC|_O_RDWR, _S_IREAD|_S_IWRITE );
     ok( fd > 0, "Couldn't open test file\n" );
@@ -2208,8 +2359,12 @@ static void test_get_osfhandle(void)
 
 static void test_setmaxstdio(void)
 {
-    ok(2048 == _setmaxstdio(2048),"_setmaxstdio returned %d instead of 2048\n",_setmaxstdio(2048));
-    ok(-1 == _setmaxstdio(2049),"_setmaxstdio returned %d instead of -1\n",_setmaxstdio(2049));
+    if (p__setmaxstdio)
+    {
+        ok(2048 == p__setmaxstdio(2048),"_setmaxstdio returned %d instead of 2048\n",p__setmaxstdio(2048));
+        ok(-1 == p__setmaxstdio(2049),"_setmaxstdio returned %d instead of -1\n",p__setmaxstdio(2049));
+    }
+    else win_skip( "_setmaxstdio not supported\n" );
 }
 
 static void test_stat(void)
@@ -2918,6 +3073,81 @@ static void test_ioinfo_flags(void)
     free(tempf);
 }
 
+static void test_std_stream_buffering(void)
+{
+    int dup_fd, ret, pos;
+    FILE *file;
+    char ch;
+
+    dup_fd = _dup(STDOUT_FILENO);
+    ok(dup_fd != -1, "_dup failed\n");
+
+    file = freopen("std_stream_test.tmp", "w", stdout);
+    ok(file != NULL, "freopen failed\n");
+
+    ret = fprintf(stdout, "test");
+    pos = _telli64(STDOUT_FILENO);
+
+    fflush(stdout);
+    _dup2(dup_fd, STDOUT_FILENO);
+    close(dup_fd);
+    setvbuf(stdout, NULL, _IONBF, 0);
+
+    ok(ret == 4, "fprintf(stdout) returned %d\n", ret);
+    ok(!pos, "expected stdout to be buffered\n");
+
+    dup_fd = _dup(STDERR_FILENO);
+    ok(dup_fd != -1, "_dup failed\n");
+
+    file = freopen("std_stream_test.tmp", "w", stderr);
+    ok(file != NULL, "freopen failed\n");
+
+    ret = fprintf(stderr, "test");
+    ok(ret == 4, "fprintf(stderr) returned %d\n", ret);
+    pos = _telli64(STDERR_FILENO);
+    ok(!pos, "expected stderr to be buffered\n");
+
+    fflush(stderr);
+    _dup2(dup_fd, STDERR_FILENO);
+    close(dup_fd);
+
+    dup_fd = _dup(STDIN_FILENO);
+    ok(dup_fd != -1, "_dup failed\n");
+
+    file = freopen("std_stream_test.tmp", "r", stdin);
+    ok(file != NULL, "freopen failed\n");
+
+    ch = 0;
+    ret = fscanf(stdin, "%c", &ch);
+    ok(ret == 1, "fscanf returned %d\n", ret);
+    ok(ch == 't', "ch = 0x%x\n", (unsigned char)ch);
+    pos = _telli64(STDIN_FILENO);
+    ok(pos == 4, "pos = %d\n", pos);
+
+    fflush(stdin);
+    _dup2(dup_fd, STDIN_FILENO);
+    close(dup_fd);
+
+    ok(DeleteFileA("std_stream_test.tmp"), "DeleteFile failed\n");
+}
+
+static void test_std_stream_open(void)
+{
+    FILE *f;
+    int fd;
+
+    fd = _dup(STDIN_FILENO);
+    ok(fd != -1, "_dup failed\n");
+
+    ok(!fclose(stdin), "fclose failed\n");
+    f = fopen("nul", "r");
+    ok(f == stdin, "f = %p, expected %p\n", f, stdin);
+    ok(_fileno(f) == STDIN_FILENO, "_fileno(f) = %d\n", _fileno(f));
+
+    _dup2(fd, STDIN_FILENO);
+    close(fd);
+}
+
 START_TEST(file)
 {
     int arg_c;
@@ -2977,6 +3207,7 @@ START_TEST(file)
     test_fgetwc_locale("AB\x83\xa9", "C", 0);
     test_fgetwc_unicode();
     test_fputwc();
+    test_freopen();
     test_ctrlz();
     test_file_put_get();
     test_tmpnam();
@@ -2993,6 +3224,8 @@ START_TEST(file)
     test_fopen_hints();
     test_open_hints();
     test_ioinfo_flags();
+    test_std_stream_buffering();
+    test_std_stream_open();
 
     /* Wait for the (_P_NOWAIT) spawned processes to finish to make sure the report
      * file contains lines in the correct order

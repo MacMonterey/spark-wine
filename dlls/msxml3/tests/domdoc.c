@@ -784,6 +784,13 @@ static const char gbkxml[] =
 DECL_GBK
 "<open></open>";
 
+#define DECL_ISO8859_1 \
+"<?xml version=\"1.0\" encoding=\"ISO8859-1\"?>"
+
+static const char iso8859_1_xml[] =
+DECL_ISO8859_1
+"<open></open>";
+
 #define DECL_WIN_936 \
 "<?xml version=\"1.0\" encoding=\"Windows-936\"?>"
 
@@ -1604,6 +1611,14 @@ if (0)
     /* try a BSTR containing a Windows-1252 document */
     b = VARIANT_TRUE;
     str = SysAllocStringByteLen( win1252xml, strlen(win1252xml) );
+    hr = IXMLDOMDocument_loadXML( doc, str, &b );
+    ok(hr == S_FALSE, "loadXML succeeded\n");
+    ok( b == VARIANT_FALSE, "succeeded in loading XML string\n");
+    SysFreeString( str );
+
+    /* try a BSTR containing a ISO8859-1 document */
+    b = VARIANT_TRUE;
+    str = SysAllocStringByteLen( iso8859_1_xml, strlen(iso8859_1_xml) );
     hr = IXMLDOMDocument_loadXML( doc, str, &b );
     ok(hr == S_FALSE, "loadXML succeeded\n");
     ok( b == VARIANT_FALSE, "succeeded in loading XML string\n");
@@ -2514,6 +2529,11 @@ static void test_domnode( void )
         hr = IXMLDOMElement_selectSingleNode( element, str, &node );
         SysFreeString(str);
         ok(hr == S_FALSE, "Unexpected hr %#lx.\n", hr);
+        ok( node == NULL, "node %p\n", node );
+
+        node = (void*)0xdeadbeef;
+        hr = IXMLDOMElement_selectSingleNode( element, _bstr_("In Valid"), &node );
+        ok(hr == E_FAIL, "Unexpected hr %#lx.\n", hr);
         ok( node == NULL, "node %p\n", node );
 
         str = SysAllocString(L"bs");
@@ -10176,6 +10196,13 @@ static const get_attributes_t get_attributes[] = {
 
 static void test_get_attributes(void)
 {
+    const WCHAR *namespaces[] =
+    {
+        L"xmlns:oslc_am",
+        L"xmlns:rdf",
+        L"xmlns:dcterms",
+        L"xmlns:foaf"
+    };
     const get_attributes_t *entry = get_attributes;
     IXMLDOMNamedNodeMap *map;
     IXMLDOMDocument *doc, *doc2;
@@ -10185,7 +10212,7 @@ static void test_get_attributes(void)
     HRESULT hr;
     VARIANT v;
     BSTR str;
-    LONG length;
+    LONG length, i;
 
     doc = create_document(&IID_IXMLDOMDocument);
 
@@ -10414,6 +10441,49 @@ static void test_get_attributes(void)
     }
 
     IXMLDOMDocument_Release(doc);
+
+    str = SysAllocString(L"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                L"<rdf:RDF xmlns:oslc_am=\"http://open-services.net/ns/am#\""
+                L"         xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\""
+                L"         xmlns:dcterms=\"http://purl.org/dc/terms/\""
+                L"         xmlns:foaf=\"http://xmlns.com/foaf/0.1/\" >"
+                L"</rdf:RDF>");
+
+    doc = create_document(&IID_IXMLDOMDocument2);
+
+    hr = IXMLDOMDocument_loadXML(doc, str, &b);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(b == VARIANT_TRUE, "got %d\n", b);
+
+    hr = IXMLDOMDocument_get_documentElement(doc, &elem);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = IXMLDOMElement_get_attributes(elem, &map);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    length = -1;
+    hr = IXMLDOMNamedNodeMap_get_length(map, &length);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(length == 4, "length %#lx.\n", length);
+
+    for(i=0; i < length; i++)
+    {
+        hr = IXMLDOMNamedNodeMap_get_item(map, i, &node2);
+        ok( hr == S_OK, "Unexpected hr %#lx (%ld).\n", hr, i);
+
+        hr = IXMLDOMNode_get_nodeName(node2, &str);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        ok(!lstrcmpW(str, namespaces[i]), "got %s\n", wine_dbgstr_w(str));
+        SysFreeString(str);
+
+        IXMLDOMNode_Release(node2);
+    }
+
+    IXMLDOMNamedNodeMap_Release(map);
+    IXMLDOMElement_Release(elem);
+
+    IXMLDOMDocument_Release(doc);
+
     free_bstrs();
 }
 
@@ -10833,9 +10903,10 @@ static void test_load(void)
         VARIANT_BOOL expected_ret;
     } encoding_tests[] =
     {
-        { gbkxml,     S_OK,    VARIANT_TRUE  },
-        { win1252xml, S_OK,    VARIANT_TRUE  },
-        { win936xml,  S_FALSE, VARIANT_FALSE },
+        { gbkxml,        S_OK,    VARIANT_TRUE  },
+        { iso8859_1_xml, S_OK,    VARIANT_TRUE  },
+        { win1252xml,    S_OK,    VARIANT_TRUE  },
+        { win936xml,     S_FALSE, VARIANT_FALSE },
     };
 
 
@@ -10987,8 +11058,8 @@ static void test_load(void)
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
     hr = IXMLDOMDocument_load(doc, src, &b);
-    todo_wine ok(hr == S_FALSE, "Unexpected hr %#lx.\n", hr);
-    todo_wine ok(b == VARIANT_FALSE, "got %d\n", b);
+    ok(hr == S_FALSE, "Unexpected hr %#lx.\n", hr);
+    ok(b == VARIANT_FALSE, "got %d\n", b);
 
     VariantClear(&src);
 
@@ -13322,6 +13393,7 @@ static struct attrtest_t attrtests[] = {
     { 0 }
 };
 
+/* see dlls/msxml[46]/tests/domdoc.c */
 static void test_create_attribute(void)
 {
     struct attrtest_t *ptr = attrtests;
@@ -13645,22 +13717,56 @@ todo_wine {
     IXMLDOMDocument2_Release(doc);
 }
 
+static void test_max_element_depth_values(void)
+{
+    IXMLDOMDocument2 *doc;
+    VARIANT var;
+    HRESULT hr;
+
+    doc = create_document_version(60, &IID_IXMLDOMDocument2);
+
+    /* The default max element depth value should be 256. */
+    V_VT(&var) = VT_UI4;
+    V_UI4(&var) = 0xdeadbeef;
+    hr = IXMLDOMDocument2_getProperty(doc, _bstr_("MaxElementDepth"), &var);
+todo_wine {
+    ok(hr == S_OK, "Failed to get property value, hr %#lx.\n", hr);
+    ok(V_VT(&var) == VT_I4, "Unexpected property value type, vt %d.\n", V_VT(&var));
+    ok(V_I4(&var) == 256, "Unexpected property value.\n");
+}
+
+    /* Changes to the depth value should be observable when subsequently retrieved. */
+    V_VT(&var) = VT_I4;
+    V_I4(&var) = 32;
+    hr = IXMLDOMDocument2_setProperty(doc, _bstr_("MaxElementDepth"), var);
+    ok(hr == S_OK, "Failed to set property, hr %#lx.\n", hr);
+
+    V_VT(&var) = VT_UI4;
+    V_UI4(&var) = 0xdeadbeef;
+    hr = IXMLDOMDocument2_getProperty(doc, _bstr_("MaxElementDepth"), &var);
+todo_wine {
+    ok(hr == S_OK, "Failed to get property value, hr %#lx.\n", hr);
+    ok(V_VT(&var) == VT_I4, "Unexpected property value type, vt %d.\n", V_VT(&var));
+    ok(V_I4(&var) == 32, "Unexpected property value.\n");
+}
+
+    IXMLDOMDocument2_Release(doc);
+}
+
 typedef struct _namespace_as_attribute_t {
     const GUID *guid;
     const char *clsid;
-    const char *xmlns_uri;
 } namespace_as_attribute_t;
 
 static const namespace_as_attribute_t namespace_as_attribute_test_data[] = {
-    { &CLSID_DOMDocument,   "CLSID_DOMDocument",   "" },
-    { &CLSID_DOMDocument2,  "CLSID_DOMDocument2",  "" },
-    { &CLSID_DOMDocument26, "CLSID_DOMDocument26", "" },
-    { &CLSID_DOMDocument30, "CLSID_DOMDocument30", "" },
-    { &CLSID_DOMDocument40, "CLSID_DOMDocument40", "" },
-    { &CLSID_DOMDocument60, "CLSID_DOMDocument60", "http://www.w3.org/2000/xmlns/" },
+    { &CLSID_DOMDocument,   "CLSID_DOMDocument"   },
+    { &CLSID_DOMDocument2,  "CLSID_DOMDocument2"  },
+    { &CLSID_DOMDocument26, "CLSID_DOMDocument26" },
+    { &CLSID_DOMDocument30, "CLSID_DOMDocument30" },
     { 0 }
 };
 
+/* see dlls/msxml[46]/tests/domdoc.c */
 static void test_namespaces_as_attributes(void)
 {
     const namespace_as_attribute_t *entry = namespace_as_attribute_test_data;
@@ -13672,6 +13778,7 @@ static void test_namespaces_as_attributes(void)
         const char *basenames[3];
         const char *uris[3];
         const char *texts[3];
+        const char *xmls[3];
     };
     static const struct test tests[] = {
         {
@@ -13681,6 +13788,7 @@ static void test_namespaces_as_attributes(void)
             { "b",      "d",      "ns" },       /* baseName */
             { "nshref", NULL,     "" },         /* namespaceURI */
             { "b attr", "d attr", "nshref" },   /* text */
+            { "ns:b=\"b attr\"", "d=\"d attr\"", "xmlns:ns=\"nshref\"" }, /* xml */
         },
         /* property only */
         {
@@ -13690,6 +13798,7 @@ static void test_namespaces_as_attributes(void)
             { "d" },        /* baseName */
             { NULL },       /* namespaceURI */
             { "d attr" },   /* text */
+            { "d=\"d attr\"" }, /* xml */
         },
         /* namespace only */
         {
@@ -13699,6 +13808,17 @@ static void test_namespaces_as_attributes(void)
             { "ns" },       /* baseName */
             { "" },         /* namespaceURI */
             { "nshref" },   /* text */
+            { "xmlns:ns=\"nshref\"" }, /* xml */
+        },
+        /* default namespace */
+        {
+            "<a xmlns=\"nshref\" />", 1,
+            { "xmlns" },            /* nodeName */
+            { "xmlns" },            /* prefix */
+            { "" },                 /* baseName */
+            { "" },                 /* namespaceURI */
+            { "nshref" },           /* text */
+            { "xmlns=\"nshref\"" }, /* xml */
         },
         /* no properties or namespaces */
         {
@@ -13727,37 +13847,37 @@ static void test_namespaces_as_attributes(void)
         test = tests;
         while (test->xml) {
             hr = CoCreateInstance(entry->guid, NULL, CLSCTX_INPROC_SERVER, &IID_IXMLDOMDocument2, (void **)&doc);
-            ok(SUCCEEDED(hr), "Failed to create document %s, hr %#lx.\n", wine_dbgstr_guid(entry->guid), hr);
+            ok(hr == S_OK, "Unexpected hr %#lx for %s.\n", hr, wine_dbgstr_guid(entry->guid));
 
             hr = IXMLDOMDocument_loadXML(doc, _bstr_(test->xml), &b);
-            ok(hr == S_OK, "Failed to load xml, hr %#lx.\n", hr);
+            ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
             node = NULL;
             hr = IXMLDOMDocument_selectSingleNode(doc, _bstr_("a"), &node);
-            ok(SUCCEEDED(hr), "Failed to select a node, hr %#lx.\n", hr);
+            ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
             hr = IXMLDOMNode_get_attributes(node, &map);
-            ok(SUCCEEDED(hr), "Failed to get attributes, hr %#lx.\n", hr);
+            ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
             len = -1;
             hr = IXMLDOMNamedNodeMap_get_length(map, &len);
-            ok(SUCCEEDED(hr), "Failed to get map length, hr %#lx.\n", hr);
+            ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
             ok(len == test->explen, "got %ld\n", len);
 
             item = NULL;
             hr = IXMLDOMNamedNodeMap_get_item(map, test->explen+1, &item);
-            ok(hr == S_FALSE, "Failed to get item, hr %#lx.\n", hr);
+            ok(hr == S_FALSE, "Unexpected hr %#lx.\n", hr);
             ok(!item, "Item should be NULL\n");
 
             for (i = 0; i < len; i++)
             {
                 item = NULL;
                 hr = IXMLDOMNamedNodeMap_get_item(map, i, &item);
-                ok(SUCCEEDED(hr), "Failed to get item, hr %#lx.\n", hr);
+                ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
                 str = NULL;
                 hr = IXMLDOMNode_get_nodeName(item, &str);
-                ok(SUCCEEDED(hr), "Failed to get node name, hr %#lx.\n", hr);
+                ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
                 ok(!lstrcmpW(str, _bstr_(test->names[i])), "got %s\n", wine_dbgstr_w(str));
                 SysFreeString(str);
 
@@ -13765,16 +13885,16 @@ static void test_namespaces_as_attributes(void)
                 hr = IXMLDOMNode_get_prefix(item, &str);
                 if (test->prefixes[i])
                 {
-                    ok(hr == S_OK, "Failed to get node name, hr %#lx.\n", hr);
+                    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
                     ok(!lstrcmpW(str, _bstr_(test->prefixes[i])), "got %s\n", wine_dbgstr_w(str));
                     SysFreeString(str);
                 }
                 else
-                    ok(hr == S_FALSE, "Failed to get node name, hr %#lx.\n", hr);
+                    ok(hr == S_FALSE, "Unexpected hr %#lx.\n", hr );
 
                 str = NULL;
                 hr = IXMLDOMNode_get_baseName(item, &str);
-                ok(SUCCEEDED(hr), "Failed to get base name, hr %#lx.\n", hr);
+                ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
                 ok(!lstrcmpW(str, _bstr_(test->basenames[i])), "got %s\n", wine_dbgstr_w(str));
                 SysFreeString(str);
 
@@ -13782,20 +13902,26 @@ static void test_namespaces_as_attributes(void)
                 hr = IXMLDOMNode_get_namespaceURI(item, &str);
                 if (test->uris[i])
                 {
-                    ok(hr == S_OK, "Failed to get node name, hr %#lx.\n", hr);
+                    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
                     if (test->prefixes[i] && !strcmp(test->prefixes[i], "xmlns"))
-                        ok(!lstrcmpW(str, _bstr_(entry->xmlns_uri)), "got %s\n", wine_dbgstr_w(str));
+                        ok(!SysStringLen(str), "got %s\n", wine_dbgstr_w(str));
                     else
                         ok(!lstrcmpW(str, _bstr_(test->uris[i])), "got %s\n", wine_dbgstr_w(str));
                     SysFreeString(str);
                 }
                 else
-                    ok(hr == S_FALSE, "Failed to get node name, hr %#lx.\n", hr);
+                    ok(hr == S_FALSE, "Unexpected hr %#lx.\n", hr );
 
                 str = NULL;
                 hr = IXMLDOMNode_get_text(item, &str);
-                ok(SUCCEEDED(hr), "Failed to get node text, hr %#lx.\n", hr);
+                ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
                 ok(!lstrcmpW(str, _bstr_(test->texts[i])), "got %s\n", wine_dbgstr_w(str));
+                SysFreeString(str);
+
+                str = NULL;
+                hr = IXMLDOMNode_get_xml(item, &str);
+                ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+                ok(!lstrcmpW(str, _bstr_(test->xmls[i])), "got %s\n", wine_dbgstr_w(str));
                 SysFreeString(str);
 
                 IXMLDOMNode_Release(item);
@@ -13947,9 +14073,206 @@ static void test_load_with_site(void)
     free_bstrs();
 }
 
+typedef struct _validate_on_parse_test_t
+{
+    const GUID *guid;
+    const char *clsid;
+    HRESULT hr;
+} validate_on_parse_test_t;
+
+static const validate_on_parse_test_t validate_on_parse_tests[] =
+{
+    { &CLSID_DOMDocument,   "CLSID_DOMDocument" ,  E_FAIL },
+    { &CLSID_DOMDocument2,  "CLSID_DOMDocument2",  E_FAIL },
+    { &CLSID_DOMDocument26, "CLSID_DOMDocument26", E_FAIL },
+    { &CLSID_DOMDocument30, "CLSID_DOMDocument30", E_FAIL },
+    { &CLSID_DOMDocument40, "CLSID_DOMDocument40", S_OK },
+    { &CLSID_DOMDocument60, "CLSID_DOMDocument60", S_OK },
+    { 0 }
+};
+
+static void test_validate_on_parse_values(void)
+{
+    const validate_on_parse_test_t *entry = validate_on_parse_tests;
+    int i = 0;
+
+    while (entry->guid)
+    {
+        IXMLDOMDocument2 *doc, *doc_clone;
+        IXMLDOMNode *node_clone;
+        VARIANT var, var_clone;
+        VARIANT_BOOL b;
+        HRESULT hr;
+
+        i++;
+        if (!is_clsid_supported(entry->guid, &IID_IXMLDOMDocument2))
+        {
+            entry++;
+            continue;
+        }
+
+        hr = CoCreateInstance(entry->guid, NULL, CLSCTX_INPROC_SERVER, &IID_IXMLDOMDocument2, (void **)&doc);
+        ok(hr == S_OK, "%d: got %#lx.\n", i, hr);
+
+        V_VT(&var) = VT_I2;
+        V_I2(&var) = 0;
+        hr = IXMLDOMDocument2_getProperty(doc, _bstr_("ValidateOnParse"), &var);
+        ok(hr == entry->hr || broken(hr == E_FAIL) /* win8 */, "%d: got hr %#lx.\n", i, hr);
+        if (SUCCEEDED(hr))
+        {
+            ok(V_VT(&var) == VT_BOOL, "%d: got property value type %d.\n", i, V_VT(&var));
+            ok(V_BOOL(&var) == VARIANT_TRUE, "%d: got property value %d.\n", i, V_BOOL(&var));
+        }
+        else
+        {
+            ok(V_VT(&var) == VT_I2, "%d: got property value type %d.\n", i, V_VT(&var));
+            ok(V_I2(&var) == 0, "%d: got property value %d.\n", i, V_I2(&var));
+            if (IsEqualCLSID(entry->guid, &CLSID_DOMDocument40))
+            {
+                win_skip("Skip tests for CLSID_DOMDocument40 on Windows 8.\n");
+                IXMLDOMDocument2_Release(doc);
+                entry++;
+                continue;
+            }
+        }
+
+        b = VARIANT_FALSE;
+        hr = IXMLDOMDocument2_get_validateOnParse(doc, &b);
+        ok(hr == S_OK, "%d: got hr %#lx.\n", i, hr);
+        ok(b == VARIANT_TRUE, "%d: got property value %d.\n", i, b);
+
+        V_VT(&var) = VT_I2;
+        V_I2(&var) = 0;
+        hr = IXMLDOMDocument2_setProperty(doc, _bstr_("ValidateOnParse"), var);
+        ok(hr == entry->hr, "%d: got hr %#lx.\n", i, hr);
+        V_VT(&var) = VT_I2;
+        V_I2(&var) = 10;
+        hr = IXMLDOMDocument2_getProperty(doc, _bstr_("ValidateOnParse"), &var);
+        ok(hr == entry->hr, "%d: got hr %#lx.\n", i, hr);
+        if (SUCCEEDED(hr))
+        {
+            ok(V_VT(&var) == VT_BOOL, "%d: got property value type %d.\n", i, V_VT(&var));
+            ok(V_BOOL(&var) == VARIANT_FALSE, "%d: got property value %d.\n", i, V_BOOL(&var));
+        }
+
+        V_VT(&var) = VT_BOOL;
+        V_BOOL(&var) = VARIANT_TRUE;
+        hr = IXMLDOMDocument2_setProperty(doc, _bstr_("ValidateOnParse"), var);
+        ok(hr == entry->hr, "%d: got hr %#lx.\n", i, hr);
+        b = VARIANT_FALSE;
+        hr = IXMLDOMDocument2_get_validateOnParse(doc, &b);
+        ok(hr == S_OK, "%d: got hr %#lx.\n", i, hr);
+        ok(b == VARIANT_TRUE, "%d: got property value %d.\n", i, b);
+
+        V_VT(&var) = VT_I2;
+        V_I2(&var) = 0;
+        hr = IXMLDOMDocument2_getProperty(doc, _bstr_("ValidateOnParse"), &var);
+        ok(hr == entry->hr, "%d: got hr %#lx.\n", i, hr);
+        if (SUCCEEDED(hr))
+        {
+            ok(V_VT(&var) == VT_BOOL, "%d: got property value type %d.\n", i, V_VT(&var));
+            ok(V_BOOL(&var) == VARIANT_TRUE, "%d: got property value %d.\n", i, V_BOOL(&var));
+        }
+
+        b = VARIANT_FALSE;
+        hr = IXMLDOMDocument2_put_validateOnParse(doc, b);
+        ok(hr == S_OK, "%d: got hr %#lx.\n", i, hr);
+        V_VT(&var) = VT_I2;
+        V_I2(&var) = 10;
+        hr = IXMLDOMDocument2_getProperty(doc, _bstr_("ValidateOnParse"), &var);
+        ok(hr == entry->hr, "%d: got hr %#lx.\n", i, hr);
+        if (SUCCEEDED(hr))
+        {
+            ok(V_VT(&var) == VT_BOOL, "%d: got property value type %d.\n", i, V_VT(&var));
+            ok(V_BOOL(&var) == VARIANT_FALSE, "%d: got property value %d.\n", i, V_BOOL(&var));
+        }
+
+        /* Cloned document inherits the property. */
+        hr = IXMLDOMDocument2_cloneNode(doc, VARIANT_TRUE, &node_clone);
+        ok(hr == S_OK, "%d: got hr %#lx.\n", i, hr);
+        ok(node_clone != NULL, "%d: got node %p.\n", i, node_clone);
+        hr = IXMLDOMNode_QueryInterface(node_clone, &IID_IXMLDOMDocument2, (void **)&doc_clone);
+        ok(hr == S_OK, "%d: got hr %#lx.\n", i, hr);
+        V_VT(&var) = VT_I2;
+        V_I2(&var) = 10;
+        hr = IXMLDOMDocument2_getProperty(doc, _bstr_("ValidateOnParse"), &var);
+        ok(hr == entry->hr, "%d: got hr %#lx.\n", i, hr);
+        if (SUCCEEDED(hr))
+        {
+            ok(V_VT(&var) == VT_BOOL, "%d: got property value type %d.\n", i, V_VT(&var));
+            ok(V_BOOL(&var) == VARIANT_FALSE, "%d: got property value %d.\n", i, V_BOOL(&var));
+        }
+        V_VT(&var_clone) = VT_I2;
+        V_I2(&var_clone) = 10;
+        hr = IXMLDOMDocument2_getProperty(doc_clone, _bstr_("ValidateOnParse"), &var_clone);
+        ok(hr == entry->hr, "%d: got hr %#lx.\n", i, hr);
+        if (SUCCEEDED(hr))
+        {
+            ok(V_VT(&var_clone) == V_VT(&var), "%d: got property value type %d.\n", i, V_VT(&var_clone));
+            ok(V_BOOL(&var_clone) == V_BOOL(&var), "%d: got property value %d.\n", i, V_BOOL(&var_clone));
+        }
+        b = VARIANT_TRUE;
+        hr = IXMLDOMDocument2_get_validateOnParse(doc_clone, &b);
+        ok(hr == S_OK, "%d: got hr %#lx.\n", i, hr);
+        ok(b == VARIANT_FALSE, "%d: got property value %d.\n", i, b);
+        IXMLDOMNode_Release(node_clone);
+        IXMLDOMDocument2_Release(doc_clone);
+
+        IXMLDOMDocument2_Release(doc);
+        entry++;
+    }
+}
+
+static void test_indent(void)
+{
+    HRESULT hr;
+    VARIANT_BOOL b = VARIANT_FALSE;
+    BSTR data, str;
+    const WCHAR *data_expected;
+    IXMLDOMDocument *doc;
+    IXMLDOMElement *element = NULL;
+
+    str = SysAllocString(L"<?xml version='1.0' encoding='Windows-1252'?>\n"
+                          "<root>\n"
+                              "<a>\n"
+                                  "<b/>\n"
+                              "</a>\n"
+                          "</root>\n");
+    hr = CoCreateInstance(&CLSID_DOMDocument, NULL, CLSCTX_INPROC_SERVER, &IID_IXMLDOMDocument, (void **)&doc);
+    ok(hr == S_OK, "Unable to create instance hr %#lx.\n", hr);
+    hr = IXMLDOMDocument_loadXML(doc, str, &b);
+    ok(hr == S_OK, "Unable to load XML hr %#lx.\n", hr);
+    hr = IXMLDOMDocument_get_documentElement(doc, &element);
+    ok(hr == S_OK, "Unable to get element hr %#lx.\n", hr);
+    hr = IXMLDOMElement_get_xml(element, &data);
+    ok(hr == S_OK, "Unable to get XML hr %#lx.\n", hr);
+
+    data_expected = L"<root>\r\n"
+                         "\t<a>\r\n"
+                             "\t\t<b/>\r\n"
+                         "\t</a>\r\n"
+                     "</root>";
+    ok(!lstrcmpW(data, data_expected), "incorrect element string, got '%s'\n", wine_dbgstr_w(data));
+
+    SysFreeString(str);
+}
+
+static DWORD WINAPI new_thread(void *arg)
+{
+    HRESULT hr = CoInitialize(NULL);
+    ok(hr == S_OK, "failed to init com\n");
+    if (hr != S_OK) return 1;
+
+    test_indent();
+
+    CoUninitialize();
+    return 0;
+}
+
 START_TEST(domdoc)
 {
     HRESULT hr;
+    HANDLE thread;
 
     hr = CoInitialize( NULL );
     ok( hr == S_OK, "failed to init com\n");
@@ -14033,15 +14356,23 @@ START_TEST(domdoc)
     test_transformNodeToObject();
     test_normalize_attribute_values();
     test_namespaces_as_attributes();
-
+    test_validate_on_parse_values();
     test_xsltemplate();
     test_xsltext();
+    test_max_element_depth_values();
 
     if (is_clsid_supported(&CLSID_MXNamespaceManager40, &IID_IMXNamespaceManager))
     {
         test_mxnamespacemanager();
         test_mxnamespacemanager_override();
     }
+
+    /* We need to test test_indent in a seperate thread. This is to prevent regressions in multi-threaded
+    applications where the default indentation is set (e.g. by setting xmlTreeIndentString) in the first
+    thread but not for new threads, leading to the wrong indentation in subsequent threads. */
+    thread = CreateThread(NULL, 0, new_thread, NULL, 0, NULL);
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
 
     CoUninitialize();
 }

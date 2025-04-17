@@ -214,6 +214,8 @@
 #define DW_OP_GNU_uninit           0xf0
 #define DW_OP_GNU_encoded_addr     0xf1
 
+#ifndef NTDLL_DWARF_H_NO_UNWINDER
+
 #define DW_EH_PE_native   0x00
 #define DW_EH_PE_uleb128  0x01
 #define DW_EH_PE_udata2   0x02
@@ -232,8 +234,6 @@
 #define DW_EH_PE_aligned  0x50
 #define DW_EH_PE_indirect 0x80
 #define DW_EH_PE_omit     0xff
-
-#ifndef NTDLL_DWARF_H_NO_UNWINDER
 
 struct dwarf_eh_bases
 {
@@ -912,7 +912,7 @@ static ULONG_PTR eval_expression( const unsigned char *p, CONTEXT *context,
         case DW_OP_pick:        stack[sp + 1] = stack[sp - dwarf_get_u1(&p)]; sp++; break;
         case DW_OP_swap:        tmp = stack[sp]; stack[sp] = stack[sp-1]; stack[sp-1] = tmp; break;
         case DW_OP_rot:         tmp = stack[sp]; stack[sp] = stack[sp-1]; stack[sp-1] = stack[sp-2]; stack[sp-2] = tmp; break;
-        case DW_OP_abs:         stack[sp] = labs(stack[sp]); break;
+        case DW_OP_abs:         stack[sp] = labs((LONG_PTR)stack[sp]); break;
         case DW_OP_neg:         stack[sp] = -stack[sp]; break;
         case DW_OP_not:         stack[sp] = ~stack[sp]; break;
         case DW_OP_and:         stack[sp-1] &= stack[sp]; sp--; break;
@@ -980,6 +980,12 @@ static void apply_frame_state( CONTEXT *context, struct frame_state *state,
     }
     if (!cfa) return;
 
+#ifdef __x86_64__
+    new_context.Rsp = cfa;
+#elif defined(__aarch64__)
+    new_context.Sp = cfa;
+#endif
+
     for (i = 0; i < NB_FRAME_REGS; i++)
     {
         switch (state->rules[i])
@@ -1004,11 +1010,6 @@ static void apply_frame_state( CONTEXT *context, struct frame_state *state,
             break;
         }
     }
-#ifdef __x86_64__
-    new_context.Rsp = cfa;
-#elif defined(__aarch64__)
-    new_context.Sp = cfa;
-#endif
     *context = new_context;
 }
 
@@ -1048,7 +1049,81 @@ static void apply_frame_state( CONTEXT *context, struct frame_state *state,
 #define DW_REG_r15 0x0f
 #define DW_REG_rip 0x10
 
-#endif /* defined(__x86_64__) */
+#elif defined(__arm__)
+
+#define DW_OP_r0  DW_OP_breg0
+#define DW_OP_r1  DW_OP_breg1
+#define DW_OP_r2  DW_OP_breg2
+#define DW_OP_r3  DW_OP_breg3
+#define DW_OP_r4  DW_OP_breg4
+#define DW_OP_r5  DW_OP_breg5
+#define DW_OP_r6  DW_OP_breg6
+#define DW_OP_r7  DW_OP_breg7
+#define DW_OP_r8  DW_OP_breg8
+#define DW_OP_r9  DW_OP_breg9
+#define DW_OP_r10 DW_OP_breg10
+#define DW_OP_r11 DW_OP_breg11
+#define DW_OP_r12 DW_OP_breg12
+#define DW_OP_sp  DW_OP_breg13
+#define DW_OP_lr  DW_OP_breg14
+#define DW_OP_pc  DW_OP_breg15
+
+#define DW_REG_r0  0
+#define DW_REG_r1  1
+#define DW_REG_r2  2
+#define DW_REG_r3  3
+#define DW_REG_r4  4
+#define DW_REG_r5  5
+#define DW_REG_r6  6
+#define DW_REG_r7  7
+#define DW_REG_r8  8
+#define DW_REG_r9  9
+#define DW_REG_r10 10
+#define DW_REG_r11 11
+#define DW_REG_r12 12
+#define DW_REG_sp  13
+#define DW_REG_lr  14
+#define DW_REG_pc  15
+
+#elif defined(__aarch64__)
+
+#define DW_OP_x19 DW_OP_breg19
+#define DW_OP_x20 DW_OP_breg20
+#define DW_OP_x21 DW_OP_breg21
+#define DW_OP_x22 DW_OP_breg22
+#define DW_OP_x23 DW_OP_breg23
+#define DW_OP_x24 DW_OP_breg24
+#define DW_OP_x25 DW_OP_breg25
+#define DW_OP_x26 DW_OP_breg26
+#define DW_OP_x27 DW_OP_breg27
+#define DW_OP_x28 DW_OP_breg28
+#define DW_OP_x29 DW_OP_breg29
+#define DW_OP_x30 DW_OP_breg30
+#define DW_OP_sp  DW_OP_breg31
+
+#define DW_REG_x19 19
+#define DW_REG_x20 20
+#define DW_REG_x21 21
+#define DW_REG_x22 22
+#define DW_REG_x23 23
+#define DW_REG_x24 24
+#define DW_REG_x25 25
+#define DW_REG_x26 26
+#define DW_REG_x27 27
+#define DW_REG_x28 28
+#define DW_REG_x29 29
+#define DW_REG_x30 30
+#define DW_REG_sp 31
+#define DW_REG_v8 72
+#define DW_REG_v9 73
+#define DW_REG_v10 74
+#define DW_REG_v11 75
+#define DW_REG_v12 76
+#define DW_REG_v13 77
+#define DW_REG_v14 78
+#define DW_REG_v15 79
+
+#endif /* defined(__aarch64__) */
 
 #define __ASM_CFI_STR(...) #__VA_ARGS__
 #define __ASM_CFI_ESC(...) \

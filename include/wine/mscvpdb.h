@@ -83,10 +83,11 @@
  * symbol size (to be greater than 256), which was likely needed for
  * complex C++ types (nested + templates).
  *
- * It's somehow difficult to represent the layout of those types on
- * disk because:
- * - some integral values are stored as numeric leaf, which size is
- *   variable depending on its value
+ * It's not possible to represent some disk layout with C structures
+ * as there are several contiguous entries of variable length.
+ * Of example of them is called 'numeric leaf' and represent several
+ * leaf values (integers, reals...).
+ * All of these contiguous values are packed in a flexible array member.
  *
  * Symbols internal stream
  * -----------------------
@@ -101,10 +102,13 @@
  *             Internal types
  * ======================================== */
 
+/* First versions (v1, v2) of CV data is stored as Pascal strings.
+ * Third version uses C string instead.
+ */
 struct p_string
 {
     unsigned char               namelen;
-    char                        name[1];
+    char                        name[];
 };
 
 typedef unsigned short  cv_typ16_t;
@@ -183,10 +187,9 @@ union codeview_type
         unsigned short int      id;
         cv_typ16_t              elemtype;
         cv_typ16_t              idxtype;
-        unsigned short int      arrlen;     /* numeric leaf */
-#if 0
-        struct p_string         p_name;
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       arrlen; */
+        /* struct p_string      p_name; */
     } array_v1;
 
     struct
@@ -195,10 +198,9 @@ union codeview_type
         unsigned short int      id;
         cv_typ_t                elemtype;
         cv_typ_t                idxtype;
-        unsigned short int      arrlen;    /* numeric leaf */
-#if 0
-        struct p_string         p_name;
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       arrlen; */
+        /* struct p_string      p_name; */
     } array_v2;
 
     struct
@@ -207,10 +209,9 @@ union codeview_type
         unsigned short int      id;
         cv_typ_t                elemtype;
         cv_typ_t                idxtype;
-        unsigned short int      arrlen;    /* numeric leaf */
-#if 0
-        char                    name[1];
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       arrlen; */
+        /* char                 name[]; */
     } array_v3;
 
     struct
@@ -222,10 +223,9 @@ union codeview_type
         cv_property_t           property;
         cv_typ16_t              derived;
         cv_typ16_t              vshape;
-        unsigned short int      structlen;  /* numeric leaf */
-#if 0
-        struct p_string         p_name;
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       structlen; */
+        /* struct p_string      p_name; */
     } struct_v1;
 
     struct
@@ -237,10 +237,9 @@ union codeview_type
         cv_typ_t                fieldlist;
         cv_typ_t                derived;
         cv_typ_t                vshape;
-        unsigned short int      structlen;  /* numeric leaf */
-#if 0
-        struct p_string         p_name;
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       structlen; */
+        /* struct p_string      p_name; */
     } struct_v2;
 
     struct
@@ -252,10 +251,9 @@ union codeview_type
         cv_typ_t                fieldlist;
         cv_typ_t                derived;
         cv_typ_t                vshape;
-        unsigned short int      structlen;  /* numeric leaf */
-#if 0
-        char                    name[1];
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       structlen; */
+        /* char                 name[]; */
     } struct_v3;
 
     struct
@@ -265,10 +263,9 @@ union codeview_type
         short int               count;
         cv_typ16_t              fieldlist;
         cv_property_t           property;
-        unsigned short int      un_len;     /* numeric leaf */
-#if 0
-        struct p_string         p_name;
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       unionlen; */
+        /* struct p_string      p_name; */
     } union_v1;
 
     struct
@@ -278,10 +275,9 @@ union codeview_type
         short int               count;
         cv_property_t           property;
         cv_typ_t                fieldlist;
-        unsigned short int      un_len;     /* numeric leaf */
-#if 0
-        struct p_string         p_name;
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       unionlen; */
+        /* struct p_string      p_name; */
     } union_v2;
 
     struct
@@ -291,10 +287,9 @@ union codeview_type
         short int               count;
         cv_property_t           property;
         cv_typ_t                fieldlist;
-        unsigned short int      un_len;     /* numeric leaf */
-#if 0
-        char                    name[1];
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       unionlen; */
+        /* char                 name[]; */
     } union_v3;
 
     struct
@@ -327,7 +322,7 @@ union codeview_type
         cv_property_t           property;
         cv_typ_t                type;
         cv_typ_t                fieldlist;
-        char                    name[1];
+        char                    name[];
     } enumeration_v3;
 
     struct
@@ -387,7 +382,7 @@ union codeview_type
         unsigned short int      id; /* LF_FUNC_ID */
         cv_itemid_t             scopeId;
         cv_typ_t                type;
-        char                    name[1];
+        char                    name[];
     } func_id_v3;
 
     struct
@@ -396,7 +391,7 @@ union codeview_type
         unsigned short int      id; /* LF_MFUNC_ID */
         cv_typ_t                parentType;
         cv_typ_t                type;
-        char                    name[1];
+        char                    name[];
     } mfunc_id_v3;
 
     struct
@@ -404,7 +399,7 @@ union codeview_type
         unsigned short int      len;
         unsigned short int      id; /* LF_STRING_ID */
         cv_itemid_t             strid;
-        char                    name[1];
+        char                    name[];
     } string_id_v3;
 
     struct
@@ -431,7 +426,7 @@ union codeview_type
         unsigned short int      len;
         unsigned short int      id; /*  LF_BUILDINFO */
         unsigned short          count;
-        cv_itemid_t             arg[1];
+        cv_itemid_t             arg[];
     } buildinfo_v3;
 
 };
@@ -448,7 +443,7 @@ union codeview_reftype
     {
         unsigned short int      len;
         unsigned short int      id;
-        unsigned char           list[1];
+        unsigned char           list[];
     } fieldlist;
 
     struct
@@ -474,7 +469,7 @@ union codeview_reftype
         unsigned short int      len;
         unsigned short int      id;
         unsigned short          num;
-        cv_typ16_t              args[1];
+        cv_typ16_t              args[];
     } arglist_v1;
 
     struct
@@ -482,7 +477,7 @@ union codeview_reftype
         unsigned short int      len;
         unsigned short int      id;
         unsigned                num;
-        cv_typ_t                args[1];
+        cv_typ_t                args[];
     } arglist_v2;
 
     struct
@@ -490,7 +485,7 @@ union codeview_reftype
         unsigned short int      len;
         unsigned short int      id;
         unsigned short          num;
-        cv_typ16_t              drvdcls[1];
+        cv_typ16_t              drvdcls[];
     } derived_v1;
 
     struct
@@ -498,7 +493,7 @@ union codeview_reftype
         unsigned short int      len;
         unsigned short int      id;
         unsigned                num;
-        cv_typ_t                drvdcls[1];
+        cv_typ_t                drvdcls[];
     } derived_v2;
 
     struct
@@ -509,7 +504,7 @@ union codeview_reftype
         cv_typ_t                baseVftable;
         unsigned                offsetInObjectLayout;
         unsigned                cbstr;
-        char                    names[1]; /* array of len 0-terminated strings (size of cbstr in char:s) */
+        char                    names[]; /* array of len 0-terminated strings (size of cbstr in char:s) */
     } vftable_v3;
 };
 
@@ -525,7 +520,8 @@ union codeview_fieldtype
         unsigned short int      id;
         cv_typ16_t		type;
         short int		attribute;
-        unsigned short int	offset;     /* numeric leaf */
+        unsigned char           data[];
+        /* <numeric leaf>       offset; */
     } bclass_v1;
 
     struct
@@ -533,7 +529,8 @@ union codeview_fieldtype
         unsigned short int      id;
         short int		attribute;
         cv_typ_t	        type;
-        unsigned short int	offset;     /* numeric leaf */
+        unsigned char           data[];
+        /* <numeric leaf>       offset; */
     } bclass_v2;
 
     struct
@@ -542,10 +539,9 @@ union codeview_fieldtype
         cv_typ16_t		btype;
         cv_typ16_t		vbtype;
         short int		attribute;
-        unsigned short int	vbpoff;     /* numeric leaf */
-#if 0
-        unsigned short int	vboff;      /* numeric leaf */
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       vbpoff; */
+        /* <numeric leaf>       vboff; */
     } vbclass_v1;
 
     struct
@@ -554,30 +550,27 @@ union codeview_fieldtype
         short int		attribute;
         cv_typ_t	        btype;
         cv_typ_t	        vbtype;
-        unsigned short int	vbpoff;     /* numeric leaf */
-#if 0
-        unsigned short int	vboff;      /* numeric leaf */
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       vbpoff; */
+        /* <numeric leaf>       vboff; */
     } vbclass_v2;
 
     struct
     {
         unsigned short int      id;
         short int		attribute;
-        unsigned short int	value;     /* numeric leaf */
-#if 0
-        struct p_string         p_name;
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       value; */
+        /* struct p_string      p_name; */
     } enumerate_v1;
 
    struct
     {
         unsigned short int      id;
         short int               attribute;
-        unsigned short int      value;     /* numeric leaf */
-#if 0
-        char                    name[1];
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       value; */
+        /* char                 name[]; */
     } enumerate_v3;
 
     struct
@@ -600,7 +593,7 @@ union codeview_fieldtype
         unsigned short int      id;
         short int               _pad0;
         cv_typ_t                type;
-        char                    name[1];
+        char                    name[];
     } friendfcn_v3;
 
     struct
@@ -608,10 +601,9 @@ union codeview_fieldtype
         unsigned short int      id;
         cv_typ16_t		type;
         short int		attribute;
-        unsigned short int	offset;    /* numeric leaf */
-#if 0
-        struct p_string         p_name;
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       offset; */
+        /* struct p_string      p_name; */
     } member_v1;
 
     struct
@@ -619,10 +611,9 @@ union codeview_fieldtype
         unsigned short int      id;
         short int		attribute;
         cv_typ_t	        type;
-        unsigned short int	offset;    /* numeric leaf */
-#if 0
-        struct p_string         p_name;
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       offset; */
+        /* struct p_string      p_name; */
     } member_v2;
 
     struct
@@ -630,10 +621,9 @@ union codeview_fieldtype
         unsigned short int      id;
         short int               attribute;
         cv_typ_t                type;
-        unsigned short int      offset; /* numeric leaf */
-#if 0
-        char                    name[1];
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       offset; */
+        /* char                 name[]; */
     }
     member_v3;
 
@@ -658,7 +648,7 @@ union codeview_fieldtype
         unsigned short int      id;
         short int		attribute;
         cv_typ_t	        type;
-        char                    name[1];
+        char                    name[];
     } stmember_v3;
 
     struct
@@ -682,7 +672,7 @@ union codeview_fieldtype
         unsigned short int      id;
         short int		count;
         cv_typ_t	        mlist;
-        char                    name[1];
+        char                    name[];
     } method_v3;
 
     struct
@@ -705,7 +695,7 @@ union codeview_fieldtype
         unsigned short int      id;
         short int		_pad0;
         cv_typ_t	        type;
-        char                    name[1];
+        char                    name[];
     } nesttype_v3;
 
     struct
@@ -755,7 +745,7 @@ union codeview_fieldtype
         unsigned short int      id;
         short int		attribute;
         cv_typ_t 	        type;
-        char                    name[1];
+        char                    name[];
     } onemethod_v3;
 
     struct
@@ -782,7 +772,7 @@ union codeview_fieldtype
         short int		attribute;
         cv_typ_t	        type;
         unsigned int	        vtab_offset;
-        char                    name[1];
+        char                    name[];
     } onemethod_virt_v3;
 
     struct
@@ -945,10 +935,12 @@ union codeview_fieldtype
 #define T_SHORT             0x0011  /* short */
 #define T_LONG              0x0012  /* long */
 #define T_QUAD              0x0013  /* long long */
+#define T_OCT               0x0014  /* 128bit int */
 #define T_UCHAR             0x0020  /* unsigned  char */
 #define T_USHORT            0x0021  /* unsigned short */
 #define T_ULONG             0x0022  /* unsigned long */
 #define T_UQUAD             0x0023  /* unsigned long long */
+#define T_UOCT              0x0024  /* 128bit unsigned int */
 #define T_BOOL08            0x0030  /* 8-bit boolean */
 #define T_BOOL16            0x0031  /* 16-bit boolean */
 #define T_BOOL32            0x0032  /* 32-bit boolean */
@@ -958,6 +950,7 @@ union codeview_fieldtype
 #define T_REAL80            0x0042  /* 80-bit real */
 #define T_REAL128           0x0043  /* 128-bit real */
 #define T_REAL48            0x0044  /* 48-bit real */
+#define T_REAL16            0x0046  /* 16-bit real */
 #define T_CPLX32            0x0050  /* 32-bit complex number */
 #define T_CPLX64            0x0051  /* 64-bit complex number */
 #define T_CPLX80            0x0052  /* 80-bit complex number */
@@ -978,14 +971,17 @@ union codeview_fieldtype
 
 /* near pointers to basic types */
 #define T_PVOID             0x0103  /* near pointer to void */
+#define T_PCURRENCY         0x0104  /* near pointer to currency */
 #define T_PCHAR             0x0110  /* Near pointer to 8-bit signed */
 #define T_PSHORT            0x0111  /* Near pointer to 16-bit signed */
 #define T_PLONG             0x0112  /* Near pointer to 32-bit signed */
 #define T_PQUAD             0x0113  /* Near pointer to 64-bit signed */
+#define T_POCT              0x0114  /* Near pointer to 128-bit signed */
 #define T_PUCHAR            0x0120  /* Near pointer to 8-bit unsigned */
 #define T_PUSHORT           0x0121  /* Near pointer to 16-bit unsigned */
 #define T_PULONG            0x0122  /* Near pointer to 32-bit unsigned */
 #define T_PUQUAD            0x0123  /* Near pointer to 64-bit unsigned */
+#define T_PUOCT             0x0124  /* Near pointer to 128-bit unsigned */
 #define T_PBOOL08           0x0130  /* Near pointer to 8-bit Boolean */
 #define T_PBOOL16           0x0131  /* Near pointer to 16-bit Boolean */
 #define T_PBOOL32           0x0132  /* Near pointer to 32-bit Boolean */
@@ -995,6 +991,7 @@ union codeview_fieldtype
 #define T_PREAL80           0x0142  /* Near pointer to 80-bit real */
 #define T_PREAL128          0x0143  /* Near pointer to 128-bit real */
 #define T_PREAL48           0x0144  /* Near pointer to 48-bit real */
+#define T_PREAL16           0x0146  /* Near pointer to 16-bit real */
 #define T_PCPLX32           0x0150  /* Near pointer to 32-bit complex */
 #define T_PCPLX64           0x0151  /* Near pointer to 64-bit complex */
 #define T_PCPLX80           0x0152  /* Near pointer to 80-bit complex */
@@ -1013,14 +1010,17 @@ union codeview_fieldtype
 
 /* far pointers to basic types */
 #define T_PFVOID            0x0203  /* Far pointer to void */
+#define T_PFCURRENCT        0x0204  /* Far pointer to currency */
 #define T_PFCHAR            0x0210  /* Far pointer to 8-bit signed */
 #define T_PFSHORT           0x0211  /* Far pointer to 16-bit signed */
 #define T_PFLONG            0x0212  /* Far pointer to 32-bit signed */
 #define T_PFQUAD            0x0213  /* Far pointer to 64-bit signed */
+#define T_PFOCT             0x0214  /* Far pointer to 128-bit signed */
 #define T_PFUCHAR           0x0220  /* Far pointer to 8-bit unsigned */
 #define T_PFUSHORT          0x0221  /* Far pointer to 16-bit unsigned */
 #define T_PFULONG           0x0222  /* Far pointer to 32-bit unsigned */
 #define T_PFUQUAD           0x0223  /* Far pointer to 64-bit unsigned */
+#define T_PFUOCT            0x0224  /* Far pointer to 128-bit unsigned */
 #define T_PFBOOL08          0x0230  /* Far pointer to 8-bit Boolean */
 #define T_PFBOOL16          0x0231  /* Far pointer to 16-bit Boolean */
 #define T_PFBOOL32          0x0232  /* Far pointer to 32-bit Boolean */
@@ -1030,6 +1030,7 @@ union codeview_fieldtype
 #define T_PFREAL80          0x0242  /* Far pointer to 80-bit real */
 #define T_PFREAL128         0x0243  /* Far pointer to 128-bit real */
 #define T_PFREAL48          0x0244  /* Far pointer to 48-bit real */
+#define T_PFREAL16          0x0246  /* Far pointer to 16-bit real */
 #define T_PFCPLX32          0x0250  /* Far pointer to 32-bit complex */
 #define T_PFCPLX64          0x0251  /* Far pointer to 64-bit complex */
 #define T_PFCPLX80          0x0252  /* Far pointer to 80-bit complex */
@@ -1048,14 +1049,17 @@ union codeview_fieldtype
 
 /* huge pointers to basic types */
 #define T_PHVOID            0x0303  /* Huge pointer to void */
+#define T_PHCURRENCY        0x0304  /* Huge pointer to currency */
 #define T_PHCHAR            0x0310  /* Huge pointer to 8-bit signed */
 #define T_PHSHORT           0x0311  /* Huge pointer to 16-bit signed */
 #define T_PHLONG            0x0312  /* Huge pointer to 32-bit signed */
 #define T_PHQUAD            0x0313  /* Huge pointer to 64-bit signed */
+#define T_PHOCT             0x0314  /* Huge pointer to 128-bit signed */
 #define T_PHUCHAR           0x0320  /* Huge pointer to 8-bit unsigned */
 #define T_PHUSHORT          0x0321  /* Huge pointer to 16-bit unsigned */
 #define T_PHULONG           0x0322  /* Huge pointer to 32-bit unsigned */
 #define T_PHUQUAD           0x0323  /* Huge pointer to 64-bit unsigned */
+#define T_PHUOCT            0x0324  /* Huge pointer to 128-bit unsigned */
 #define T_PHBOOL08          0x0330  /* Huge pointer to 8-bit Boolean */
 #define T_PHBOOL16          0x0331  /* Huge pointer to 16-bit Boolean */
 #define T_PHBOOL32          0x0332  /* Huge pointer to 32-bit Boolean */
@@ -1065,6 +1069,7 @@ union codeview_fieldtype
 #define T_PHREAL80          0x0342  /* Huge pointer to 80-bit real */
 #define T_PHREAL128         0x0343  /* Huge pointer to 128-bit real */
 #define T_PHREAL48          0x0344  /* Huge pointer to 48-bit real */
+#define T_PHREAL16          0x0346  /* Far pointer to 16-bit real */
 #define T_PHCPLX32          0x0350  /* Huge pointer to 32-bit complex */
 #define T_PHCPLX64          0x0351  /* Huge pointer to 64-bit complex */
 #define T_PHCPLX80          0x0352  /* Huge pointer to 80-bit complex */
@@ -1083,15 +1088,18 @@ union codeview_fieldtype
 
 /* 32-bit near pointers to basic types */
 #define T_32PVOID           0x0403  /* 32-bit near pointer to void */
+#define T_32PCURRENCY       0x0404  /* 32-bit near pointer to currency */
 #define T_32PHRESULT        0x0408  /* 16:32 near pointer to HRESULT - or error code ??? */
 #define T_32PCHAR           0x0410  /* 16:32 near pointer to 8-bit signed */
 #define T_32PSHORT          0x0411  /* 16:32 near pointer to 16-bit signed */
 #define T_32PLONG           0x0412  /* 16:32 near pointer to 32-bit signed */
 #define T_32PQUAD           0x0413  /* 16:32 near pointer to 64-bit signed */
+#define T_32POCT            0x0414  /* 16:32 near pointer to 128-bit signed */
 #define T_32PUCHAR          0x0420  /* 16:32 near pointer to 8-bit unsigned */
 #define T_32PUSHORT         0x0421  /* 16:32 near pointer to 16-bit unsigned */
 #define T_32PULONG          0x0422  /* 16:32 near pointer to 32-bit unsigned */
 #define T_32PUQUAD          0x0423  /* 16:32 near pointer to 64-bit unsigned */
+#define T_32PUOCT           0x0424  /* 16:32 near pointer to 128-bit unsigned */
 #define T_32PBOOL08         0x0430  /* 16:32 near pointer to 8-bit Boolean */
 #define T_32PBOOL16         0x0431  /* 16:32 near pointer to 16-bit Boolean */
 #define T_32PBOOL32         0x0432  /* 16:32 near pointer to 32-bit Boolean */
@@ -1101,6 +1109,7 @@ union codeview_fieldtype
 #define T_32PREAL80         0x0442  /* 16:32 near pointer to 80-bit real */
 #define T_32PREAL128        0x0443  /* 16:32 near pointer to 128-bit real */
 #define T_32PREAL48         0x0444  /* 16:32 near pointer to 48-bit real */
+#define T_32PREAL16         0x0446  /* 16:32 near pointer to 16-bit real */
 #define T_32PCPLX32         0x0450  /* 16:32 near pointer to 32-bit complex */
 #define T_32PCPLX64         0x0451  /* 16:32 near pointer to 64-bit complex */
 #define T_32PCPLX80         0x0452  /* 16:32 near pointer to 80-bit complex */
@@ -1119,15 +1128,18 @@ union codeview_fieldtype
 
 /* 32-bit far pointers to basic types */
 #define T_32PFVOID          0x0503  /* 32-bit far pointer to void */
+#define T_32PFCURRENCY      0x0504  /* 32-bit far pointer to void */
 #define T_32PFHRESULT       0x0508  /* 16:32 far pointer to HRESULT - or error code ??? */
 #define T_32PFCHAR          0x0510  /* 16:32 far pointer to 8-bit signed */
 #define T_32PFSHORT         0x0511  /* 16:32 far pointer to 16-bit signed */
 #define T_32PFLONG          0x0512  /* 16:32 far pointer to 32-bit signed */
 #define T_32PFQUAD          0x0513  /* 16:32 far pointer to 64-bit signed */
+#define T_32PFOCT           0x0514  /* 16:32 far pointer to 128-bit signed */
 #define T_32PFUCHAR         0x0520  /* 16:32 far pointer to 8-bit unsigned */
 #define T_32PFUSHORT        0x0521  /* 16:32 far pointer to 16-bit unsigned */
 #define T_32PFULONG         0x0522  /* 16:32 far pointer to 32-bit unsigned */
 #define T_32PFUQUAD         0x0523  /* 16:32 far pointer to 64-bit unsigned */
+#define T_32PFUOCT          0x0524  /* 16:32 far pointer to 128-bit unsigned */
 #define T_32PFBOOL08        0x0530  /* 16:32 far pointer to 8-bit Boolean */
 #define T_32PFBOOL16        0x0531  /* 16:32 far pointer to 16-bit Boolean */
 #define T_32PFBOOL32        0x0532  /* 16:32 far pointer to 32-bit Boolean */
@@ -1137,6 +1149,7 @@ union codeview_fieldtype
 #define T_32PFREAL80        0x0542  /* 16:32 far pointer to 80-bit real */
 #define T_32PFREAL128       0x0543  /* 16:32 far pointer to 128-bit real */
 #define T_32PFREAL48        0x0544  /* 16:32 far pointer to 48-bit real */
+#define T_32PFREAL16        0x0546  /* 16:32 far pointer to 16-bit real */
 #define T_32PFCPLX32        0x0550  /* 16:32 far pointer to 32-bit complex */
 #define T_32PFCPLX64        0x0551  /* 16:32 far pointer to 64-bit complex */
 #define T_32PFCPLX80        0x0552  /* 16:32 far pointer to 80-bit complex */
@@ -1155,15 +1168,18 @@ union codeview_fieldtype
 
 /* 64-bit near pointers to basic types */
 #define T_64PVOID           0x0603  /* 64-bit near pointer to void */
+#define T_64PCURRENCY       0x0604  /* 64-bit near pointer to void */
 #define T_64PHRESULT        0x0608  /* 64 near pointer to HRESULT - or error code ??? */
 #define T_64PCHAR           0x0610  /* 64 near pointer to 8-bit signed */
 #define T_64PSHORT          0x0611  /* 64 near pointer to 16-bit signed */
 #define T_64PLONG           0x0612  /* 64 near pointer to 32-bit signed */
 #define T_64PQUAD           0x0613  /* 64 near pointer to 64-bit signed */
+#define T_64POCT            0x0614  /* 64 near pointer to 128-bit signed */
 #define T_64PUCHAR          0x0620  /* 64 near pointer to 8-bit unsigned */
 #define T_64PUSHORT         0x0621  /* 64 near pointer to 16-bit unsigned */
 #define T_64PULONG          0x0622  /* 64 near pointer to 32-bit unsigned */
 #define T_64PUQUAD          0x0623  /* 64 near pointer to 64-bit unsigned */
+#define T_64PUOCT           0x0624  /* 64 near pointer to 128-bit unsigned */
 #define T_64PBOOL08         0x0630  /* 64 near pointer to 8-bit Boolean */
 #define T_64PBOOL16         0x0631  /* 64 near pointer to 16-bit Boolean */
 #define T_64PBOOL32         0x0632  /* 64 near pointer to 32-bit Boolean */
@@ -1173,6 +1189,7 @@ union codeview_fieldtype
 #define T_64PREAL80         0x0642  /* 64 near pointer to 80-bit real */
 #define T_64PREAL128        0x0643  /* 64 near pointer to 128-bit real */
 #define T_64PREAL48         0x0644  /* 64 near pointer to 48-bit real */
+#define T_64PREAL16         0x0646  /* 64 near pointer to 16-bit real */
 #define T_64PCPLX32         0x0650  /* 64 near pointer to 32-bit complex */
 #define T_64PCPLX64         0x0651  /* 64 near pointer to 64-bit complex */
 #define T_64PCPLX80         0x0652  /* 64 near pointer to 80-bit complex */
@@ -1348,6 +1365,12 @@ union codeview_fieldtype
 #define LF_COMPLEX80            0x800e
 #define LF_COMPLEX128           0x800f
 #define LF_VARSTRING            0x8010
+#define LF_OCTWORD              0x8017
+#define LF_UOCTWORD             0x8018
+#define LF_DECIMAL              0x8019
+#define LF_DATE                 0x801a
+#define LF_UTF8STRING           0x801b
+#define LF_REAL16               0x801c
 
 /* symtype e.g. for public_vx.symtype */
 #define SYMTYPE_NONE            0x0000
@@ -1426,7 +1449,7 @@ union codeview_symbol
         cv_typ_t                symtype;
         unsigned int            offset;
         unsigned short          segment;
-        char                    name[1];
+        char                    name[];
     } data_v3;
 
     struct
@@ -1454,7 +1477,7 @@ union codeview_symbol
         unsigned short          segment;
         unsigned short          thunk_len;
         unsigned char           thtype;
-        char                    name[1];
+        char                    name[];
     } thunk_v3;
 
     struct
@@ -1505,7 +1528,7 @@ union codeview_symbol
         unsigned int            offset;
         unsigned short          segment;
         unsigned char           flags;
-        char                    name[1];
+        char                    name[];
     } proc_v3;
 
     struct
@@ -1535,7 +1558,7 @@ union codeview_symbol
         unsigned int            pubsymflags;
         unsigned int            offset;
         unsigned short          segment;
-        char                    name[1];
+        char                    name[];
     } public_v3;
 
     struct
@@ -1562,7 +1585,7 @@ union codeview_symbol
         unsigned short int      id;             /* Always S_BPREL32 */
         int                     offset;         /* Stack offset relative to BP */
         cv_typ_t                symtype;
-        char                    name[1];
+        char                    name[];
     } stack_v3;
 
     struct
@@ -1572,7 +1595,7 @@ union codeview_symbol
         int                     offset;         /* Stack offset relative to BP */
         cv_typ_t                symtype;
         unsigned short          reg;
-        char                    name[1];
+        char                    name[];
     } regrel_v3;
 
     struct
@@ -1601,7 +1624,7 @@ union codeview_symbol
 	unsigned short int      id;		/* Always S_REGISTER */
         cv_typ_t                type;           /* check whether type & reg are correct */
         unsigned short          reg;
-        char                    name[1];
+        char                    name[];
         /* don't handle register tracking */
     } register_v3;
 
@@ -1626,7 +1649,7 @@ union codeview_symbol
         unsigned int            length;
         unsigned int            offset;
         unsigned short          segment;
-        char                    name[1];
+        char                    name[];
     } block_v3;
 
     struct
@@ -1658,7 +1681,7 @@ union codeview_symbol
         unsigned int            offset;
         unsigned short          segment;
         unsigned char           flags;
-        char                    name[1];
+        char                    name[];
     } label_v3;
 
     struct
@@ -1666,10 +1689,9 @@ union codeview_symbol
         unsigned short int      len;
         unsigned short int      id;
         cv_typ16_t              type;
-        unsigned short          cvalue;         /* numeric leaf */
-#if 0
-        struct p_string         p_name;
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       cvalue; */
+        /* struct p_string      p_name; */
     } constant_v1;
 
     struct
@@ -1677,10 +1699,9 @@ union codeview_symbol
         unsigned short int      len;
         unsigned short int      id;
         cv_typ_t                type;
-        unsigned short          cvalue;         /* numeric leaf */
-#if 0
-        struct p_string         p_name;
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       cvalue; */
+        /* struct p_string      p_name; */
     } constant_v2;
 
     struct
@@ -1688,10 +1709,9 @@ union codeview_symbol
         unsigned short int      len;
         unsigned short int      id;
         cv_typ_t                type;
-        unsigned short          cvalue;
-#if 0
-        char                    name[1];
-#endif
+        unsigned char           data[];
+        /* <numeric leaf>       cvalue; */
+        /* char                 name; */
     } constant_v3;
 
     struct
@@ -1715,7 +1735,7 @@ union codeview_symbol
         unsigned short int      len;
         unsigned short int      id;
         cv_typ_t                type;
-        char                    name[1];
+        char                    name[];
     } udt_v3;
 
     struct
@@ -1731,7 +1751,7 @@ union codeview_symbol
         unsigned short int      len;
         unsigned short int      id;
         unsigned                signature;
-        char                    name[1];
+        char                    name[];
     } objname_v3;
 
     struct
@@ -1783,7 +1803,7 @@ union codeview_symbol
         unsigned short          be_major;
         unsigned short          be_minor;
         unsigned short          be_build;
-        char                    name[1];
+        char                    name[];
     } compile2_v3;
 
     struct
@@ -1804,7 +1824,7 @@ union codeview_symbol
         unsigned short          be_minor;
         unsigned short          be_build;
         unsigned short          be_qfe;
-        char                    name[1];
+        char                    name[];
     } compile3_v3;
 
     struct
@@ -1834,7 +1854,7 @@ union codeview_symbol
         cv_typ_t                symtype;
         unsigned int            offset;
         unsigned short          segment;
-        char                    name[1];
+        char                    name[];
     } thread_v3;
 
     struct
@@ -1844,7 +1864,7 @@ union codeview_symbol
         unsigned int            sumName;
         unsigned int            ibSym;
         unsigned short          imod;
-        char                    name[1];
+        char                    name[];
     } refsym2_v3;
 
     struct
@@ -1892,7 +1912,7 @@ union codeview_symbol
         unsigned short int      id;
         cv_typ_t                symtype;
         struct cv_local_varflag varflags;
-        char                    name[1];
+        char                    name[];
     } local_v3;
 
     struct
@@ -1901,7 +1921,7 @@ union codeview_symbol
         unsigned short int      id;
         unsigned int            program;
         struct cv_addr_range    range;
-        struct cv_addr_gap      gaps[0];
+        struct cv_addr_gap      gaps[];
     } defrange_v3;
 
     struct
@@ -1911,7 +1931,7 @@ union codeview_symbol
         unsigned int            program;
         unsigned int            offParent;
         struct cv_addr_range    range;
-        struct cv_addr_gap      gaps[0];
+        struct cv_addr_gap      gaps[];
     } defrange_subfield_v3;
 
     struct
@@ -1921,7 +1941,7 @@ union codeview_symbol
         unsigned short          reg;
         unsigned short          attr;
         struct cv_addr_range    range;
-        struct cv_addr_gap      gaps[0];
+        struct cv_addr_gap      gaps[];
     } defrange_register_v3;
 
     struct
@@ -1930,7 +1950,7 @@ union codeview_symbol
         unsigned short int      id;
         int                     offFramePointer;
         struct cv_addr_range    range;
-        struct cv_addr_gap      gaps[0];
+        struct cv_addr_gap      gaps[];
     } defrange_frameptrrel_v3;
 
     struct
@@ -1949,7 +1969,7 @@ union codeview_symbol
         unsigned int            offParent : 12;
         unsigned int            padding   : 20;
         struct cv_addr_range    range;
-        struct cv_addr_gap      gaps[0];
+        struct cv_addr_gap      gaps[];
     } defrange_subfield_register_v3;
 
     struct
@@ -1962,7 +1982,7 @@ union codeview_symbol
         unsigned short          offsetParent     : 12;
         int                     offBasePointer;
         struct cv_addr_range    range;
-        struct cv_addr_gap      gaps[0];
+        struct cv_addr_gap      gaps[];
     } defrange_registerrel_v3;
 
     struct
@@ -1979,7 +1999,7 @@ union codeview_symbol
         unsigned int            pParent;
         unsigned int            pEnd;
         cv_itemid_t             inlinee;
-        unsigned char           binaryAnnotations[0];
+        unsigned char           binaryAnnotations[];
     } inline_site_v3;
 
     struct
@@ -2000,7 +2020,7 @@ union codeview_symbol
         unsigned int            pEnd;
         cv_itemid_t             inlinee;
         unsigned int            invocations;
-        unsigned char           binaryAnnotations[0];
+        unsigned char           binaryAnnotations[];
     } inline_site2_v3;
 
     struct
@@ -2008,10 +2028,9 @@ union codeview_symbol
         unsigned short int      len;
         unsigned short int      id;
         unsigned int            count;
-        cv_typ_t                funcs[0];  /* array of cuntions, count entries */
-#if 0
-        unsigned int            invocations[0]; /* array of count entries, paires with funcs */
-#endif
+        unsigned char           data[];
+        /* cv_typ_t             functions[count]; */
+        /* unsigned int         invocations[count]; */
     } function_list_v3;
 
     struct
@@ -2021,7 +2040,7 @@ union codeview_symbol
         cv_typ_t                typind;
         unsigned int            modOffset;
         struct cv_local_varflag varflags;
-        char                    name[1];
+        char                    name[];
     } file_static_v3;
 
     struct
@@ -2035,7 +2054,7 @@ union codeview_symbol
     {
         unsigned short int      len;
         unsigned short int      id;
-        char                    name[1];
+        char                    name[];
     } unamespace_v3;
 
     struct
@@ -2059,7 +2078,7 @@ union codeview_symbol
         unsigned int            off;
         unsigned short int      seg;
         unsigned short int      csz; /* number of bytes in following array */
-        char                    rgsz[1]; /* array of null terminated strings (bounded by csz) */
+        char                    rgsz[]; /* array of null terminated strings (bounded by csz) */
     } annotation_v3;
 
     struct
@@ -2321,7 +2340,7 @@ struct CV_Checksum_t /* this one is not defined in microsoft pdb information */
     unsigned            strOffset;      /* offset in string table for filename */
     unsigned char       size;           /* size of checksum */
     unsigned char       method;         /* method used to compute check sum */
-    unsigned char       checksum[0];    /* (size) bytes */
+    unsigned char       checksum[];     /* (size) bytes */
     /* result is padded on 4-byte boundary */
 };
 
@@ -2341,7 +2360,7 @@ typedef struct CV_InlineeSourceLineEx_t
     unsigned       fileId;        /* offset in DEBUG_S_FILECHKSMS */
     unsigned       sourceLineNum; /* first line number */
     unsigned int   countOfExtraFiles;
-    unsigned       extraFileId[0];
+    unsigned       extraFileId[];
 } InlineeSourceLineEx;
 
 #ifdef __WINESRC__
@@ -2360,8 +2379,9 @@ struct codeview_linetab_block
 {
     unsigned short              seg;
     unsigned short              num_lines;
-    unsigned int                offsets[1];     /* in fact num_lines */
-/*  unsigned short              linenos[]; */
+    unsigned char               data[];
+    /* unsigned int             offsets[num_lines]; */
+    /* unsigned short           linenos[]; */
 };
 
 struct startend
@@ -2389,7 +2409,7 @@ struct PDB_JG_HEADER
     unsigned short      free_list_block;
     unsigned short      total_alloc;
     struct PDB_JG_STREAM toc;
-    unsigned short      toc_block[1];
+    /* unsigned short      toc_block[]; */
 };
 
 struct PDB_DS_HEADER
@@ -2406,13 +2426,13 @@ struct PDB_DS_HEADER
 struct PDB_JG_TOC
 {
     unsigned int        num_streams;
-    struct PDB_JG_STREAM streams[1];
+    struct PDB_JG_STREAM streams[];
 };
 
 struct PDB_DS_TOC
 {
     unsigned int        num_streams;
-    unsigned int        stream_size[1];
+    unsigned int        stream_size[];
 };
 
 struct PDB_JG_ROOT
@@ -2421,7 +2441,7 @@ struct PDB_JG_ROOT
     unsigned int        TimeDateStamp;
     unsigned int        Age;
     unsigned int        cbNames;
-    char                names[1];
+    char                names[];
 };
 
 struct PDB_DS_ROOT
@@ -2431,7 +2451,7 @@ struct PDB_DS_ROOT
     unsigned int        Age;
     GUID                guid;
     unsigned int        cbNames;
-    char                names[1];
+    char                names[];
 };
 
 typedef struct _PDB_TYPES_OLD
@@ -2498,7 +2518,7 @@ typedef struct _PDB_SYMBOL_FILE
     unsigned int     lineno2_size;
     unsigned int     nSrcFiles;
     unsigned int     attribute;
-    char             filename[1];
+    char             filename[];
 } PDB_SYMBOL_FILE, *PPDB_SYMBOL_FILE;
 
 typedef struct _PDB_SYMBOL_FILE_EX
@@ -2513,14 +2533,14 @@ typedef struct _PDB_SYMBOL_FILE_EX
     unsigned int        nSrcFiles;
     unsigned int        attribute;
     unsigned int        reserved[2];
-    char                filename[1];
+    char                filename[];
 } PDB_SYMBOL_FILE_EX, *PPDB_SYMBOL_FILE_EX;
 
 typedef struct _PDB_SYMBOL_SOURCE
 {
     unsigned short        nModules;
     unsigned short        nSrcFiles;
-    unsigned short        table[1];
+    unsigned short        table[];
 } PDB_SYMBOL_SOURCE, *PPDB_SYMBOL_SOURCE;
 
 typedef struct _PDB_SYMBOL_IMPORT
@@ -2529,7 +2549,7 @@ typedef struct _PDB_SYMBOL_IMPORT
     unsigned int unknown2;
     unsigned int TimeDateStamp;
     unsigned int Age;
-    char         filename[1];
+    char         filename[];
 } PDB_SYMBOL_IMPORT, *PPDB_SYMBOL_IMPORT;
 
 typedef struct _PDB_SYMBOLS_OLD
@@ -2568,30 +2588,13 @@ typedef struct _PDB_SYMBOLS
     unsigned int   resvd4;
 } PDB_SYMBOLS, *PPDB_SYMBOLS;
 
-typedef struct
+/* FIXME other entries are unknown */
+enum PDB_STREAM_INDEX
 {
-    unsigned short FPO;
-    unsigned short unk0;
-    unsigned short unk1;
-    unsigned short unk2;
-    unsigned short unk3;
-    unsigned short sections_stream;
-} PDB_STREAM_INDEXES_OLD;
-
-typedef struct
-{
-    unsigned short FPO;
-    unsigned short unk0;
-    unsigned short unk1;
-    unsigned short unk2;
-    unsigned short unk3;
-    unsigned short sections_stream;
-    unsigned short unk4;
-    unsigned short unk5;
-    unsigned short unk6;
-    unsigned short FPO_EXT;
-    unsigned short unk7;
-} PDB_STREAM_INDEXES;
+    PDB_SIDX_FPO,
+    PDB_SIDX_SECTIONS = 5,
+    PDB_SIDX_FPOEXT = 9
+};
 
 typedef struct _PDB_FPO_DATA
 {
@@ -2700,7 +2703,7 @@ typedef struct OMFSignatureRSDS
     char         Signature[4];
     GUID         guid;
     unsigned int age;
-    char         name[1];
+    char         name[];
 } OMFSignatureRSDS;
 
 typedef struct _CODEVIEW_PDB_DATA
@@ -2709,7 +2712,7 @@ typedef struct _CODEVIEW_PDB_DATA
     int         filepos;
     unsigned int timestamp;
     unsigned int age;
-    char         name[1];
+    char         name[];
 } CODEVIEW_PDB_DATA, *PCODEVIEW_PDB_DATA;
 
 typedef struct OMFDirHeader
@@ -2801,22 +2804,32 @@ typedef struct OMFSourceLine
 {
     unsigned short  Seg;
     unsigned short  cLnOff;
-    unsigned int    offset[1];
-    unsigned short  lineNbr[1];
+    unsigned int    offset[];
+/*    unsigned short  lineNbr[]; */
 } OMFSourceLine;
 
 typedef struct OMFSourceFile
 {
     unsigned short  cSeg;
     unsigned short  reserved;
-    unsigned int    baseSrcLn[1];
-    unsigned short  cFName;
-    char            Name;
+    unsigned int    baseSrcLn[];
+/*    unsigned short  cFName; */
+/*    char            Name; */
 } OMFSourceFile;
 
 typedef struct OMFSourceModule
 {
     unsigned short  cFile;
     unsigned short  cSeg;
-    unsigned int    baseSrcFile[1];
+    unsigned int    baseSrcFile[];
 } OMFSourceModule;
+
+
+/* undocumented. IMAGE_DEBUG_TYPE_REPRO directory entry */
+typedef struct
+{
+    unsigned        flags;           /* only seen 0x20 */
+    GUID            guid;            /* guid used in CODEVIEW debug entry */
+    unsigned        unk[3];          /* unknown, potentially hash of some internal parts of image */
+    unsigned        debug_timestamp; /* used in all DEBUG entries as timestamp (including this one) */
+} IMAGE_DEBUG_REPRO;

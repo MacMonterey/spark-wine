@@ -293,6 +293,7 @@ static HRESULT WINAPI objwithtoken_SetObjectToken(ISpObjectWithToken *iface, ISp
     if (This->token)
         return SPERR_ALREADY_INITIALIZED;
 
+    ISpObjectToken_AddRef(token);
     This->token = token;
     return S_OK;
 }
@@ -380,12 +381,12 @@ static ULONG WINAPI mmsysaudio_Release(ISpMMSysAudio *iface)
         async_cancel_queue(&This->queue);
 
         if (This->token) ISpObjectToken_Release(This->token);
-        heap_free(This->wfx);
+        free(This->wfx);
         CloseHandle(This->event);
         DeleteCriticalSection(&This->pending_cs);
         DeleteCriticalSection(&This->cs);
 
-        heap_free(This);
+        free(This);
     }
 
     return ref;
@@ -420,7 +421,7 @@ static HRESULT WINAPI mmsysaudio_Write(ISpMMSysAudio *iface, const void *pv, ULO
         return SP_AUDIO_STOPPED;
     }
 
-    if (!(buf = heap_alloc(sizeof(WAVEHDR) + cb)))
+    if (!(buf = malloc(sizeof(WAVEHDR) + cb)))
     {
         LeaveCriticalSection(&This->cs);
         return E_OUTOFMEMORY;
@@ -433,7 +434,7 @@ static HRESULT WINAPI mmsysaudio_Write(ISpMMSysAudio *iface, const void *pv, ULO
     if (waveOutPrepareHeader(This->hwave.out, buf, sizeof(WAVEHDR)) != MMSYSERR_NOERROR)
     {
         LeaveCriticalSection(&This->cs);
-        heap_free(buf);
+        free(buf);
         return E_FAIL;
     }
 
@@ -441,7 +442,6 @@ static HRESULT WINAPI mmsysaudio_Write(ISpMMSysAudio *iface, const void *pv, ULO
 
     EnterCriticalSection(&This->pending_cs);
     ++This->pending_buf_count;
-    TRACE("pending_buf_count = %Iu\n", This->pending_buf_count);
     LeaveCriticalSection(&This->pending_cs);
 
     ResetEvent(This->event);
@@ -561,14 +561,13 @@ static void free_out_buf_proc(struct async_task *task)
     TRACE("(%p).\n", task);
 
     waveOutUnprepareHeader(fbt->audio->hwave.out, fbt->buf, sizeof(WAVEHDR));
-    heap_free(fbt->buf);
+    free(fbt->buf);
 
     EnterCriticalSection(&fbt->audio->pending_cs);
     buf_count = --fbt->audio->pending_buf_count;
     LeaveCriticalSection(&fbt->audio->pending_cs);
     if (!buf_count)
         SetEvent(fbt->audio->event);
-    TRACE("pending_buf_count = %Iu.\n", buf_count);
 }
 
 static void CALLBACK wave_out_proc(HWAVEOUT hwo, UINT msg, DWORD_PTR instance, DWORD_PTR param1, DWORD_PTR param2)
@@ -581,7 +580,7 @@ static void CALLBACK wave_out_proc(HWAVEOUT hwo, UINT msg, DWORD_PTR instance, D
     switch (msg)
     {
     case WOM_DONE:
-        if (!(task = heap_alloc(sizeof(*task))))
+        if (!(task = malloc(sizeof(*task))))
         {
             ERR("failed to allocate free_buf_task.\n");
             break;
@@ -684,13 +683,13 @@ static HRESULT WINAPI mmsysaudio_SetFormat(ISpMMSysAudio *iface, const GUID *gui
         return res == WAVERR_BADFORMAT ? SPERR_UNSUPPORTED_FORMAT : SPERR_GENERIC_MMSYS_ERROR;
     }
 
-    if (!(new_wfx = heap_alloc(sizeof(*wfx) + wfx->cbSize)))
+    if (!(new_wfx = malloc(sizeof(*wfx) + wfx->cbSize)))
     {
         LeaveCriticalSection(&This->cs);
         return E_OUTOFMEMORY;
     }
     memcpy(new_wfx, wfx, sizeof(*wfx) + wfx->cbSize);
-    heap_free(This->wfx);
+    free(This->wfx);
     This->wfx = new_wfx;
 
     LeaveCriticalSection(&This->cs);
@@ -873,7 +872,7 @@ static HRESULT mmaudio_create(IUnknown *outer, REFIID iid, void **obj, enum flow
         return E_NOTIMPL;
     }
 
-    if (!(This = heap_alloc_zero(sizeof(*This))))
+    if (!(This = calloc(1, sizeof(*This))))
         return E_OUTOFMEMORY;
     This->ISpEventSource_iface.lpVtbl = &event_source_vtbl;
     This->ISpEventSink_iface.lpVtbl = &event_sink_vtbl;
@@ -886,9 +885,9 @@ static HRESULT mmaudio_create(IUnknown *outer, REFIID iid, void **obj, enum flow
     This->device_id = WAVE_MAPPER;
     This->state = SPAS_CLOSED;
 
-    if (!(This->wfx = heap_alloc(sizeof(*This->wfx))))
+    if (!(This->wfx = malloc(sizeof(*This->wfx))))
     {
-        heap_free(This);
+        free(This);
         return E_OUTOFMEMORY;
     }
     This->wfx->wFormatTag = WAVE_FORMAT_PCM;

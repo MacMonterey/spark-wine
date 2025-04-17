@@ -72,7 +72,10 @@ struct ctrl_handler
 static BOOL WINAPI default_ctrl_handler( DWORD type )
 {
     FIXME( "Terminating process %lx on event %lx\n", GetCurrentProcessId(), type );
-    RtlExitUserProcess( 0 );
+    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT)
+        RtlExitUserProcess( STATUS_CONTROL_C_EXIT );
+    else
+        RtlExitUserProcess( 0 );
     return TRUE;
 }
 
@@ -393,10 +396,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH AttachConsole( DWORD pid )
 static BOOL alloc_console( BOOL headless )
 {
     SECURITY_ATTRIBUTES inheritable_attr = { sizeof(inheritable_attr), NULL, TRUE };
-    STARTUPINFOW app_si, console_si;
+    STARTUPINFOEXW console_si;
+    STARTUPINFOW app_si;
     HANDLE server, console = NULL;
     WCHAR buffer[1024], cmd[256], conhost_path[MAX_PATH];
     PROCESS_INFORMATION pi;
+    SIZE_T size;
     void *redir;
     BOOL ret;
 
@@ -412,42 +417,50 @@ static BOOL alloc_console( BOOL headless )
         return FALSE;
     }
 
+    memset( &console_si, 0, sizeof(console_si) );
+    console_si.StartupInfo.cb = sizeof(console_si);
+    InitializeProcThreadAttributeList( NULL, 1, 0, &size );
+    if (!(console_si.lpAttributeList = HeapAlloc( GetProcessHeap(), 0, size ))) return FALSE;
+    InitializeProcThreadAttributeList( console_si.lpAttributeList, 1, 0, &size );
+
     if (!(server = create_console_server()) || !(console = create_console_reference( server ))) goto error;
 
     GetStartupInfoW(&app_si);
 
-    memset(&console_si, 0, sizeof(console_si));
-    console_si.cb = sizeof(console_si);
     /* setup a view arguments for conhost (it'll use them as default values)  */
     if (app_si.dwFlags & STARTF_USECOUNTCHARS)
     {
-        console_si.dwFlags |= STARTF_USECOUNTCHARS;
-        console_si.dwXCountChars = app_si.dwXCountChars;
-        console_si.dwYCountChars = app_si.dwYCountChars;
+        console_si.StartupInfo.dwFlags |= STARTF_USECOUNTCHARS;
+        console_si.StartupInfo.dwXCountChars = app_si.dwXCountChars;
+        console_si.StartupInfo.dwYCountChars = app_si.dwYCountChars;
     }
     if (app_si.dwFlags & STARTF_USEFILLATTRIBUTE)
     {
-        console_si.dwFlags |= STARTF_USEFILLATTRIBUTE;
-        console_si.dwFillAttribute = app_si.dwFillAttribute;
+        console_si.StartupInfo.dwFlags |= STARTF_USEFILLATTRIBUTE;
+        console_si.StartupInfo.dwFillAttribute = app_si.dwFillAttribute;
     }
     if (app_si.dwFlags & STARTF_USESHOWWINDOW)
     {
-        console_si.dwFlags |= STARTF_USESHOWWINDOW;
-        console_si.wShowWindow = app_si.wShowWindow;
+        console_si.StartupInfo.dwFlags |= STARTF_USESHOWWINDOW;
+        console_si.StartupInfo.wShowWindow = app_si.wShowWindow;
     }
     if (app_si.lpTitle)
-        console_si.lpTitle = app_si.lpTitle;
+        console_si.StartupInfo.lpTitle = app_si.lpTitle;
     else if (GetModuleFileNameW(0, buffer, ARRAY_SIZE(buffer)))
     {
         buffer[ARRAY_SIZE(buffer) - 1] = 0;
-        console_si.lpTitle = buffer;
+        console_si.StartupInfo.lpTitle = buffer;
     }
 
+
+    UpdateProcThreadAttribute( console_si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                               &server, sizeof(server), NULL, NULL );
     swprintf( conhost_path, ARRAY_SIZE(conhost_path), L"%s\\conhost.exe", system_dir );
     swprintf( cmd, ARRAY_SIZE(cmd),  L"\"%s\" --server 0x%x", conhost_path, condrv_handle( server ));
     if (headless) wcscat( cmd, L" --headless" );
     Wow64DisableWow64FsRedirection( &redir );
-    ret = CreateProcessW( conhost_path, cmd, NULL, NULL, TRUE, DETACHED_PROCESS, NULL, NULL, &console_si, &pi );
+    ret = CreateProcessW( conhost_path, cmd, NULL, NULL, TRUE, DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT,
+                          NULL, NULL, &console_si.StartupInfo, &pi );
     Wow64RevertWow64FsRedirection( redir );
 
     if (!ret || !create_console_connection( console)) goto error;
@@ -456,6 +469,7 @@ static BOOL alloc_console( BOOL headless )
     RtlGetCurrentPeb()->ProcessParameters->ConsoleHandle = console;
     TRACE( "Started conhost pid=%08lx tid=%08lx\n", pi.dwProcessId, pi.dwThreadId );
 
+    HeapFree( GetProcessHeap(), 0, console_si.lpAttributeList );
     CloseHandle( server );
     RtlLeaveCriticalSection( &console_section );
     SetLastError( ERROR_SUCCESS );
@@ -463,6 +477,7 @@ static BOOL alloc_console( BOOL headless )
 
 error:
     ERR("Can't allocate console\n");
+    HeapFree( GetProcessHeap(), 0, console_si.lpAttributeList );
     NtClose( console );
     NtClose( server );
     FreeConsole();
@@ -487,7 +502,7 @@ HANDLE WINAPI DECLSPEC_HOTPATCH CreateConsoleScreenBuffer( DWORD access, DWORD s
                                                            SECURITY_ATTRIBUTES *sa, DWORD flags,
                                                            void *data )
 {
-    OBJECT_ATTRIBUTES attr = {sizeof(attr)};
+    OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK iosb;
     UNICODE_STRING name = RTL_CONSTANT_STRING( L"\\Device\\ConDrv\\ScreenBuffer" );
     HANDLE handle;
@@ -501,8 +516,7 @@ HANDLE WINAPI DECLSPEC_HOTPATCH CreateConsoleScreenBuffer( DWORD access, DWORD s
 	return INVALID_HANDLE_VALUE;
     }
 
-    attr.ObjectName = &name;
-    attr.SecurityDescriptor = sa ? sa->lpSecurityDescriptor : NULL;
+    InitializeObjectAttributes( &attr, &name, 0, 0, sa ? sa->lpSecurityDescriptor : NULL );
     if (sa && sa->bInheritHandle) attr.Attributes |= OBJ_INHERIT;
     status = NtCreateFile( &handle, access, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN,
                            FILE_NON_DIRECTORY_FILE, NULL, 0 );
@@ -1191,11 +1205,8 @@ COORD WINAPI DECLSPEC_HOTPATCH GetLargestConsoleWindowSize( HANDLE handle )
  */
 BOOL WINAPI DECLSPEC_HOTPATCH GetNumberOfConsoleInputEvents( HANDLE handle, DWORD *count )
 {
-    struct condrv_input_info info;
-    if (!console_ioctl( handle, IOCTL_CONDRV_GET_INPUT_INFO, NULL, 0, &info, sizeof(info), NULL ))
-        return FALSE;
-    *count = info.input_count;
-    return TRUE;
+    return console_ioctl( handle, IOCTL_CONDRV_GET_INPUT_COUNT, NULL, 0,
+                          count, sizeof(*count), NULL );
 }
 
 
@@ -2175,9 +2186,12 @@ static HANDLE create_pseudo_console( COORD size, HANDLE input, HANDLE output, HA
                                      DWORD flags, HANDLE *process )
 {
     WCHAR cmd[MAX_PATH], conhost_path[MAX_PATH];
+    unsigned int inherit_count;
     PROCESS_INFORMATION pi;
     HANDLE server, console;
+    HANDLE inherit[2];
     STARTUPINFOEXW si;
+    SIZE_T attr_size;
     void *redir;
     BOOL res;
 
@@ -2196,6 +2210,21 @@ static HANDLE create_pseudo_console( COORD size, HANDLE input, HANDLE output, HA
     si.StartupInfo.hStdOutput = output;
     si.StartupInfo.hStdError  = output;
     si.StartupInfo.dwFlags    = STARTF_USESTDHANDLES;
+
+    inherit[0] = server;
+    inherit[1] = signal;
+    inherit_count = signal ? 2 : 1;
+    InitializeProcThreadAttributeList( NULL, inherit_count, 0, &attr_size );
+    if (!(si.lpAttributeList = HeapAlloc( GetProcessHeap(), 0, attr_size )))
+    {
+        NtClose( console );
+        NtClose( server );
+        return FALSE;
+    }
+    InitializeProcThreadAttributeList( si.lpAttributeList, inherit_count, 0, &attr_size );
+    UpdateProcThreadAttribute( si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                               inherit, sizeof(*inherit) * inherit_count, NULL, NULL );
+
     swprintf( conhost_path, ARRAY_SIZE(conhost_path), L"%s\\conhost.exe", system_dir );
     if (signal)
     {
@@ -2210,8 +2239,9 @@ static HANDLE create_pseudo_console( COORD size, HANDLE input, HANDLE output, HA
                   conhost_path, size.X, size.Y, server );
     }
     Wow64DisableWow64FsRedirection( &redir );
-    res = CreateProcessW( conhost_path, cmd, NULL, NULL, TRUE, DETACHED_PROCESS, NULL, NULL,
-                          &si.StartupInfo, &pi );
+    res = CreateProcessW( conhost_path, cmd, NULL, NULL, TRUE, DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT,
+                          NULL, NULL, &si.StartupInfo, &pi );
+    HeapFree( GetProcessHeap(), 0, si.lpAttributeList );
     Wow64RevertWow64FsRedirection( redir );
     NtClose( server );
     if (!res)

@@ -1,9 +1,10 @@
 TESTDLL   = kernelbase.dll
 
-C_SRCS = \
+SOURCES = \
+	file.c \
+	memory.c \
 	path.c \
 	process.c \
+	rsrc.rc \
+	security.c \
 	sync.c
-
-RC_SRCS = \
-	rsrc.rc

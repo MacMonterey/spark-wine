@@ -20,21 +20,16 @@
 #ifndef __WINE_DMBAND_PRIVATE_H
 #define __WINE_DMBAND_PRIVATE_H
 
-#include <stdio.h>
 #include <stdarg.h>
-#include <string.h>
 
 #define COBJMACROS
 
 #include "windef.h"
 #include "winbase.h"
 #include "winnt.h"
-#include "wingdi.h"
-#include "winuser.h"
 
 #include "wine/debug.h"
 #include "wine/list.h"
-#include "winreg.h"
 #include "objbase.h"
 
 #include "dmusici.h"
@@ -44,47 +39,6 @@
 /*****************************************************************************
  * ClassFactory
  */
-extern HRESULT create_dmband(REFIID riid, void **ret_iface);
 extern HRESULT create_dmbandtrack(REFIID riid, void **ret_iface);
-
-
-/*****************************************************************************
- * Auxiliary definitions
- */
-/* i don't like M$'s idea about two different band item headers, so behold: universal one */
-typedef struct _DMUS_PRIVATE_BAND_ITEM_HEADER {
-	DWORD dwVersion; /* 1 or 2 */
-	/* v.1 */
-	MUSIC_TIME lBandTime;
-	/* v.2 */
-	MUSIC_TIME lBandTimeLogical;
-	MUSIC_TIME lBandTimePhysical;
-} DMUS_PRIVATE_BAND_ITEM_HEADER;
-
-typedef struct _DMUS_PRIVATE_INSTRUMENT {
-	struct list entry; /* for listing elements */
-	DMUS_IO_INSTRUMENT pInstrument;
-	IDirectMusicCollection* ppReferenceCollection;
-} DMUS_PRIVATE_INSTRUMENT, *LPDMUS_PRIVATE_INSTRUMENT;
-
-typedef struct _DMUS_PRIVATE_BAND {
-	struct list entry; /* for listing elements */
-	DMUS_PRIVATE_BAND_ITEM_HEADER BandHeader;
-	IDirectMusicBand *band;
-} DMUS_PRIVATE_BAND, *LPDMUS_PRIVATE_BAND;
-
-
-/**********************************************************************
- * Dll lifetime tracking declaration for dmband.dll
- */
-extern LONG DMBAND_refCount;
-static inline void DMBAND_LockModule(void) { InterlockedIncrement( &DMBAND_refCount ); }
-static inline void DMBAND_UnlockModule(void) { InterlockedDecrement( &DMBAND_refCount ); }
-
-/*****************************************************************************
- * Misc.
- */
-
-#include "dmutils.h"
 
 #endif	/* __WINE_DMBAND_PRIVATE_H */

@@ -786,10 +786,10 @@ typedef struct _OVERLAPPED* LPWSAOVERLAPPED;
 #define WS_h_errno                 WSAGetLastError()
 #endif
 
-#define WSAHOST_NOT_FOUND          (WSABASEERR + 1001)
-#define WSATRY_AGAIN               (WSABASEERR + 1002)
-#define WSANO_RECOVERY             (WSABASEERR + 1003)
-#define WSANO_DATA                 (WSABASEERR + 1004)
+#define WSAHOST_NOT_FOUND          (WSABASEERR+1001)
+#define WSATRY_AGAIN               (WSABASEERR+1002)
+#define WSANO_RECOVERY             (WSABASEERR+1003)
+#define WSANO_DATA                 (WSABASEERR+1004)
 #define WSANO_ADDRESS              WSANO_DATA
 
 #define WSA_IO_PENDING             (ERROR_IO_PENDING)
@@ -1001,46 +1001,6 @@ typedef struct WSAData
 #endif
 } WSADATA, *LPWSADATA;
 
-#ifndef USE_WS_PREFIX
-
-#undef htonl
-#undef htons
-#undef ntohl
-#undef ntohs
-
-#ifdef WORDS_BIGENDIAN
-
-static inline u_short __wine_ushort_noop(u_short s)
-{
-    return s;
-}
-static inline ULONG __wine_ulong_noop(ULONG l)
-{
-    return l;
-}
-#define htonl __wine_ulong_noop
-#define htons __wine_ushort_noop
-#define ntohl __wine_ulong_noop
-#define ntohs __wine_ushort_noop
-
-#else /* WORDS_BIGENDIAN */
-
-static inline u_short __wine_ushort_swap(u_short s)
-{
-    return (s >> 8) | (s << 8);
-}
-static inline ULONG __wine_ulong_swap(ULONG l)
-{
-    return ((ULONG)__wine_ushort_swap((u_short)l) << 16) | __wine_ushort_swap((u_short)(l >> 16));
-}
-#define htonl __wine_ulong_swap
-#define htons __wine_ushort_swap
-#define ntohl __wine_ulong_swap
-#define ntohs __wine_ushort_swap
-
-#endif /* WORDS_BIGENDIAN */
-#endif /* USE_WS_PREFIX */
-
 #define WSAMAKEASYNCREPLY(size, error) MAKELONG(size, error)
 #define WSAMAKESELECTREPLY(flags, error) MAKELONG(flags, error)
 #define WSAGETASYNCBUFLEN(x) LOWORD(x)
@@ -1134,10 +1094,14 @@ WINSOCK_API_LINKAGE struct WS(servent) * WINAPI WS(getservbyname)(const char *, 
 WINSOCK_API_LINKAGE struct WS(servent) * WINAPI WS(getservbyport)(int, const char *);
 WINSOCK_API_LINKAGE int WINAPI WS(getsockname)(SOCKET, struct WS(sockaddr) *, int *);
 WINSOCK_API_LINKAGE int WINAPI WS(getsockopt)(SOCKET, int, int, char *, int *);
+WINSOCK_API_LINKAGE ULONG WINAPI WS(htonl)(ULONG);
+WINSOCK_API_LINKAGE WS(u_short) WINAPI WS(htons)(WS(u_short));
 WINSOCK_API_LINKAGE ULONG WINAPI WS(inet_addr)(const char *);
 WINSOCK_API_LINKAGE char * WINAPI WS(inet_ntoa)(struct WS(in_addr));
 WINSOCK_API_LINKAGE int WINAPI WS(ioctlsocket)(SOCKET, LONG, WS(u_long) *);
 WINSOCK_API_LINKAGE int WINAPI WS(listen)(SOCKET, int);
+WINSOCK_API_LINKAGE ULONG WINAPI WS(ntohl)(ULONG);
+WINSOCK_API_LINKAGE WS(u_short) WINAPI WS(ntohs)(WS(u_short));
 WINSOCK_API_LINKAGE int WINAPI WS(recv)(SOCKET, char *, int, int);
 WINSOCK_API_LINKAGE int WINAPI WS(recvfrom)(SOCKET, char *, int, int, struct WS(sockaddr) *, int *);
 #ifdef WS_DEFINE_SELECT

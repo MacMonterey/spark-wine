@@ -91,6 +91,8 @@ static const WCHAR drv_keyW[] = {'S','o','f','t','w','a','r','e','\\',
     'W','i','n','e','\\','D','r','i','v','e','r','s','\\',
     'w','i','n','e','a','l','s','a','.','d','r','v'};
 
+static ULONG_PTR zero_bits = 0;
+
 static NTSTATUS alsa_not_implemented(void *args)
 {
     return STATUS_SUCCESS;
@@ -476,6 +478,20 @@ static WCHAR *alsa_get_card_name(int card)
     return ret;
 }
 
+static NTSTATUS alsa_process_attach(void *args)
+{
+#ifdef _WIN64
+    if (NtCurrentTeb()->WowTebOffset)
+    {
+        SYSTEM_BASIC_INFORMATION info;
+
+        NtQuerySystemInformation(SystemEmulationBasicInformation, &info, sizeof(info), NULL);
+        zero_bits = (ULONG_PTR)info.HighestUserAddress | 0x7fffffff;
+    }
+#endif
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS alsa_main_loop(void *args)
 {
     struct main_loop_params *params = args;
@@ -781,15 +797,6 @@ static void silence_buffer(struct alsa_stream *stream, BYTE *buffer, UINT32 fram
         memset(buffer, 0, frames * stream->fmt->nBlockAlign);
 }
 
-static ULONG_PTR zero_bits(void)
-{
-#ifdef _WIN64
-    return !NtCurrentTeb()->WowTebOffset ? 0 : 0x7fffffff;
-#else
-    return 0;
-#endif
-}
-
 static NTSTATUS alsa_create_stream(void *args)
 {
     struct create_stream_params *params = args;
@@ -802,36 +809,6 @@ static NTSTATUS alsa_create_stream(void *args)
     SIZE_T size;
 
     params->result = S_OK;
-
-    if (params->share == AUDCLNT_SHAREMODE_SHARED) {
-        params->period = def_period;
-        if (params->duration < 3 * params->period)
-            params->duration = 3 * params->period;
-    } else {
-        if (fmtex->Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
-           (fmtex->dwChannelMask == 0 || fmtex->dwChannelMask & SPEAKER_RESERVED))
-            params->result = AUDCLNT_E_UNSUPPORTED_FORMAT;
-        else {
-            if (!params->period)
-                params->period = def_period;
-            if (params->period < min_period || params->period > 5000000)
-                params->result = AUDCLNT_E_INVALID_DEVICE_PERIOD;
-            else if (params->duration > 20000000) /* The smaller the period, the lower this limit. */
-                params->result = AUDCLNT_E_BUFFER_SIZE_ERROR;
-            else if (params->flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) {
-                if (params->duration != params->period)
-                    params->result = AUDCLNT_E_BUFDURATION_PERIOD_NOT_EQUAL;
-
-                FIXME("EXCLUSIVE mode with EVENTCALLBACK\n");
-
-                params->result = AUDCLNT_E_DEVICE_IN_USE;
-            } else if (params->duration < 8 * params->period)
-                params->duration = 8 * params->period; /* May grow above 2s. */
-        }
-    }
-
-    if (FAILED(params->result))
-        return STATUS_SUCCESS;
 
     stream = calloc(1, sizeof(*stream));
     if(!stream){
@@ -1004,7 +981,7 @@ static NTSTATUS alsa_create_stream(void *args)
     stream->fmt = &fmtex->Format;
 
     size = stream->bufsize_frames * params->fmt->nBlockAlign;
-    if(NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer, zero_bits(), &size,
+    if(NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer, zero_bits, &size,
                                MEM_COMMIT, PAGE_READWRITE)){
         params->result = E_OUTOFMEMORY;
         goto exit;
@@ -1718,7 +1695,7 @@ static NTSTATUS alsa_get_render_buffer(void *args)
                 stream->tmp_buffer = NULL;
             }
             size = frames * stream->fmt->nBlockAlign;
-            if(NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->tmp_buffer, zero_bits(), &size,
+            if(NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->tmp_buffer, zero_bits, &size,
                                        MEM_COMMIT, PAGE_READWRITE)){
                 stream->tmp_buffer_frames = 0;
                 return alsa_unlock_result(stream, &params->result, E_OUTOFMEMORY);
@@ -1821,7 +1798,7 @@ static NTSTATUS alsa_get_capture_buffer(void *args)
                 stream->tmp_buffer = NULL;
             }
             size = *frames * stream->fmt->nBlockAlign;
-            if(NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->tmp_buffer, zero_bits(), &size,
+            if(NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->tmp_buffer, zero_bits, &size,
                                        MEM_COMMIT, PAGE_READWRITE)){
                 stream->tmp_buffer_frames = 0;
                 return alsa_unlock_result(stream, &params->result, E_OUTOFMEMORY);
@@ -2007,7 +1984,7 @@ exit:
     if(params->result == S_FALSE && !params->fmt_out)
         params->result = AUDCLNT_E_UNSUPPORTED_FORMAT;
 
-    if(params->result == S_FALSE && params->fmt_out) {
+    if(params->result == S_FALSE) {
         closest->Format.nBlockAlign = closest->Format.nChannels * closest->Format.wBitsPerSample / 8;
         closest->Format.nAvgBytesPerSec = closest->Format.nBlockAlign * closest->Format.nSamplesPerSec;
         if(closest->Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE)
@@ -2146,7 +2123,7 @@ static NTSTATUS alsa_get_device_period(void *args)
     if (params->def_period)
         *params->def_period = def_period;
     if (params->min_period)
-        *params->min_period = def_period;
+        *params->min_period = min_period;
 
     params->result = S_OK;
 
@@ -2497,9 +2474,9 @@ static NTSTATUS alsa_get_prop_value(void *args)
     return STATUS_SUCCESS;
 }
 
-unixlib_entry_t __wine_unix_call_funcs[] =
+const unixlib_entry_t __wine_unix_call_funcs[] =
 {
-    alsa_not_implemented,
+    alsa_process_attach,
     alsa_not_implemented,
     alsa_main_loop,
     alsa_get_endpoint_ids,
@@ -2514,6 +2491,7 @@ unixlib_entry_t __wine_unix_call_funcs[] =
     alsa_get_capture_buffer,
     alsa_release_capture_buffer,
     alsa_is_format_supported,
+    alsa_not_implemented,
     alsa_get_mix_format,
     alsa_get_device_period,
     alsa_get_buffer_size,
@@ -2525,6 +2503,7 @@ unixlib_entry_t __wine_unix_call_funcs[] =
     alsa_set_volumes,
     alsa_set_event_handle,
     alsa_not_implemented,
+    alsa_not_implemented,
     alsa_is_started,
     alsa_get_prop_value,
     alsa_not_implemented,
@@ -2534,6 +2513,8 @@ unixlib_entry_t __wine_unix_call_funcs[] =
     alsa_midi_notify_wait,
     alsa_not_implemented,
 };
+
+C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
 
 #ifdef _WIN64
 
@@ -2951,9 +2932,9 @@ static NTSTATUS alsa_wow64_get_prop_value(void *args)
     return STATUS_SUCCESS;
 }
 
-unixlib_entry_t __wine_unix_call_wow64_funcs[] =
+const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
-    alsa_not_implemented,
+    alsa_process_attach,
     alsa_not_implemented,
     alsa_wow64_main_loop,
     alsa_wow64_get_endpoint_ids,
@@ -2968,6 +2949,7 @@ unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     alsa_wow64_get_capture_buffer,
     alsa_release_capture_buffer,
     alsa_wow64_is_format_supported,
+    alsa_not_implemented,
     alsa_wow64_get_mix_format,
     alsa_wow64_get_device_period,
     alsa_wow64_get_buffer_size,
@@ -2979,6 +2961,7 @@ unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     alsa_wow64_set_volumes,
     alsa_wow64_set_event_handle,
     alsa_not_implemented,
+    alsa_not_implemented,
     alsa_is_started,
     alsa_wow64_get_prop_value,
     alsa_not_implemented,
@@ -2988,5 +2971,7 @@ unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     alsa_wow64_midi_notify_wait,
     alsa_not_implemented,
 };
+
+C_ASSERT(ARRAYSIZE(__wine_unix_call_wow64_funcs) == funcs_count);
 
 #endif /* _WIN64 */

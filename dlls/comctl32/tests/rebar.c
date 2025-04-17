@@ -22,7 +22,6 @@
 #include <windows.h>
 #include <commctrl.h>
 
-#include "wine/heap.h"
 #include "wine/test.h"
 
 static BOOL (WINAPI *pImageList_Destroy)(HIMAGELIST);
@@ -122,6 +121,7 @@ static HWND build_toolbar(int nr, HWND hParent)
 }
 
 static int g_parent_measureitem;
+static RECT g_chevron_rect;
 
 static LRESULT CALLBACK parent_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -130,8 +130,17 @@ static LRESULT CALLBACK parent_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         case WM_NOTIFY:
             {
                 NMHDR *lpnm = (NMHDR *)lParam;
-                if (lpnm->code == RBN_HEIGHTCHANGE)
-                    GetClientRect(lpnm->hwndFrom, &height_change_notify_rect);
+                switch (lpnm->code)
+                {
+                    case RBN_HEIGHTCHANGE:
+                        GetClientRect(lpnm->hwndFrom, &height_change_notify_rect);
+                        break;
+                    case RBN_CHEVRONPUSHED:
+                        g_chevron_rect = ((NMREBARCHEVRON *)lParam)->rc;
+                        break;
+                    default:
+                        break;
+                }
             }
             break;
         case WM_MEASUREITEM:
@@ -215,9 +224,9 @@ static rbsize_result_t rbsize_init(int cleft, int ctop, int cright, int cbottom,
     SetRect(&ret.rcClient, cleft, ctop, cright, cbottom);
     ret.cyBarHeight = cyBarHeight;
     ret.nRows = 0;
-    ret.cyRowHeights = heap_alloc_zero(nRows * sizeof(int));
+    ret.cyRowHeights = calloc(nRows, sizeof(int));
     ret.nBands = 0;
-    ret.bands = heap_alloc_zero(nBands * sizeof(*ret.bands));
+    ret.bands = calloc(nBands, sizeof(*ret.bands));
 
     return ret;
 }
@@ -241,7 +250,7 @@ static rbsize_result_t *rbsize_results;
 
 static void rbsize_results_init(void)
 {
-    rbsize_results = heap_alloc(rbsize_results_num * sizeof(*rbsize_results));
+    rbsize_results = malloc(rbsize_results_num * sizeof(*rbsize_results));
 
     rbsize_results[0] = rbsize_init(0, 0, 672, 0, 0, 0, 0);
 
@@ -428,10 +437,10 @@ static void rbsize_results_free(void)
     int i;
 
     for (i = 0; i < rbsize_results_num; i++) {
-        heap_free(rbsize_results[i].cyRowHeights);
-        heap_free(rbsize_results[i].bands);
+        free(rbsize_results[i].cyRowHeights);
+        free(rbsize_results[i].bands);
     }
-    heap_free(rbsize_results);
+    free(rbsize_results);
     rbsize_results = NULL;
 }
 
@@ -1179,6 +1188,41 @@ static void init_functions(void)
 #undef X
 }
 
+static void test_chevron(void)
+{
+    HWND hRebar;
+    REBARBANDINFOA rbi;
+    /* the gap between the child and the next band */
+    const int REBAR_POST_CHILD = 4;
+
+    hRebar = create_rebar_control(0);
+    rbi.cbSize = REBARBANDINFOA_V6_SIZE;
+    rbi.fMask = RBBIM_CHILD | RBBIM_CHILDSIZE | RBBIM_IDEALSIZE | RBBIM_SIZE | RBBIM_STYLE;
+    rbi.cxIdeal = 128;
+    rbi.cx = rbi.cxIdeal + REBAR_POST_CHILD - 1;
+    rbi.cxMinChild = 100;
+    rbi.cyMinChild = rbi.cxMinChild;
+    rbi.hwndChild = build_toolbar(1, hRebar);
+    rbi.fStyle = RBBS_USECHEVRON | RBBS_NOGRIPPER;
+    SendMessageA(hRebar, RB_INSERTBANDA, 0, (LPARAM)&rbi);
+    SendMessageA(hRebar, RB_INSERTBANDA, 1, (LPARAM)&rbi);
+
+    SetRectEmpty(&g_chevron_rect);
+    SendMessageA(hRebar, RB_PUSHCHEVRON, 0, 0);
+    ok(!IsRectEmpty(&g_chevron_rect), "Unexpected empty chevron rect\n");
+
+    /* increase band width to make child rect width more then ideal value to hide chevron */
+    rbi.fMask = RBBIM_SIZE;
+    rbi.cx = rbi.cx + 1;
+    SendMessageA(hRebar, RB_SETBANDINFOA, 0, (LPARAM)&rbi);
+
+    SetRect(&g_chevron_rect, 1, 1, 2, 2);
+    SendMessageA(hRebar, RB_PUSHCHEVRON, 0, 0);
+    ok(IsRectEmpty(&g_chevron_rect), "Unexpected non-empty chevron rect\n");
+
+    DestroyWindow(hRebar);
+}
+
 START_TEST(rebar)
 {
     MSG msg;
@@ -1202,6 +1246,7 @@ START_TEST(rebar)
     test_layout();
     test_resize();
     test_style();
+    test_chevron();
 
 out:
     PostQuitMessage(0);

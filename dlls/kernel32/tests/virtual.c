@@ -51,7 +51,10 @@ static ULONG  (WINAPI *pRtlRemoveVectoredExceptionHandler)(PVOID);
 static BOOL   (WINAPI *pGetProcessDEPPolicy)(HANDLE, LPDWORD, PBOOL);
 static BOOL   (WINAPI *pIsWow64Process)(HANDLE, PBOOL);
 static NTSTATUS (WINAPI *pNtProtectVirtualMemory)(HANDLE, PVOID *, SIZE_T *, ULONG, ULONG *);
+static NTSTATUS (WINAPI *pNtReadVirtualMemory)(HANDLE,const void *,void *,SIZE_T, SIZE_T *);
+static NTSTATUS (WINAPI *pNtWriteVirtualMemory)(HANDLE, void *, const void *, SIZE_T, SIZE_T *);
 static BOOL  (WINAPI *pPrefetchVirtualMemory)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
+static void  (WINAPI *pFlushProcessWriteBuffers)(void);
 
 /* ############################### */
 
@@ -83,6 +86,7 @@ static void test_VirtualAllocEx(void)
     DWORD old_prot;
     MEMORY_BASIC_INFORMATION info;
     HANDLE hProcess;
+    NTSTATUS status;
 
     /* Same process */
     addr1 = VirtualAllocEx(GetCurrentProcess(), NULL, alloc_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
@@ -113,43 +117,144 @@ static void test_VirtualAllocEx(void)
     b = ReadProcessMemory(hProcess, addr1, dst, alloc_size, &bytes_read);
     ok(b && (bytes_read == alloc_size), "%Iu bytes read\n", bytes_read);
     ok(!memcmp(src, dst, alloc_size), "Data from remote process differs\n");
+    bytes_written = 0xdeadbeef;
+    status = pNtWriteVirtualMemory( hProcess, addr1, src, alloc_size, &bytes_written );
+    ok( status == STATUS_SUCCESS, "wrong status %lx\n", status );
+    ok( bytes_written == alloc_size, "%Iu bytes written\n", bytes_written );
+    bytes_read = 0xdeadbeef;
+    memset( dst, 0, alloc_size );
+    status = pNtReadVirtualMemory( hProcess, addr1, dst, alloc_size, &bytes_read );
+    ok( status == STATUS_SUCCESS, "wrong status %lx\n", status );
+    ok( bytes_read == alloc_size, "%Iu bytes read\n", bytes_read );
+    ok(!memcmp(src, dst, alloc_size), "Data from remote process differs\n");
+
+    /* test 0 length */
+    bytes_written = 0xdeadbeef;
+    b = WriteProcessMemory(hProcess, addr1, src, 0, &bytes_written);
+    ok((b && !bytes_written) || broken(!b && GetLastError() == ERROR_INVALID_PARAMETER), "write failed: %lu\n", GetLastError());
+    bytes_read = 0xdeadbeef;
+    b = ReadProcessMemory(hProcess, addr1, src, 0, &bytes_read);
+    ok(b && !bytes_read, "read failed: %lu\n", GetLastError());
+    bytes_written = 0xdeadbeef;
+    status = pNtWriteVirtualMemory( hProcess, addr1, src, 0, &bytes_written );
+    ok( status == STATUS_SUCCESS, "wrong status %lx\n", status );
+    ok( bytes_written == 0, "%Iu bytes written\n", bytes_written );
+    bytes_read = 0xdeadbeef;
+    status = pNtReadVirtualMemory( hProcess, addr1, src, 0, &bytes_read );
+    ok( status == STATUS_SUCCESS, "wrong status %lx\n", status );
+    ok( !bytes_read, "%Iu bytes read\n", bytes_read );
 
     /* test invalid source buffers */
 
     b = VirtualProtect( src + 0x2000, 0x2000, PAGE_NOACCESS, &old_prot );
     ok( b, "VirtualProtect failed error %lu\n", GetLastError() );
+    bytes_written = 0xdeadbeef;
     b = WriteProcessMemory(hProcess, addr1, src, alloc_size, &bytes_written);
     ok( !b, "WriteProcessMemory succeeded\n" );
     ok( GetLastError() == ERROR_NOACCESS ||
         GetLastError() == ERROR_PARTIAL_COPY, /* vista */
         "wrong error %lu\n", GetLastError() );
     ok( bytes_written == 0, "%Iu bytes written\n", bytes_written );
+    bytes_read = 0xdeadbeef;
     b = ReadProcessMemory(hProcess, addr1, src, alloc_size, &bytes_read);
     ok( !b, "ReadProcessMemory succeeded\n" );
     ok( GetLastError() == ERROR_NOACCESS ||
         GetLastError() == ERROR_PARTIAL_COPY, /* win10 v1607+ */
         "wrong error %lu\n", GetLastError() );
     if (GetLastError() == ERROR_NOACCESS)
-        ok( bytes_read == 0, "%Iu bytes written\n", bytes_read );
+        ok( bytes_read == 0, "%Iu bytes read\n", bytes_read );
+    else
+        ok( bytes_read == 0x2000, "%Iu bytes read\n", bytes_read );
+    bytes_written = 0xdeadbeef;
+    status = pNtWriteVirtualMemory( hProcess, addr1, src, alloc_size, &bytes_written );
+    ok( status == STATUS_PARTIAL_COPY, "wrong status %lx\n", status );
+    ok( bytes_written == 0, "%Iu bytes written\n", bytes_written );
+    bytes_read = 0xdeadbeef;
+    status = pNtReadVirtualMemory( hProcess, addr1, src, alloc_size, &bytes_read );
+    ok( status == STATUS_PARTIAL_COPY || status == STATUS_ACCESS_VIOLATION, "wrong status %lx\n", status );
+    ok( bytes_read == (status == STATUS_PARTIAL_COPY ? 0x2000 : 0), "%Iu bytes read\n", bytes_read );
 
     b = VirtualProtect( src, 0x2000, PAGE_NOACCESS, &old_prot );
     ok( b, "VirtualProtect failed error %lu\n", GetLastError() );
+    bytes_written = 0xdeadbeef;
     b = WriteProcessMemory(hProcess, addr1, src, alloc_size, &bytes_written);
     ok( !b, "WriteProcessMemory succeeded\n" );
     ok( GetLastError() == ERROR_NOACCESS ||
         GetLastError() == ERROR_PARTIAL_COPY, /* vista */
         "wrong error %lu\n", GetLastError() );
     ok( bytes_written == 0, "%Iu bytes written\n", bytes_written );
+    bytes_read = 0xdeadbeef;
     b = ReadProcessMemory(hProcess, addr1, src, alloc_size, &bytes_read);
     ok( !b, "ReadProcessMemory succeeded\n" );
     ok( GetLastError() == ERROR_NOACCESS ||
         GetLastError() == ERROR_PARTIAL_COPY, /* win10 v1607+ */
         "wrong error %lu\n", GetLastError() );
-    if (GetLastError() == ERROR_NOACCESS)
-        ok( bytes_read == 0, "%Iu bytes written\n", bytes_read );
+    ok( bytes_read == 0, "%Iu bytes read\n", bytes_read );
+    bytes_written = 0xdeadbeef;
+    status = pNtWriteVirtualMemory( hProcess, addr1, src, alloc_size, &bytes_written );
+    ok( status == STATUS_PARTIAL_COPY, "wrong status %lx\n", status );
+    ok( bytes_written == 0, "%Iu bytes written\n", bytes_written );
+    bytes_read = 0xdeadbeef;
+    status = pNtReadVirtualMemory( hProcess, addr1, src, alloc_size, &bytes_read );
+    ok( status == STATUS_PARTIAL_COPY || status == STATUS_ACCESS_VIOLATION, "wrong status %lx\n", status );
+    ok( bytes_read == 0, "%Iu bytes read\n", bytes_read );
+    b = VirtualProtect( src, alloc_size, PAGE_READWRITE, &old_prot );
+    ok( b, "VirtualProtect failed error %lu\n", GetLastError() );
 
-    b = VirtualFreeEx(hProcess, addr1, 0, MEM_RELEASE);
-    ok(b != 0, "VirtualFreeEx, error %lu\n", GetLastError());
+    /* test readonly buffers */
+
+    b = VirtualProtectEx( hProcess, addr1, alloc_size, PAGE_READONLY, &old_prot );
+    ok( b, "VirtualProtectEx, error %lu\n", GetLastError() );
+    bytes_written = 0xdeadbeef;
+    b = WriteProcessMemory(hProcess, addr1, src, alloc_size, &bytes_written);
+    ok( !b, "WriteProcessMemory succeeded\n" );
+    if (!b) ok( GetLastError() == ERROR_NOACCESS, "wrong error %lu\n", GetLastError() );
+    ok( bytes_written == 0xdeadbeef, "%Iu bytes written\n", bytes_written );
+    status = pNtWriteVirtualMemory( hProcess, addr1, src, alloc_size, &bytes_written );
+    todo_wine
+    ok( status == STATUS_PARTIAL_COPY || broken(status == STATUS_ACCESS_VIOLATION),
+        "wrong status %lx\n", status );
+    todo_wine
+    ok( bytes_written == 0, "%Iu bytes written\n", bytes_written );
+
+    b = VirtualProtectEx( hProcess, addr1, alloc_size, PAGE_EXECUTE_READ, &old_prot );
+    ok( b, "VirtualProtectEx, error %lu\n", GetLastError() );
+    bytes_written = 0xdeadbeef;
+    b = WriteProcessMemory(hProcess, addr1, src, alloc_size, &bytes_written);
+    ok( b, "WriteProcessMemory failed\n" );
+    ok( bytes_written == alloc_size, "%Iu bytes written\n", bytes_written );
+    bytes_written = 0xdeadbeef;
+    status = pNtWriteVirtualMemory( hProcess, addr1, src, alloc_size, &bytes_written );
+    todo_wine
+    ok( status == STATUS_PARTIAL_COPY || broken(status == STATUS_ACCESS_VIOLATION),
+        "wrong status %lx\n", status );
+    todo_wine
+    ok( bytes_written == 0, "%Iu bytes written\n", bytes_written );
+
+    b = VirtualProtectEx( hProcess, addr1, 0x2000, PAGE_EXECUTE_READWRITE, &old_prot );
+    ok( b, "VirtualProtectEx, error %lu\n", GetLastError() );
+    bytes_written = 0xdeadbeef;
+    b = WriteProcessMemory(hProcess, addr1, src, alloc_size, &bytes_written);
+    todo_wine
+    ok( !b || broken(b), /* <= win10 1507 */ "WriteProcessMemory succeeded\n" );
+    bytes_written = 0xdeadbeef;
+    status = pNtWriteVirtualMemory( hProcess, addr1, src, alloc_size, &bytes_written );
+    todo_wine
+    ok( status == STATUS_PARTIAL_COPY || broken(status == STATUS_SUCCESS), /* <= win10 1507 */
+        "wrong status %lx\n", status );
+    ok( bytes_written == (status ? 0x2000 : alloc_size), "%Iu bytes written\n", bytes_written );
+
+    b = VirtualProtectEx( hProcess, (char *)addr1 + 0x2000, alloc_size - 0x2000, PAGE_READONLY, &old_prot );
+    ok( b, "VirtualProtectEx, error %lu\n", GetLastError() );
+    bytes_written = 0xdeadbeef;
+    b = WriteProcessMemory(hProcess, addr1, src, alloc_size, &bytes_written);
+    todo_wine
+    ok( !b || broken(b), /* <= win10 1507 */ "WriteProcessMemory succeeded\n" );
+    status = pNtWriteVirtualMemory( hProcess, addr1, src, alloc_size, &bytes_written );
+    todo_wine
+    ok( status == STATUS_PARTIAL_COPY || broken(status == STATUS_SUCCESS), /* <= win10 1507 */
+        "wrong status %lx\n", status );
+    ok( bytes_written == (status ? 0x2000 : alloc_size), "%Iu bytes written\n", bytes_written );
 
     VirtualFree( src, 0, MEM_RELEASE );
     VirtualFree( dst, 0, MEM_RELEASE );
@@ -3953,15 +4058,12 @@ static void test_mapping( HANDLE hfile, DWORD sec_flags, BOOL readonly )
                         continue;
                     }
 
-                    todo_wine_if(readonly && page_prot[k] == PAGE_WRITECOPY && view[j].prot != PAGE_WRITECOPY)
                     ok(ret, "VirtualProtect error %ld, map %#lx, view %#lx, requested prot %#lx\n", GetLastError(), page_prot[i], view[j].prot, page_prot[k]);
-                    todo_wine_if(readonly && page_prot[k] == PAGE_WRITECOPY && view[j].prot != PAGE_WRITECOPY)
                     ok(old_prot == prev_prot, "got %#lx, expected %#lx\n", old_prot, prev_prot);
                     prev_prot = actual_prot;
 
                     ret = VirtualQuery(base, &info, sizeof(info));
                     ok(ret, "%ld: VirtualQuery failed %ld\n", j, GetLastError());
-                    todo_wine_if(readonly && page_prot[k] == PAGE_WRITECOPY && view[j].prot != PAGE_WRITECOPY)
                     ok(info.Protect == actual_prot,
                        "VirtualProtect wrong prot, map %#lx, view %#lx, requested prot %#lx got %#lx\n",
                        page_prot[i], view[j].prot, page_prot[k], info.Protect );
@@ -4016,7 +4118,6 @@ static void test_mapping( HANDLE hfile, DWORD sec_flags, BOOL readonly )
             if (!anon_mapping && is_compatible_protection(alloc_prot, PAGE_WRITECOPY))
             {
                 ret = VirtualProtect(base, sec_flags & SEC_IMAGE ? si.dwPageSize : 2*si.dwPageSize, PAGE_WRITECOPY, &old_prot);
-                todo_wine_if(readonly && view[j].prot != PAGE_WRITECOPY)
                 ok(ret, "VirtualProtect error %ld, map %#lx, view %#lx\n", GetLastError(), page_prot[i], view[j].prot);
                 if (ret) *(DWORD*)base = 0xdeadbeef;
                 ret = VirtualQuery(base, &info, sizeof(info));
@@ -4035,7 +4136,6 @@ static void test_mapping( HANDLE hfile, DWORD sec_flags, BOOL readonly )
                 {
                     ret = VirtualQuery((char*)base + si.dwPageSize, &info, sizeof(info));
                     ok(ret, "%ld: VirtualQuery failed %ld\n", j, GetLastError());
-                    todo_wine_if(readonly && view[j].prot != PAGE_WRITECOPY)
                     ok(info.Protect == PAGE_WRITECOPY, "wrong prot, map %#lx, view %#lx got %#lx\n",
                        page_prot[i], view[j].prot, info.Protect);
                 }
@@ -4055,9 +4155,7 @@ static void test_mapping( HANDLE hfile, DWORD sec_flags, BOOL readonly )
                             continue;
                         }
 
-                        todo_wine_if(readonly && page_prot[k] == PAGE_WRITECOPY && view[j].prot != PAGE_WRITECOPY)
                         ok(ret, "VirtualProtect error %ld, map %#lx, view %#lx, requested prot %#lx\n", GetLastError(), page_prot[i], view[j].prot, page_prot[k]);
-                        todo_wine_if(readonly && page_prot[k] == PAGE_WRITECOPY && view[j].prot != PAGE_WRITECOPY)
                         ok(old_prot == prev_prot, "got %#lx, expected %#lx\n", old_prot, prev_prot);
 
                         ret = VirtualQuery(base, &info, sizeof(info));
@@ -4228,7 +4326,7 @@ static void test_PrefetchVirtualMemory(void)
 
     if (!pPrefetchVirtualMemory)
     {
-        skip("no PrefetchVirtualMemory in kernelbase\n");
+        win_skip("no PrefetchVirtualMemory in kernelbase\n");
         return;
     }
 
@@ -4260,6 +4358,214 @@ static void test_PrefetchVirtualMemory(void)
     ret = pPrefetchVirtualMemory( GetCurrentProcess(), 2, entries, 0 );
     ok( ret ||broken( is_wow64 && GetLastError() == ERROR_INVALID_PARAMETER ) /* win10 1507 */,
         "PrefetchVirtualMemory unexpected status on 2 page-aligned entries: %ld\n", GetLastError() );
+}
+
+static void test_ReadProcessMemory(void)
+{
+    BYTE *buf;
+    DWORD old_prot;
+    SIZE_T copied;
+    HANDLE hproc;
+    void *ptr;
+    BOOL ret;
+
+    buf = malloc(2 * si.dwPageSize);
+    ok(buf != NULL, "OOM\n");
+    ret = DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(),
+            &hproc, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    ok(ret, "DuplicateHandle failed %lu\n", GetLastError());
+    ptr = VirtualAlloc(NULL, 2 * si.dwPageSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    ok(ptr != NULL, "Virtual failed %lu\n", GetLastError());
+    ret = VirtualProtect(((BYTE *)ptr) + si.dwPageSize, si.dwPageSize, PAGE_NOACCESS, &old_prot);
+    ok(ret, "VirtualProtect failed %lu\n", GetLastError());
+
+    copied = 1;
+    ret = ReadProcessMemory(GetCurrentProcess(), ptr, buf, 2 * si.dwPageSize, &copied);
+    ok(!ret, "ReadProcessMemory succeeded\n");
+    ok(!copied, "copied = %Id\n", copied);
+    ok(GetLastError() == ERROR_PARTIAL_COPY, "GetLastError() = %lu\n", GetLastError());
+
+    ret = ReadProcessMemory(GetCurrentProcess(), ptr, buf, si.dwPageSize, &copied);
+    ok(ret, "ReadProcessMemory failed %lu\n", GetLastError());
+    ok(copied == si.dwPageSize, "copied = %Id\n", copied);
+
+    ret = ReadProcessMemory(hproc, ptr, buf, 2 * si.dwPageSize, &copied);
+    todo_wine ok(!ret, "ReadProcessMemory succeeded\n");
+
+    ret = ReadProcessMemory(hproc, ptr, buf, si.dwPageSize, &copied);
+    ok(ret, "ReadProcessMemory failed %lu\n", GetLastError());
+    ok(copied == si.dwPageSize, "copied = %Id\n", copied);
+
+    ret = VirtualFree(ptr, 0, MEM_RELEASE);
+    ok(ret, "VirtualFree failed %lu\n", GetLastError());
+    CloseHandle(hproc);
+    free(buf);
+}
+
+struct sbtestshared
+{
+    /* Number of slots per thread */
+    unsigned int num_slots;
+
+    /* Number of generations (iterations per each slot) */
+    unsigned int num_generations;
+
+    /* Stores from threads */
+    LONG *wrote;
+
+    /* Observations from threads */
+    LONG *read;
+
+    /* Number of observed reorderings (witnesses) in the SB litmus test.
+     * Note: unobservable reorderings are not counted. */
+    LONG *reorderings;
+};
+
+struct sbtestparams
+{
+    struct sbtestshared *shared;
+    unsigned int th_id;
+    void (WINAPI *barrier)(void);
+};
+
+static DWORD CALLBACK sbtest_thread_proc( void *arg )
+{
+    const struct sbtestparams *params = arg;
+    const struct sbtestshared s = *params->shared;
+    const unsigned int th_id = params->th_id;
+    void (WINAPI *const barrier)(void) = params->barrier;
+    unsigned int slot = 0, gen = 0;
+
+    for (;;)
+    {
+        LONG read_l, read_r;
+
+        /* Access slots in reverse order to avoid prefetching */
+        if (!slot--)
+        {
+            if (gen++ >= s.num_generations) break;
+            slot = s.num_slots - 1;
+        }
+
+        WriteRelease(&s.wrote[th_id * s.num_slots + slot], gen);
+        (*barrier)();
+        read_l = (gen << 1) | (ReadAcquire(&s.wrote[(th_id ^ 1) * s.num_slots + slot]) == gen);
+
+        WriteRelease(&s.read[th_id * s.num_slots + slot], read_l);
+
+        while (((read_r = ReadAcquire(&s.read[(th_id ^ 1) * s.num_slots + slot])) & ~1) != (gen << 1))
+            YieldProcessor();
+
+        /* fairly distribute testing overhead across threads */
+        if ((slot & 1) == th_id)
+        {
+            if (!(read_l & 1) && !(read_r & 1))
+                InterlockedIncrement( s.reorderings );
+        }
+    }
+
+    return 0;
+}
+
+#ifdef _MSC_VER
+
+#pragma intrinsic(_ReadWriteBarrier)
+void _ReadWriteBarrier(void);
+
+static void WINAPI compiler_barrier(void)
+{
+#pragma warning(suppress:4996)
+    _ReadWriteBarrier();
+}
+
+#else  /* _MSC_VER */
+
+static void WINAPI compiler_barrier(void)
+{
+    __asm__ __volatile__("" ::: "memory");
+}
+
+#endif  /* _MSC_VER */
+
+static LONG store_buffer_litmus_test( void (*WINAPI barrier0)(void), void (*WINAPI barrier1)(void) )
+{
+    LONG reorderings = 0;
+    struct sbtestshared shared = {
+        /* Should be big enough to avoid false sharing */
+        .num_slots = 64,
+
+        /* Increase if flaky, decrease if slow */
+        .num_generations = 32768,
+
+        .reorderings = &reorderings,
+    };
+    struct sbtestparams pars[2];
+    HANDLE threads[2];
+    unsigned int i;
+    DWORD ret;
+
+    shared.wrote = VirtualAlloc( NULL, ARRAY_SIZE(threads) * shared.num_slots * sizeof(*shared.wrote),
+                                 MEM_COMMIT, PAGE_READWRITE );
+    ok( shared.wrote != NULL, "VirtualAlloc failed: %lu\n", GetLastError() );
+
+    shared.read = VirtualAlloc( NULL, ARRAY_SIZE(threads) * shared.num_slots * sizeof(*shared.read),
+                                MEM_COMMIT, PAGE_READWRITE );
+    ok( shared.read != NULL, "VirtualAlloc failed: %lu\n", GetLastError() );
+
+    for (i = 0; i < ARRAY_SIZE(threads); i++)
+    {
+        pars[i].shared = &shared;
+        pars[i].th_id = i;
+        pars[i].barrier = i == 0 ? barrier0 : barrier1;
+        threads[i] = CreateThread( NULL, 0, sbtest_thread_proc, &pars[i], 0, NULL );
+        ok( threads[i] != NULL, "CreateThread failed: %lu\n", GetLastError() );
+    }
+
+    ret = WaitForMultipleObjects( ARRAY_SIZE(threads), threads, TRUE, INFINITE );
+    ok( ret == WAIT_OBJECT_0, "WaitForMultipleObjects failed: %lu\n", GetLastError() );
+
+    for (i = 0; i < ARRAY_SIZE(threads); i++)
+    {
+        CloseHandle( threads[i] );
+    }
+
+    ret = VirtualFree( shared.read, 0, MEM_RELEASE );
+    ok( ret, "VirtualFree failed: %lu\n", GetLastError() );
+
+    ret = VirtualFree( shared.wrote, 0, MEM_RELEASE );
+    ok( ret, "VirtualFree failed: %lu\n", GetLastError() );
+
+    return reorderings;
+}
+
+static void test_FlushProcessWriteBuffers(void)
+{
+    LONG reorderings;
+    unsigned int i;
+
+    if (!pFlushProcessWriteBuffers)
+    {
+        win_skip("no FlushProcessWriteBuffers in kernel32\n");
+        return;
+    }
+
+    /* simple stress test */
+    for (i = 0; i < 128; i++)
+    {
+        pFlushProcessWriteBuffers();
+    }
+
+    if (si.dwNumberOfProcessors == 1)
+    {
+        skip( "single-processor system, cannot test store buffering behavior\n" );
+        return;
+    }
+
+    reorderings = store_buffer_litmus_test( compiler_barrier, compiler_barrier );
+    ok( reorderings, "expected write-read reordering with compiler barrier only (got %ld reorderings)\n", reorderings );
+
+    reorderings = store_buffer_litmus_test( compiler_barrier, pFlushProcessWriteBuffers );
+    ok( !reorderings, "expected sequential consistency with FlushProcessWriteBuffers (got %ld reorderings)\n", reorderings );
 }
 
 START_TEST(virtual)
@@ -4316,7 +4622,10 @@ START_TEST(virtual)
     pRtlAddVectoredExceptionHandler = (void *)GetProcAddress( hntdll, "RtlAddVectoredExceptionHandler" );
     pRtlRemoveVectoredExceptionHandler = (void *)GetProcAddress( hntdll, "RtlRemoveVectoredExceptionHandler" );
     pNtProtectVirtualMemory = (void *)GetProcAddress( hntdll, "NtProtectVirtualMemory" );
+    pNtReadVirtualMemory = (void *)GetProcAddress( hntdll, "NtReadVirtualMemory" );
+    pNtWriteVirtualMemory = (void *)GetProcAddress( hntdll, "NtWriteVirtualMemory" );
     pPrefetchVirtualMemory = (void *)GetProcAddress( hkernelbase, "PrefetchVirtualMemory" );
+    pFlushProcessWriteBuffers = (void *)GetProcAddress( hkernel32, "FlushProcessWriteBuffers" );
 
     GetSystemInfo(&si);
     trace("system page size %#lx\n", si.dwPageSize);
@@ -4341,6 +4650,8 @@ START_TEST(virtual)
     test_IsBadCodePtr();
     test_write_watch();
     test_PrefetchVirtualMemory();
+    test_ReadProcessMemory();
+    test_FlushProcessWriteBuffers();
 #if defined(__i386__) || defined(__x86_64__)
     test_stack_commit();
 #endif

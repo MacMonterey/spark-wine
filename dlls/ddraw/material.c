@@ -143,11 +143,11 @@ static ULONG WINAPI d3d_material3_Release(IDirect3DMaterial3 *iface)
         if (material->Handle)
         {
             wined3d_mutex_lock();
-            ddraw_free_handle(&material->ddraw->d3ddevice->handle_table, material->Handle - 1, DDRAW_HANDLE_MATERIAL);
+            ddraw_free_handle(NULL, material->Handle - 1, DDRAW_HANDLE_MATERIAL);
             wined3d_mutex_unlock();
         }
 
-        heap_free(material);
+        free(material);
     }
 
     return ref;
@@ -300,7 +300,7 @@ static HRESULT WINAPI d3d_material3_GetHandle(IDirect3DMaterial3 *iface,
     material->active_device = device_impl;
     if (!material->Handle)
     {
-        DWORD h = ddraw_allocate_handle(&device_impl->handle_table, material, DDRAW_HANDLE_MATERIAL);
+        DWORD h = ddraw_allocate_handle(NULL, material, DDRAW_HANDLE_MATERIAL);
         if (h == DDRAW_INVALID_HANDLE)
         {
             ERR("Failed to allocate a material handle.\n");
@@ -447,11 +447,11 @@ void material_activate(struct d3d_material *material)
 
     TRACE("Activating material %p.\n", material);
 
-    d3d7mat.u.diffuse = material->mat.u.diffuse;
-    d3d7mat.u1.ambient = material->mat.u1.ambient;
-    d3d7mat.u2.specular = material->mat.u2.specular;
-    d3d7mat.u3.emissive = material->mat.u3.emissive;
-    d3d7mat.u4.power = material->mat.u4.power;
+    d3d7mat.diffuse = material->mat.diffuse;
+    d3d7mat.ambient = material->mat.ambient;
+    d3d7mat.specular = material->mat.specular;
+    d3d7mat.emissive = material->mat.emissive;
+    d3d7mat.power = material->mat.power;
 
     IDirect3DDevice7_SetMaterial(&material->active_device->IDirect3DDevice7_iface, &d3d7mat);
 }
@@ -499,7 +499,7 @@ struct d3d_material *d3d_material_create(struct ddraw *ddraw)
 {
     struct d3d_material *material;
 
-    if (!(material = heap_alloc_zero(sizeof(*material))))
+    if (!(material = calloc(1, sizeof(*material))))
         return NULL;
 
     material->IDirect3DMaterial3_iface.lpVtbl = &d3d_material3_vtbl;

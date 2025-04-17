@@ -79,7 +79,7 @@ static ULONG STDMETHODCALLTYPE dxgi_factory_Release(IWineDXGIFactory *iface)
 
         wined3d_decref(factory->wined3d);
         wined3d_private_store_cleanup(&factory->private_store);
-        heap_free(factory);
+        free(factory);
     }
 
     return refcount;
@@ -587,13 +587,13 @@ HRESULT dxgi_factory_create(REFIID riid, void **factory, BOOL extended)
     struct dxgi_factory *object;
     HRESULT hr;
 
-    if (!(object = heap_alloc_zero(sizeof(*object))))
+    if (!(object = calloc(1, sizeof(*object))))
         return E_OUTOFMEMORY;
 
     if (FAILED(hr = dxgi_factory_init(object, extended)))
     {
         WARN("Failed to initialize factory, hr %#lx.\n", hr);
-        heap_free(object);
+        free(object);
         return hr;
     }
 
@@ -617,6 +617,7 @@ HWND dxgi_factory_get_device_window(struct dxgi_factory *factory)
             ERR("Failed to create a window.\n");
             return NULL;
         }
+        SetWindowPos(factory->device_window, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         TRACE("Created device window %p for factory %p.\n", factory->device_window, factory);
     }
 

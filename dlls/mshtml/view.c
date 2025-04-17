@@ -50,8 +50,8 @@ static void paint_document(HTMLDocumentObj *This)
     RECT rect;
     HDC hdc;
 
-    if(This->window && This->window->base.inner_window && !This->window->base.inner_window->performance_timing->first_paint_time)
-        This->window->base.inner_window->performance_timing->first_paint_time = get_time_stamp();
+    if(This->window && This->window->base.inner_window && !This->window->base.inner_window->first_paint_time)
+        This->window->base.inner_window->first_paint_time = get_time_stamp();
 
     GetClientRect(This->hwnd, &rect);
 
@@ -619,10 +619,7 @@ static HRESULT WINAPI OleDocumentView_Show(IOleDocumentView *iface, BOOL fShow)
         if(This->in_place_active)
             IOleInPlaceObjectWindowless_InPlaceDeactivate(&This->IOleInPlaceObjectWindowless_iface);
 
-        if(This->ip_window) {
-            IOleInPlaceUIWindow_Release(This->ip_window);
-            This->ip_window = NULL;
-        }
+        unlink_ref(&This->ip_window);
     }
 
     return S_OK;

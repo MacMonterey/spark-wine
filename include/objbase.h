@@ -210,6 +210,11 @@
 #define DECLARE_INTERFACE_(iface,ibase) interface DECLSPEC_NOVTABLE iface : public ibase
 #define DECLARE_INTERFACE_IID_(iface, ibase, iid) interface DECLSPEC_UUID(iid) DECLSPEC_NOVTABLE iface : public ibase
 
+#define IFACEMETHOD(method)         STDMETHOD(method)
+#define IFACEMETHOD_(type,method)   STDMETHOD_(type,method)
+#define IFACEMETHODV(method)        STDMETHODV(method)
+#define IFACEMETHODV_(type,method)  STDMETHODV_(type,method)
+
 #define BEGIN_INTERFACE
 #define END_INTERFACE
 
@@ -252,6 +257,11 @@
 
 #define BEGIN_INTERFACE
 #define END_INTERFACE
+
+#define IFACEMETHOD(method)         STDMETHOD(method)
+#define IFACEMETHOD_(type,method)   STDMETHOD_(type,method)
+#define IFACEMETHODV(method)        STDMETHODV(method)
+#define IFACEMETHODV_(type,method)  STDMETHODV_(type,method)
 
 #endif  /* __cplusplus && !CINTERFACE */
 
@@ -420,8 +430,8 @@ WINOLE32API HRESULT WINAPI StringFromIID(REFIID riid, LPOLESTR*);
 /*****************************************************************************
  *	COM Server dll - exports
  */
-HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID * ppv) DECLSPEC_HIDDEN;
-HRESULT WINAPI DllCanUnloadNow(void) DECLSPEC_HIDDEN;
+HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID * ppv);
+HRESULT WINAPI DllCanUnloadNow(void);
 
 /*****************************************************************************
  *	Data Object

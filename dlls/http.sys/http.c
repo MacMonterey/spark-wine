@@ -19,13 +19,13 @@
  */
 
 #include <assert.h>
+#include <stdbool.h>
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "wine/http.h"
 #include "winternl.h"
 #include "ddk/wdm.h"
 #include "wine/debug.h"
-#include "wine/heap.h"
 #include "wine/list.h"
 
 static HANDLE directory_obj;
@@ -55,6 +55,7 @@ struct connection
 
     char *buffer;
     unsigned int len, size;
+    bool shutdown;
 
     /* If there is a request fully received and waiting to be read, the
      * "available" parameter will be TRUE. Either there is no queue matching
@@ -112,41 +113,48 @@ static struct list request_queues = LIST_INIT(request_queues);
 static void accept_connection(SOCKET socket)
 {
     struct connection *conn;
-    ULONG true = 1;
+    ULONG one = 1;
     SOCKET peer;
 
     if ((peer = accept(socket, NULL, NULL)) == INVALID_SOCKET)
         return;
 
-    if (!(conn = heap_alloc_zero(sizeof(*conn))))
+    if (!(conn = calloc(1, sizeof(*conn))))
     {
         ERR("Failed to allocate memory.\n");
         shutdown(peer, SD_BOTH);
         closesocket(peer);
         return;
     }
-    if (!(conn->buffer = heap_alloc(8192)))
+    if (!(conn->buffer = malloc(8192)))
     {
         ERR("Failed to allocate buffer memory.\n");
-        heap_free(conn);
+        free(conn);
         shutdown(peer, SD_BOTH);
         closesocket(peer);
         return;
     }
     conn->size = 8192;
     WSAEventSelect(peer, request_event, FD_READ | FD_CLOSE);
-    ioctlsocket(peer, FIONBIO, &true);
+    ioctlsocket(peer, FIONBIO, &one);
     conn->socket = peer;
     list_add_head(&connections, &conn->entry);
 }
 
+static void shutdown_connection(struct connection *conn)
+{
+    free(conn->buffer);
+    shutdown(conn->socket, SD_BOTH);
+    conn->shutdown = true;
+}
+
 static void close_connection(struct connection *conn)
 {
-    heap_free(conn->buffer);
-    shutdown(conn->socket, SD_BOTH);
+    if (!conn->shutdown)
+        shutdown_connection(conn);
     closesocket(conn->socket);
     list_remove(&conn->entry);
-    heap_free(conn);
+    free(conn);
 }
 
 static HTTP_VERB parse_verb(const char *verb, int len)
@@ -259,8 +267,8 @@ static void parse_header(const char *name, int *name_len, const char **value, in
     while (*p == ' ' || *p == '\t') ++p;
     *value = p;
     while (isprint(*p) || *p == '\t') ++p;
-    while (isspace(*p)) --p; /* strip trailing LWS */
-    *value_len = p - *value + 1;
+    while (p > *value && isspace(p[-1])) --p; /* strip trailing LWS */
+    *value_len = p - *value;
 }
 
 #define http_unknown_header http_unknown_header_64
@@ -594,11 +602,23 @@ static void send_400(struct connection *conn)
     strcat(buffer, response_body);
     if (send(conn->socket, buffer, strlen(buffer), 0) < 0)
         ERR("Failed to send 400 response, error %u.\n", WSAGetLastError());
+    shutdown_connection(conn);
 }
 
 static void receive_data(struct connection *conn)
 {
     int len, ret;
+
+    if (conn->shutdown)
+    {
+        WSANETWORKEVENTS events;
+
+        if ((ret = WSAEnumNetworkEvents(conn->socket, NULL, &events)) < 0)
+            ERR("Failed to enumerate network events, error %u.\n", WSAGetLastError());
+        if (events.lNetworkEvents & FD_CLOSE)
+            close_connection(conn);
+        return;
+    }
 
     /* We might be waiting for an IRP, but always call recv() anyway, since we
      * might have been woken up by the socket closing. */
@@ -618,7 +638,7 @@ static void receive_data(struct connection *conn)
     if (conn->available)
         return; /* waiting for an HttpReceiveHttpRequest() call */
     if (conn->req_id != HTTP_NULL_ID)
-        return; /* waiting for an HttpSendHttpResponse() call */
+        return; /* waiting for an HttpSendHttpResponse() or HttpSendResponseEntityBody() call */
 
     TRACE("Received %u bytes of data.\n", len);
 
@@ -629,7 +649,7 @@ static void receive_data(struct connection *conn)
         if (available)
         {
             TRACE("%lu more bytes of data available, trying with larger buffer.\n", available);
-            if (!(conn->buffer = heap_realloc(conn->buffer, conn->len + available)))
+            if (!(conn->buffer = realloc(conn->buffer, conn->len + available)))
             {
                 ERR("Failed to allocate %lu bytes of memory.\n", conn->len + available);
                 close_connection(conn);
@@ -654,7 +674,6 @@ static void receive_data(struct connection *conn)
     {
         WARN("Failed to parse request; shutting down connection.\n");
         send_400(conn);
-        close_connection(conn);
     }
 }
 
@@ -715,7 +734,7 @@ static NTSTATUS http_add_url(struct request_queue *queue, IRP *irp)
     struct listening_socket *listening_sock;
     char *url, *endptr;
     size_t queue_url_len, new_url_len;
-    ULONG true = 1, value;
+    ULONG one = 1, value;
     SOCKET s = INVALID_SOCKET;
 
     TRACE("host %s, context %s.\n", debugstr_a(params->url), wine_dbgstr_longlong(params->context));
@@ -732,9 +751,8 @@ static NTSTATUS http_add_url(struct request_queue *queue, IRP *irp)
     if (strchr(params->url, '?'))
         return STATUS_INVALID_PARAMETER;
 
-    if (!(url = malloc(strlen(params->url)+1)))
+    if (!(url = strdup(params->url)))
         return STATUS_NO_MEMORY;
-    strcpy(url, params->url);
 
     if (!(new_entry = malloc(sizeof(struct url))))
     {
@@ -825,7 +843,7 @@ static NTSTATUS http_add_url(struct request_queue *queue, IRP *irp)
         listening_sock->socket = s;
         list_add_head(&listening_sockets, &listening_sock->entry);
 
-        ioctlsocket(s, FIONBIO, &true);
+        ioctlsocket(s, FIONBIO, &one);
         WSAEventSelect(s, request_event, FD_ACCEPT);
     }
 
@@ -988,24 +1006,28 @@ static NTSTATUS http_send_response(struct request_queue *queue, IRP *irp)
     {
         if (send(conn->socket, response->buffer, response->len, 0) >= 0)
         {
-            if (conn->content_len)
+            /* Clean up the connection if we are not sending more response data. */
+            if (response->response_flags != HTTP_SEND_RESPONSE_FLAG_MORE_DATA)
             {
-                /* Discard whatever entity body is left. */
-                memmove(conn->buffer, conn->buffer + conn->content_len, conn->len - conn->content_len);
-                conn->len -= conn->content_len;
-            }
+                if (conn->content_len)
+                {
+                    /* Discard whatever entity body is left. */
+                    memmove(conn->buffer, conn->buffer + conn->content_len, conn->len - conn->content_len);
+                    conn->len -= conn->content_len;
+                }
 
-            conn->queue = NULL;
-            conn->req_id = HTTP_NULL_ID;
-            WSAEventSelect(conn->socket, request_event, FD_READ | FD_CLOSE);
-            irp->IoStatus.Information = response->len;
-            /* We might have another request already in the buffer. */
-            if (parse_request(conn) < 0)
-            {
-                WARN("Failed to parse request; shutting down connection.\n");
-                send_400(conn);
-                close_connection(conn);
+                conn->queue = NULL;
+                conn->req_id = HTTP_NULL_ID;
+                WSAEventSelect(conn->socket, request_event, FD_READ | FD_CLOSE);
+
+                /* We might have another request already in the buffer. */
+                if (parse_request(conn) < 0)
+                {
+                    WARN("Failed to parse request; shutting down connection.\n");
+                    send_400(conn);
+                }
             }
+            irp->IoStatus.Information = response->len;
         }
         else
         {

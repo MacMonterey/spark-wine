@@ -527,8 +527,10 @@ static HRESULT Array_shift(script_ctx_t *ctx, jsval_t vthis, WORD flags, unsigne
         hres = jsdisp_get_idx(jsthis, i, &v);
         if(hres == DISP_E_UNKNOWNNAME)
             hres = jsdisp_delete_idx(jsthis, i-1);
-        else if(SUCCEEDED(hres))
+        else if(SUCCEEDED(hres)) {
             hres = jsdisp_propput_idx(jsthis, i-1, v);
+            jsval_release(v);
+        }
     }
 
     if(SUCCEEDED(hres)) {
@@ -870,6 +872,8 @@ static HRESULT Array_splice(script_ctx_t *ctx, jsval_t vthis, WORD flags, unsign
         }
 
         add_args = argc-2;
+    } else if (argc && ctx->version >= SCRIPTLANGUAGEVERSION_ES5) {
+        delete_cnt = length-start;
     }
 
     if(r) {
@@ -1148,6 +1152,8 @@ static HRESULT Array_filter(script_ctx_t *ctx, jsval_t vthis, WORD flags, unsign
 
     if(r)
         *r = jsval_obj(arr);
+    else
+        jsdisp_release(arr);
 done:
     jsdisp_release(jsthis);
     return hres;
@@ -1352,14 +1358,16 @@ static HRESULT Array_map(script_ctx_t *ctx, jsval_t vthis, WORD flags, unsigned 
     if(argc > 1)
         context_this = argv[1];
 
-    hres = create_array(ctx, length, &array);
+    hres = create_array(ctx, 0, &array);
     if(FAILED(hres))
         goto done;
 
     for(k = 0; k < length; k++) {
         hres = jsdisp_get_idx(jsthis, k, &callback_args[0]);
-        if(hres == DISP_E_UNKNOWNNAME)
+        if(hres == DISP_E_UNKNOWNNAME) {
+            hres = S_OK;
             continue;
+        }
         if(FAILED(hres))
             break;
 
@@ -1418,8 +1426,10 @@ static HRESULT Array_reduce(script_ctx_t *ctx, jsval_t vthis, WORD flags, unsign
 
     for(k = 0; k < length; k++) {
         hres = jsdisp_get_idx(jsthis, k, &callback_args[1]);
-        if(hres == DISP_E_UNKNOWNNAME)
+        if(hres == DISP_E_UNKNOWNNAME) {
+            hres = S_OK;
             continue;
+        }
         if(FAILED(hres))
             break;
 
@@ -1550,7 +1560,7 @@ static HRESULT Array_unshift(script_ctx_t *ctx, jsval_t vthis, WORD flags, unsig
                 hres = jsdisp_propput_idx(jsthis, i+argc, val);
                 jsval_release(val);
             }else if(hres == DISP_E_UNKNOWNNAME) {
-                hres = IDispatchEx_DeleteMemberByDispID(&jsthis->IDispatchEx_iface, id);
+                hres = IDispatchEx_DeleteMemberByDispID(to_dispex(jsthis), id);
             }
         }
 
@@ -1577,11 +1587,6 @@ static HRESULT Array_unshift(script_ctx_t *ctx, jsval_t vthis, WORD flags, unsig
 done:
     jsdisp_release(jsthis);
     return hres;
-}
-
-static void Array_destructor(jsdisp_t *dispex)
-{
-    free(dispex);
 }
 
 static void Array_on_put(jsdisp_t *dispex, const WCHAR *name)
@@ -1630,12 +1635,10 @@ static const builtin_prop_t Array_props[] = {
 };
 
 static const builtin_info_t Array_info = {
-    JSCLASS_ARRAY,
-    NULL,
-    ARRAY_SIZE(Array_props),
-    Array_props,
-    Array_destructor,
-    Array_on_put
+    .class      = JSCLASS_ARRAY,
+    .props_cnt  = ARRAY_SIZE(Array_props),
+    .props      = Array_props,
+    .on_put     = Array_on_put,
 };
 
 static const builtin_prop_t ArrayInst_props[] = {
@@ -1643,12 +1646,10 @@ static const builtin_prop_t ArrayInst_props[] = {
 };
 
 static const builtin_info_t ArrayInst_info = {
-    JSCLASS_ARRAY,
-    NULL,
-    ARRAY_SIZE(ArrayInst_props),
-    ArrayInst_props,
-    Array_destructor,
-    Array_on_put
+    .class      = JSCLASS_ARRAY,
+    .props_cnt  = ARRAY_SIZE(ArrayInst_props),
+    .props      = ArrayInst_props,
+    .on_put     = Array_on_put,
 };
 
 /* ECMA-262 5.1 Edition    15.4.3.2 */
@@ -1751,12 +1752,10 @@ static const builtin_prop_t ArrayConstr_props[] = {
 };
 
 static const builtin_info_t ArrayConstr_info = {
-    JSCLASS_FUNCTION,
-    Function_value,
-    ARRAY_SIZE(ArrayConstr_props),
-    ArrayConstr_props,
-    NULL,
-    NULL
+    .class     = JSCLASS_FUNCTION,
+    .call      = Function_value,
+    .props_cnt = ARRAY_SIZE(ArrayConstr_props),
+    .props     = ArrayConstr_props,
 };
 
 HRESULT create_array_constr(script_ctx_t *ctx, jsdisp_t *object_prototype, jsdisp_t **ret)

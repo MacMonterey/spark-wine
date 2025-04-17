@@ -1310,8 +1310,8 @@ ok(arr.toString() == "1,2,3,4,5", "arr.splice(2,-1) is " + arr.toString());
 
 arr = [1,2,3,4,5];
 tmp = arr.splice(2);
-ok(tmp.toString() == "", "arr.splice(2,-1) returned " + tmp.toString());
-ok(arr.toString() == "1,2,3,4,5", "arr.splice(2,-1) is " + arr.toString());
+ok(tmp.toString() == "", "arr.splice(2) returned " + tmp.toString());
+ok(arr.toString() == "1,2,3,4,5", "arr.splice(2) is " + arr.toString());
 
 arr = [1,2,3,4,5];
 tmp = arr.splice();
@@ -1965,7 +1965,8 @@ ok(isNaN(tmp), "Math.tan(-Infinity) is not NaN");
                 "{\n  \"prop1\": true,\n  \"prop2\": {\n    \"prop\": \"string\"\n  }\n}"],
         [[{ },undefined," "], "{}"],
         [[[,2,undefined,3,{ },]],"[null,2,null,3,{},null]"],
-        [[[,2,undefined,3,{prop:0},],undefined,"  "],"[\n  null,\n  2,\n  null,\n  3,\n  {\n    \"prop\": 0\n  },\n  null\n]"]
+        [[[,2,undefined,3,{prop:0},],undefined,"  "],"[\n  null,\n  2,\n  null,\n  3,\n  {\n    \"prop\": 0\n  },\n  null\n]"],
+        [[[0,0,0,0,0,0,0,0,0,0,0,0]], "[0,0,0,0,0,0,0,0,0,0,0,0]"]
     ];
 
     var i, s, v, t;
@@ -2010,7 +2011,7 @@ ok(isNaN(tmp), "Math.tan(-Infinity) is not NaN");
         ["true", true],
         ["   \nnull  ", null],
         ["{}", {}],
-        ["\"\\r\\n test\\u1111\"", "\r\n test\u1111"],
+        ["\"\\r\\n test\\u1111\\/\\x20\\45\\'\"", "\r\n test\u1111/ %'"],
         ["{\"x\" :\n true}", {x:true}],
         ["{\"x y\": {}, \"z\": {\"x\":null}}", {"x y":{}, z:{x:null}}],
         ["[]", []],
@@ -2744,6 +2745,7 @@ testException(function() {null.toString();}, "E_OBJECT_EXPECTED");
 testException(function() {RegExp.prototype.toString.call(new Object());}, "E_REGEXP_EXPECTED");
 testException(function() {/a/.lastIndex();}, "E_NOT_FUNC");
 testException(function() {"a".length();}, "E_NOT_FUNC");
+testException(function() {var o = {f: {}}; o.f();}, "E_NOT_FUNC");
 testException(function() {((function() { var f = Number.prototype.toString; return (function() { return f(); }); })())();}, "E_NOT_NUM");
 testException(function() {((function() { var f = Object.prototype.hasOwnProperty; return (function() { return f("f"); }); })())();}, "E_OBJECT_EXPECTED");
 

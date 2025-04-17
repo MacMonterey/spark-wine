@@ -18,6 +18,7 @@
  */
 
 #include <stdarg.h>
+#define WINSCARDAPI
 #include "windef.h"
 #include "winbase.h"
 #include "winscard.h"
@@ -204,7 +205,8 @@ LONG WINAPI SCardReleaseContext( SCARDCONTEXT context )
 
     params.handle = handle->unix_handle;
     ret = UNIX_CALL( scard_release_context, &params );
-    handle->magic = 0;
+    /* Ensure compiler doesn't optimize out the assignment with 0. */
+    SecureZeroMemory( &handle->magic, sizeof(handle->magic) );
     free( handle );
 
     TRACE( "returning %#lx\n", ret );
@@ -290,7 +292,7 @@ LONG WINAPI SCardStatusA( SCARDHANDLE connect, char *names, DWORD *names_len, DW
     params.names_len = &names_len_utf8;
     params.state = &state64;
     params.protocol = &protocol64;
-    params.atr = NULL;
+    params.atr = atr;
     if (!atr_len) params.atr_len = NULL;
     else
     {
@@ -793,7 +795,8 @@ LONG WINAPI SCardDisconnect( SCARDHANDLE connect, DWORD disposition )
     params.disposition = disposition;
     if (!(ret = UNIX_CALL( scard_disconnect, &params )))
     {
-        handle->magic = 0;
+        /* Ensure compiler doesn't optimize out the assignment with 0. */
+        SecureZeroMemory( &handle->magic, sizeof(handle->magic) );
         free( handle );
     }
     TRACE( "returning %#lx\n", ret );

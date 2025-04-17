@@ -20,7 +20,40 @@
 #ifndef __WINE_MSVCRT_H
 #define __WINE_MSVCRT_H
 
+#if _MSVCR_VER >= 140
+#ifndef _FILE_DEFINED
+#define _FILE_DEFINED
+typedef struct _iobuf
+{
+  char* _ptr;
+  char* _base;
+  int   _cnt;
+  int   _flag;
+  int   _file;
+  int   _charbuf;
+  int   _bufsiz;
+  char* _tmpfname;
+} FILE;
+
+#define _IOREAD     0x0001
+#define _IOWRT      0x0002
+#define _IORW       0x0004
+#define _IOEOF      0x0008
+#define _IOERR      0x0010
+#define _IOMYBUF    0x0040
+#define _IOSTRG     0x1000
+#endif
+
+#define MSVCRT__NOBUF 0x0400
+
+#else
+
+#define MSVCRT__NOBUF _IONBF
+
+#endif
+
 #include <errno.h>
+#include <locale.h>
 #include <stdarg.h>
 #include <stdint.h>
 #define _NO_CRT_STDIO_INLINE
@@ -30,10 +63,11 @@
 
 #include "windef.h"
 #include "winbase.h"
+#include "winnls.h"
 #undef strncpy
 #undef wcsncpy
 
-extern BOOL sse2_supported DECLSPEC_HIDDEN;
+extern BOOL sse2_supported;
 
 #define DBL80_MAX_10_EXP 4932
 #define DBL80_MIN_10_EXP -4951
@@ -117,18 +151,17 @@ BOOL __cdecl __CxxRegisterExceptionObject(EXCEPTION_POINTERS*, cxx_frame_info*);
 void __cdecl __CxxUnregisterExceptionObject(cxx_frame_info*, BOOL);
 void CDECL __DestructExceptionObject(EXCEPTION_RECORD*);
 
-#if defined(__x86_64__) && _MSVCR_VER>=140
 void** __cdecl __current_exception(void);
 int* __cdecl __processing_throw(void);
-void __cdecl terminate(void);
 
+#if defined(__x86_64__) && _MSVCR_VER>=140
 BOOL msvcrt_init_handler4(void);
 void msvcrt_attach_handler4(void);
 void msvcrt_free_handler4(void);
 #endif
 
 /* TLS data */
-extern DWORD msvcrt_tls_index DECLSPEC_HIDDEN;
+extern DWORD msvcrt_tls_index;
 
 #define LOCALE_FREE     0x1
 #define LOCALE_THREAD   0x2
@@ -170,8 +203,8 @@ struct __thread_data {
     int                             processing_throw;
     frame_info                     *frame_info_head;
     void                           *unk8[6];
-    LCID                            cached_lcid;
-    BOOL                            cached_sname;
+    BOOL                            cached_sname_match;
+    WCHAR                           cached_sname[LOCALE_NAME_MAX_LENGTH];
     int                             unk9[2];
     DWORD                           cached_cp;
     char                            cached_locale[131];
@@ -184,20 +217,20 @@ struct __thread_data {
 
 typedef struct __thread_data thread_data_t;
 
-extern thread_data_t *CDECL msvcrt_get_thread_data(void) DECLSPEC_HIDDEN;
+extern thread_data_t *CDECL msvcrt_get_thread_data(void);
 
-LCID locale_to_LCID(const char*, unsigned short*, BOOL*) DECLSPEC_HIDDEN;
-extern _locale_t MSVCRT_locale DECLSPEC_HIDDEN;
-extern __lc_time_data cloc_time_data DECLSPEC_HIDDEN;
+BOOL locale_to_sname(const char*, unsigned short*, BOOL*, WCHAR*);
+extern _locale_t MSVCRT_locale;
+extern __lc_time_data cloc_time_data;
 extern unsigned int MSVCRT___lc_codepage;
 extern int MSVCRT___lc_collate_cp;
 extern WORD MSVCRT__ctype [257];
-extern BOOL initial_locale DECLSPEC_HIDDEN;
+extern BOOL initial_locale;
 extern WORD *MSVCRT__pwctype;
 
-void msvcrt_set_errno(int) DECLSPEC_HIDDEN;
+void msvcrt_set_errno(int);
 #if _MSVCR_VER >= 80
-void throw_bad_alloc(void) DECLSPEC_HIDDEN;
+void throw_bad_alloc(void);
 #endif
 
 void __cdecl _purecall(void);
@@ -205,50 +238,51 @@ void __cdecl _amsg_exit(int errnum);
 
 extern char **MSVCRT__environ;
 extern wchar_t **MSVCRT__wenviron;
+extern char **MSVCRT___initenv;
+extern wchar_t **MSVCRT___winitenv;
 
-extern char ** msvcrt_SnapshotOfEnvironmentA(char **) DECLSPEC_HIDDEN;
-extern wchar_t ** msvcrt_SnapshotOfEnvironmentW(wchar_t **) DECLSPEC_HIDDEN;
+int env_init(BOOL, BOOL);
 
-wchar_t *msvcrt_wstrdupa(const char *) DECLSPEC_HIDDEN;
+wchar_t *msvcrt_wstrdupa(const char *);
 
 extern unsigned int MSVCRT__commode;
 
 /* FIXME: This should be declared in new.h but it's not an extern "C" so
  * it would not be much use anyway. Even for Winelib applications.
  */
-void* __cdecl operator_new(size_t);
 void __cdecl operator_delete(void*);
+void* __cdecl operator_new(size_t) __WINE_ALLOC_SIZE(1) __WINE_DEALLOC(operator_delete) __WINE_MALLOC;
 int __cdecl _set_new_mode(int mode);
 
-typedef void* (__cdecl *malloc_func_t)(size_t);
+typedef void* (__cdecl __WINE_ALLOC_SIZE(1) *malloc_func_t)(size_t);
 typedef void  (__cdecl *free_func_t)(void*);
 
 /* Setup and teardown multi threaded locks */
-extern void msvcrt_init_mt_locks(void) DECLSPEC_HIDDEN;
-extern void msvcrt_free_locks(void) DECLSPEC_HIDDEN;
+extern void msvcrt_init_mt_locks(void);
+extern void msvcrt_free_locks(void);
 
-extern void msvcrt_init_exception(void*) DECLSPEC_HIDDEN;
-extern BOOL msvcrt_init_locale(void) DECLSPEC_HIDDEN;
-extern void msvcrt_init_math(void*) DECLSPEC_HIDDEN;
-extern void msvcrt_init_io(void) DECLSPEC_HIDDEN;
-extern void msvcrt_free_io(void) DECLSPEC_HIDDEN;
-extern void msvcrt_free_console(void) DECLSPEC_HIDDEN;
-extern void msvcrt_init_args(void) DECLSPEC_HIDDEN;
-extern void msvcrt_free_args(void) DECLSPEC_HIDDEN;
-extern void msvcrt_init_signals(void) DECLSPEC_HIDDEN;
-extern void msvcrt_free_signals(void) DECLSPEC_HIDDEN;
-extern void msvcrt_free_popen_data(void) DECLSPEC_HIDDEN;
-extern BOOL msvcrt_init_heap(void) DECLSPEC_HIDDEN;
-extern void msvcrt_destroy_heap(void) DECLSPEC_HIDDEN;
-extern void msvcrt_init_clock(void) DECLSPEC_HIDDEN;
+extern void msvcrt_init_exception(void*);
+extern BOOL msvcrt_init_locale(void);
+extern void msvcrt_init_math(void*);
+extern void msvcrt_init_io(void);
+extern void msvcrt_free_io(void);
+extern void msvcrt_free_console(void);
+extern void msvcrt_init_args(void);
+extern void msvcrt_free_args(void);
+extern void msvcrt_init_signals(void);
+extern void msvcrt_free_signals(void);
+extern void msvcrt_free_popen_data(void);
+extern BOOL msvcrt_init_heap(void);
+extern void msvcrt_destroy_heap(void);
+extern void msvcrt_init_clock(void);
 
 #if _MSVCR_VER >= 100
-extern void msvcrt_init_concurrency(void*) DECLSPEC_HIDDEN;
-extern void msvcrt_free_concurrency(void) DECLSPEC_HIDDEN;
-extern void msvcrt_free_scheduler_thread(void) DECLSPEC_HIDDEN;
+extern void msvcrt_init_concurrency(void*);
+extern void msvcrt_free_concurrency(void);
+extern void msvcrt_free_scheduler_thread(void);
 #endif
 
-extern BOOL msvcrt_create_io_inherit_block(WORD*, BYTE**) DECLSPEC_HIDDEN;
+extern BOOL msvcrt_create_io_inherit_block(WORD*, BYTE**);
 
 /* run-time error codes */
 #define _RT_STACK       0
@@ -284,14 +318,13 @@ extern BOOL msvcrt_create_io_inherit_block(WORD*, BYTE**) DECLSPEC_HIDDEN;
 #define _RT_CRNL        252
 #define _RT_BANNER      255
 
-extern FILE MSVCRT__iob[];
-
 #define MSVCRT_NO_CONSOLE_FD (-2)
 #define MSVCRT_NO_CONSOLE ((HANDLE)MSVCRT_NO_CONSOLE_FD)
 
-#define MSVCRT_stdin       (MSVCRT__iob+STDIN_FILENO)
-#define MSVCRT_stdout      (MSVCRT__iob+STDOUT_FILENO)
-#define MSVCRT_stderr      (MSVCRT__iob+STDERR_FILENO)
+#if _MSVCR_VER < 140
+extern FILE MSVCRT__iob[];
+#define __acrt_iob_func(idx) (MSVCRT__iob+(idx))
+#endif
 
 /* internal file._flag flags */
 #define MSVCRT__USERBUF  0x0100
@@ -299,14 +332,14 @@ extern FILE MSVCRT__iob[];
 
 #define _MAX__TIME64_T    (((__time64_t)0x00000007 << 32) | 0x93406FFF)
 
-_locale_t CDECL get_current_locale_noalloc(_locale_t locale) DECLSPEC_HIDDEN;
-void CDECL free_locale_noalloc(_locale_t locale) DECLSPEC_HIDDEN;
-pthreadlocinfo CDECL get_locinfo(void) DECLSPEC_HIDDEN;
-pthreadmbcinfo CDECL get_mbcinfo(void) DECLSPEC_HIDDEN;
-threadmbcinfo* create_mbcinfo(int, LCID, threadmbcinfo*) DECLSPEC_HIDDEN;
-void free_locinfo(pthreadlocinfo) DECLSPEC_HIDDEN;
-void free_mbcinfo(pthreadmbcinfo) DECLSPEC_HIDDEN;
-int __cdecl __crtLCMapStringA(LCID, DWORD, const char*, int, char*, int, unsigned int, int) DECLSPEC_HIDDEN;
+_locale_t CDECL get_current_locale_noalloc(_locale_t locale);
+void CDECL free_locale_noalloc(_locale_t locale);
+pthreadlocinfo CDECL get_locinfo(void);
+pthreadmbcinfo CDECL get_mbcinfo(void);
+threadmbcinfo* create_mbcinfo(int, LCID, threadmbcinfo*);
+void free_locinfo(pthreadlocinfo);
+void free_mbcinfo(pthreadmbcinfo);
+int __cdecl __crtLCMapStringA(LCID, DWORD, const char*, int, char*, int, unsigned int, int);
 
 enum fpmod {
     FP_ROUND_ZERO, /* only used when dropped part contains only zeros */
@@ -324,8 +357,8 @@ struct fpnum {
     enum fpmod mod;
 };
 struct fpnum fpnum_parse(wchar_t (*)(void*), void (*)(void*),
-        void*, pthreadlocinfo, BOOL) DECLSPEC_HIDDEN;
-int fpnum_double(struct fpnum*, double*) DECLSPEC_HIDDEN;
+        void*, pthreadlocinfo, BOOL);
+int fpnum_double(struct fpnum*, double*);
 /* Maybe one day we'll enable the invalid parameter handlers with the full set of information (msvcrXXd)
  *      #define MSVCRT_INVALID_PMT(x) MSVCRT_call_invalid_parameter_handler(x, __FUNCTION__, __FILE__, __LINE__, 0)
  *      #define MSVCRT_CHECK_PMT(x)   ((x) ? TRUE : MSVCRT_INVALID_PMT(#x),FALSE)
@@ -349,35 +382,15 @@ typedef union _printf_arg
 } printf_arg;
 typedef printf_arg (*args_clbk)(void*, int, int, va_list*);
 int pf_printf_a(puts_clbk_a, void*, const char*, _locale_t,
-        DWORD, args_clbk, void*, va_list*) DECLSPEC_HIDDEN;
+        DWORD, args_clbk, void*, va_list*);
 int pf_printf_w(puts_clbk_w, void*, const wchar_t*, _locale_t,
-        DWORD, args_clbk, void*, va_list*) DECLSPEC_HIDDEN;
-int create_positional_ctx_a(void*, const char*, va_list) DECLSPEC_HIDDEN;
-int create_positional_ctx_w(void*, const wchar_t*, va_list) DECLSPEC_HIDDEN;
-printf_arg arg_clbk_valist(void*, int, int, va_list*) DECLSPEC_HIDDEN;
-printf_arg arg_clbk_positional(void*, int, int, va_list*) DECLSPEC_HIDDEN;
+        DWORD, args_clbk, void*, va_list*);
+int create_positional_ctx_a(void*, const char*, va_list);
+int create_positional_ctx_w(void*, const wchar_t*, va_list);
+printf_arg arg_clbk_valist(void*, int, int, va_list*);
+printf_arg arg_clbk_positional(void*, int, int, va_list*);
 
 extern char* __cdecl __unDName(char *,const char*,int,malloc_func_t,free_func_t,unsigned short int);
-
-/* __unDName/__unDNameEx flags */
-#define UNDNAME_COMPLETE                 (0x0000)
-#define UNDNAME_NO_LEADING_UNDERSCORES   (0x0001) /* Don't show __ in calling convention */
-#define UNDNAME_NO_MS_KEYWORDS           (0x0002) /* Don't show calling convention at all */
-#define UNDNAME_NO_FUNCTION_RETURNS      (0x0004) /* Don't show function/method return value */
-#define UNDNAME_NO_ALLOCATION_MODEL      (0x0008)
-#define UNDNAME_NO_ALLOCATION_LANGUAGE   (0x0010)
-#define UNDNAME_NO_MS_THISTYPE           (0x0020)
-#define UNDNAME_NO_CV_THISTYPE           (0x0040)
-#define UNDNAME_NO_THISTYPE              (0x0060)
-#define UNDNAME_NO_ACCESS_SPECIFIERS     (0x0080) /* Don't show access specifier (public/protected/private) */
-#define UNDNAME_NO_THROW_SIGNATURES      (0x0100)
-#define UNDNAME_NO_MEMBER_TYPE           (0x0200) /* Don't show static/virtual specifier */
-#define UNDNAME_NO_RETURN_UDT_MODEL      (0x0400)
-#define UNDNAME_32_BIT_DECODE            (0x0800)
-#define UNDNAME_NAME_ONLY                (0x1000) /* Only report the variable/method name */
-#define UNDNAME_NO_ARGUMENTS             (0x2000) /* Don't show method arguments */
-#define UNDNAME_NO_SPECIAL_SYMS          (0x4000)
-#define UNDNAME_NO_COMPLEX_TYPE          (0x8000)
 
 #define UCRTBASE_PRINTF_MASK ( \
         _CRT_INTERNAL_PRINTF_LEGACY_VSPRINTF_NULL_TERMINATION | \
@@ -399,5 +412,47 @@ extern char* __cdecl __unDName(char *,const char*,int,malloc_func_t,free_func_t,
 #define COOPERATIVE_WAIT_TIMEOUT     ~0
 
 #define INHERIT_THREAD_PRIORITY 0xF000
+
+static inline UINT get_aw_cp(void)
+{
+#if _MSVCR_VER>=140
+    if (___lc_codepage_func() == CP_UTF8) return CP_UTF8;
+#endif
+    return CP_ACP;
+}
+
+static inline int convert_acp_utf8_to_wcs(const char *str, wchar_t *wstr, int len)
+{
+    return MultiByteToWideChar(get_aw_cp(), MB_PRECOMPOSED, str, -1, wstr, len);
+}
+
+static inline int convert_wcs_to_acp_utf8(const wchar_t *wstr, char *str, int len)
+{
+    return WideCharToMultiByte(get_aw_cp(), 0, wstr, -1, str, len, NULL, NULL);
+}
+
+static inline wchar_t* wstrdupa_utf8(const char *str)
+{
+    int len = convert_acp_utf8_to_wcs(str, NULL, 0);
+    wchar_t *wstr;
+
+    if (!len) return NULL;
+    wstr = malloc(len * sizeof(wchar_t));
+    if (!wstr) return NULL;
+    convert_acp_utf8_to_wcs(str, wstr, len);
+    return wstr;
+}
+
+static inline char* astrdupw_utf8(const wchar_t *wstr)
+{
+    int len = convert_wcs_to_acp_utf8(wstr, NULL, 0);
+    char *str;
+
+    if (!len) return NULL;
+    str = malloc(len * sizeof(char));
+    if (!str) return NULL;
+    convert_wcs_to_acp_utf8(wstr, str, len);
+    return str;
+}
 
 #endif /* __WINE_MSVCRT_H */

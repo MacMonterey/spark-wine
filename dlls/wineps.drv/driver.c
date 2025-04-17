@@ -181,8 +181,6 @@ void PSDRV_MergeDevmodes( PSDRV_DEVMODE *dm1, const DEVMODEW *dm2, PRINTERINFO *
             TRACE("Trying to change to unsupported bin %d\n", dm2->dmDefaultSource);
     }
 
-   if (dm2->dmFields & DM_DEFAULTSOURCE )
-       dm1->dmPublic.dmDefaultSource = dm2->dmDefaultSource;
    if (dm2->dmFields & DM_PRINTQUALITY )
        dm1->dmPublic.dmPrintQuality = dm2->dmPrintQuality;
    if (dm2->dmFields & DM_COLOR )
@@ -247,6 +245,7 @@ static INT_PTR CALLBACK PSDRV_PaperDlgProc(HWND hwnd, UINT msg,
   PAGESIZE *ps;
   DUPLEX *duplex;
   RESOLUTION *res;
+  INPUTSLOT *source;
 
   switch(msg) {
   case WM_INITDIALOG:
@@ -336,6 +335,24 @@ static INT_PTR CALLBACK PSDRV_PaperDlgProc(HWND hwnd, UINT msg,
     }
     SendDlgItemMessageW(hwnd, IDD_QUALITY, CB_SETCURSEL, Cursel, 0);
 
+    i = Cursel = 0;
+    LIST_FOR_EACH_ENTRY( source, &di->pi->ppd->InputSlots, INPUTSLOT, entry )
+    {
+        if (!source->InvocationString) continue;
+        SendDlgItemMessageA(hwnd, IDD_TRAY, CB_INSERTSTRING, i, (LPARAM)source->FullName);
+        if (di->pi->Devmode->dmPublic.dmDefaultSource == source->WinBin)
+            Cursel = i;
+        i++;
+    }
+    if (!i)
+    {
+        ShowWindow(GetDlgItem(hwnd, IDD_TRAY), SW_HIDE);
+        ShowWindow(GetDlgItem(hwnd, IDD_TRAY_NAME), SW_HIDE);
+    }
+    else
+    {
+        SendDlgItemMessageA(hwnd, IDD_TRAY, CB_SETCURSEL, Cursel, 0);
+    }
     break;
 
   case WM_COMMAND:
@@ -419,6 +436,21 @@ static INT_PTR CALLBACK PSDRV_PaperDlgProc(HWND hwnd, UINT msg,
         SendMessageW(GetParent(hwnd), PSM_CHANGED, 0, 0);
       }
       break;
+
+    case IDD_TRAY:
+        Cursel = SendDlgItemMessageA(hwnd, LOWORD(wParam), CB_GETCURSEL, 0, 0);
+        i = 0;
+        LIST_FOR_EACH_ENTRY( source, &di->pi->ppd->InputSlots, INPUTSLOT, entry )
+        {
+            if (!source->InvocationString) continue;
+            if (i >= Cursel) break;
+            i++;
+        }
+        TRACE("Setting paper source to item %d WinBin = %d\n", Cursel, source->WinBin);
+        di->dlgdm->dmPublic.dmDefaultSource = source->WinBin;
+        di->dlgdm->dmPublic.dmFields |= DM_DEFAULTSOURCE;
+        SendMessageW(GetParent(hwnd), PSM_CHANGED, 0, 0);
+        break;
     }
     break;
 
@@ -668,6 +700,15 @@ DWORD WINAPI DrvDeviceCapabilities(HANDLE printer, WCHAR *device_name, WORD capa
                 lp[1] = res->resy;
                 lp += 2;
             }
+        }
+        if (!i)
+        {
+            if (output != NULL)
+            {
+                lp[0] = pi->ppd->DefaultResolution;
+                lp[1] = pi->ppd->DefaultResolution;
+            }
+            i = 1;
         }
         ret = i;
         break;

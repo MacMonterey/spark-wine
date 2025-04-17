@@ -1233,6 +1233,7 @@ static void test_connect_pin(void)
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
     ok(compare_media_types(&mt, &req_mt), "Media types didn't match.\n");
     ok(compare_media_types(&testsource.source.pin.mt, &req_mt), "Media types didn't match.\n");
+    FreeMediaType(&mt);
 
     hr = IMediaControl_Pause(control);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
@@ -1281,6 +1282,7 @@ static void test_connect_pin(void)
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
     ok(compare_media_types(&mt, &req_mt), "Media types didn't match.\n");
     ok(compare_media_types(&testsink.sink.pin.mt, &req_mt), "Media types didn't match.\n");
+    FreeMediaType(&mt);
 
     hr = IMediaControl_Pause(control);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
@@ -1675,9 +1677,9 @@ static void test_seeking(void)
     ok(ret, "Failed to delete file, error %lu.\n", GetLastError());
 }
 
-static void test_streaming(void)
+static void test_streaming(const WCHAR *resname)
 {
-    const WCHAR *filename = load_resource(L"test.avi");
+    const WCHAR *filename = load_resource(resname);
     IBaseFilter *filter = create_avi_splitter();
     IFilterGraph2 *graph = connect_input(filter, filename);
     struct testfilter testsink;
@@ -1688,6 +1690,8 @@ static void test_streaming(void)
     HRESULT hr;
     ULONG ref;
     DWORD ret;
+
+    winetest_push_context("File %ls", resname);
 
     testfilter_init(&testsink);
     IFilterGraph2_AddFilter(graph, &testsink.filter.IBaseFilter_iface, L"sink");
@@ -1759,6 +1763,8 @@ static void test_streaming(void)
     ok(!ref, "Got outstanding refcount %ld.\n", ref);
     ret = DeleteFileW(filename);
     ok(ret, "Failed to delete file, error %lu.\n", GetLastError());
+
+    winetest_pop_context();
 }
 
 START_TEST(avisplit)
@@ -1785,7 +1791,8 @@ START_TEST(avisplit)
     test_unconnected_filter_state();
     test_connect_pin();
     test_seeking();
-    test_streaming();
+    test_streaming(L"test.avi");
+    test_streaming(L"test_cinepak.avi");
 
     CoUninitialize();
 }

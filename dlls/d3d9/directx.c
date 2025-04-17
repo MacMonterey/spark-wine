@@ -83,8 +83,8 @@ static ULONG WINAPI d3d9_Release(IDirect3D9Ex *iface)
     {
         wined3d_decref(d3d9->wined3d);
 
-        heap_free(d3d9->wined3d_outputs);
-        heap_free(d3d9);
+        free(d3d9->wined3d_outputs);
+        free(d3d9);
     }
 
     return refcount;
@@ -414,6 +414,9 @@ static HRESULT WINAPI d3d9_CheckDeviceFormatConversion(IDirect3D9Ex *iface, UINT
     if (output_idx >= d3d9->wined3d_output_count)
         return D3DERR_INVALIDCALL;
 
+    if (src_format == dst_format)
+        return S_OK;
+
     wined3d_mutex_lock();
     hr = wined3d_check_device_format_conversion(d3d9->wined3d_outputs[output_idx],
             wined3d_device_type_from_d3d(device_type), wined3dformat_from_d3dformat(src_format),
@@ -489,14 +492,14 @@ static HRESULT WINAPI DECLSPEC_HOTPATCH d3d9_CreateDevice(IDirect3D9Ex *iface, U
     TRACE("iface %p, adapter %u, device_type %#x, focus_window %p, flags %#lx, parameters %p, device %p.\n",
             iface, adapter, device_type, focus_window, flags, parameters, device);
 
-    if (!(object = heap_alloc_zero(sizeof(*object))))
+    if (!(object = calloc(1, sizeof(*object))))
         return E_OUTOFMEMORY;
 
     hr = device_init(object, d3d9, d3d9->wined3d, adapter, device_type, focus_window, flags, parameters, NULL);
     if (FAILED(hr))
     {
         WARN("Failed to initialize device, hr %#lx.\n", hr);
-        heap_free(object);
+        free(object);
         return hr;
     }
 
@@ -610,14 +613,14 @@ static HRESULT WINAPI DECLSPEC_HOTPATCH d3d9_CreateDeviceEx(IDirect3D9Ex *iface,
     TRACE("iface %p, adapter %u, device_type %#x, focus_window %p, flags %#lx, parameters %p, mode %p, device %p.\n",
             iface, adapter, device_type, focus_window, flags, parameters, mode, device);
 
-    if (!(object = heap_alloc_zero(sizeof(*object))))
+    if (!(object = calloc(1, sizeof(*object))))
         return E_OUTOFMEMORY;
 
     hr = device_init(object, d3d9, d3d9->wined3d, adapter, device_type, focus_window, flags, parameters, mode);
     if (FAILED(hr))
     {
         WARN("Failed to initialize device, hr %#lx.\n", hr);
-        heap_free(object);
+        free(object);
         return hr;
     }
 
@@ -680,7 +683,7 @@ static const struct IDirect3D9ExVtbl d3d9_vtbl =
     d3d9_GetAdapterLUID,
 };
 
-BOOL d3d9_init(struct d3d9 *d3d9, BOOL extended)
+BOOL d3d9_init(struct d3d9 *d3d9, BOOL extended, BOOL d3d9on12)
 {
     DWORD flags = WINED3D_PRESENT_CONVERSION | WINED3D_HANDLE_RESTORE | WINED3D_PIXEL_CENTER_INTEGER
             | WINED3D_SRGB_READ_WRITE_CONTROL | WINED3D_LEGACY_UNBOUND_RESOURCE_COLOR
@@ -710,7 +713,7 @@ BOOL d3d9_init(struct d3d9 *d3d9, BOOL extended)
         output_count += wined3d_adapter_get_output_count(wined3d_adapter);
     }
 
-    d3d9->wined3d_outputs = heap_calloc(output_count, sizeof(*d3d9->wined3d_outputs));
+    d3d9->wined3d_outputs = calloc(output_count, sizeof(*d3d9->wined3d_outputs));
     if (!d3d9->wined3d_outputs)
     {
         wined3d_decref(d3d9->wined3d);
@@ -733,6 +736,7 @@ BOOL d3d9_init(struct d3d9 *d3d9, BOOL extended)
 
     wined3d_mutex_unlock();
     d3d9->extended = extended;
+    d3d9->d3d9on12 = d3d9on12;
 
     return TRUE;
 }

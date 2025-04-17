@@ -23,6 +23,7 @@
 #include "winternl.h"
 #include "wincrypt.h"
 #include "winnls.h"
+#include "schannel.h"
 
 #define LDAP_NEEDS_PROTOTYPES
 #include <lber.h>
@@ -205,7 +206,7 @@ struct ld_sb
 typedef struct ldap
 {
     struct ld_sb ld_sb;
-    char *ld_host;
+    WCHAR *ld_host;
     ULONG ld_version;
     UCHAR ld_lberoptions;
     ULONG ld_deref;
@@ -222,20 +223,23 @@ typedef struct ldap
     ULONG ld_options;
 } LDAP, *PLDAP;
 
+typedef BOOLEAN (CDECL QUERYCLIENTCERT)(LDAP *, SecPkgContext_IssuerListInfoEx *, const CERT_CONTEXT **);
 typedef BOOLEAN (CDECL VERIFYSERVERCERT)(LDAP *, const CERT_CONTEXT **);
 
 struct private_data
 {
     LDAP *ctx;
     struct berval **server_ctrls;
-    VERIFYSERVERCERT *cert_callback;
+    QUERYCLIENTCERT *client_cert_callback;
+    VERIFYSERVERCERT *server_cert_callback;
     BOOL connected;
 };
 C_ASSERT(sizeof(struct private_data) < FIELD_OFFSET(struct ld_sb, sb_naddr) - FIELD_OFFSET(struct ld_sb, Reserved1));
 
 #define CTX(ld) (((struct private_data *)ld->ld_sb.Reserved1)->ctx)
 #define SERVER_CTRLS(ld) (((struct private_data *)ld->ld_sb.Reserved1)->server_ctrls)
-#define CERT_CALLBACK(ld) (((struct private_data *)ld->ld_sb.Reserved1)->cert_callback)
+#define CLIENT_CERT_CALLBACK(ld) (((struct private_data *)ld->ld_sb.Reserved1)->client_cert_callback)
+#define SERVER_CERT_CALLBACK(ld) (((struct private_data *)ld->ld_sb.Reserved1)->server_cert_callback)
 #define CONNECTED(ld) (((struct private_data *)ld->ld_sb.Reserved1)->connected)
 
 #define MSG(entry) (entry->Request)
@@ -560,7 +564,7 @@ struct WLDAP32_berval ** CDECL ldap_get_values_lenA( LDAP *, LDAPMessage *,
 struct WLDAP32_berval ** CDECL ldap_get_values_lenW( LDAP *, LDAPMessage *,
                                                      WCHAR * ) __WINE_DEALLOC(WLDAP32_ldap_value_free_len);
 
-ULONG map_error( int ) DECLSPEC_HIDDEN;
+ULONG map_error( int );
 
 static inline char *strWtoU( const WCHAR *str )
 {
@@ -868,6 +872,7 @@ static inline void modfreeU( LDAPMod *mod )
         bvarrayfreeU( mod->mod_vals.modv_bvals );
     else
         strarrayfreeU( mod->mod_vals.modv_strvals );
+    free( mod->mod_type );
     free( mod );
 }
 
@@ -1010,6 +1015,7 @@ static inline void modfreeW( LDAPModW *mod )
         bvarrayfreeW( mod->mod_vals.modv_bvals );
     else
         strarrayfreeW( mod->mod_vals.modv_strvals );
+    free( mod->mod_type );
     free( mod );
 }
 

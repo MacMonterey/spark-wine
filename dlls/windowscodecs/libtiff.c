@@ -650,6 +650,12 @@ static HRESULT CDECL tiff_decoder_get_frame_info(struct decoder* iface, UINT fra
     return hr;
 }
 
+static HRESULT CDECL tiff_decoder_get_decoder_palette(struct decoder *iface, UINT frame, WICColor *colors,
+        UINT *num_colors)
+{
+    return WINCODEC_ERR_PALETTEUNAVAILABLE;
+}
+
 static HRESULT tiff_decoder_read_tile(struct tiff_decoder *This, UINT tile_x, UINT tile_y)
 {
     tsize_t ret;
@@ -1017,7 +1023,7 @@ static HRESULT CDECL tiff_decoder_get_color_context(struct decoder *iface,
     }
 
     *datasize = len;
-    *data = RtlAllocateHeap(GetProcessHeap(), 0, len);
+    *data = malloc(len);
     if (!*data)
         return E_OUTOFMEMORY;
 
@@ -1052,7 +1058,7 @@ static HRESULT CDECL tiff_decoder_get_metadata_blocks(struct decoder *iface,
     result.options |= WICPersistOptionNoCacheStream|DECODER_BLOCK_FULL_STREAM|DECODER_BLOCK_READER_CLSID;
     result.reader_clsid = CLSID_WICIfdMetadataReader;
 
-    *blocks = RtlAllocateHeap(GetProcessHeap(), 0, sizeof(**blocks));
+    *blocks = malloc(sizeof(**blocks));
     **blocks = result;
 
     return S_OK;
@@ -1063,12 +1069,13 @@ static void CDECL tiff_decoder_destroy(struct decoder* iface)
     struct tiff_decoder *This = impl_from_decoder(iface);
     if (This->tiff) TIFFClose(This->tiff);
     free(This->cached_tile);
-    RtlFreeHeap(GetProcessHeap(), 0, This);
+    free(This);
 }
 
 static const struct decoder_funcs tiff_decoder_vtable = {
     tiff_decoder_initialize,
     tiff_decoder_get_frame_info,
+    tiff_decoder_get_decoder_palette,
     tiff_decoder_copy_pixels,
     tiff_decoder_get_metadata_blocks,
     tiff_decoder_get_color_context,
@@ -1079,7 +1086,7 @@ HRESULT CDECL tiff_decoder_create(struct decoder_info *info, struct decoder **re
 {
     struct tiff_decoder *This;
 
-    This = RtlAllocateHeap(GetProcessHeap(), 0, sizeof(*This));
+    This = malloc(sizeof(*This));
     if (!This) return E_OUTOFMEMORY;
 
     This->decoder.vtable = &tiff_decoder_vtable;
@@ -1300,7 +1307,7 @@ static void CDECL tiff_encoder_destroy(struct encoder* iface)
     struct tiff_encoder *This = impl_from_encoder(iface);
 
     if (This->tiff) TIFFClose(This->tiff);
-    RtlFreeHeap(GetProcessHeap(), 0, This);
+    free(This);
 }
 
 static const struct encoder_funcs tiff_encoder_vtable = {
@@ -1317,7 +1324,7 @@ HRESULT CDECL tiff_encoder_create(struct encoder_info *info, struct encoder **re
 {
     struct tiff_encoder *This;
 
-    This = RtlAllocateHeap(GetProcessHeap(), 0, sizeof(*This));
+    This = malloc(sizeof(*This));
     if (!This) return E_OUTOFMEMORY;
 
     This->encoder.vtable = &tiff_encoder_vtable;

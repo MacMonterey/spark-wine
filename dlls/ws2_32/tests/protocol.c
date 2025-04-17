@@ -27,6 +27,10 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <ws2spi.h>
+#include <bthsdpdef.h>
+#include <bluetoothapis.h>
+#include <bthdef.h>
+#include <ws2bth.h>
 #include <mswsock.h>
 #include <iphlpapi.h>
 
@@ -43,6 +47,7 @@ static const char *(WINAPI *p_inet_ntop)(int family, void *addr, char *string, U
 static const WCHAR *(WINAPI *pInetNtopW)(int family, void *addr, WCHAR *string, ULONG size);
 static int (WINAPI *p_inet_pton)(int family, const char *string, void *addr);
 static int (WINAPI *pInetPtonW)(int family, WCHAR *string, void *addr);
+static int (WINAPI *pWSCGetApplicationCategory)(LPCWSTR path, DWORD path_len, LPCWSTR extra, DWORD extra_len, DWORD *category, INT *err);
 static int (WINAPI *pWSCGetProviderInfo)(GUID *provider, WSC_PROVIDER_INFO_TYPE type, BYTE *info, size_t *size, DWORD flags, INT *err);
 
 /* TCP and UDP over IP fixed set of service flags */
@@ -96,7 +101,7 @@ static void test_WSAEnumProtocolsA(void)
     error = WSAGetLastError();
     ok( error == WSAENOBUFS, "Expected 10055, received %ld\n", error);
 
-    buffer = HeapAlloc( GetProcessHeap(), 0, len );
+    buffer = malloc( len );
 
     if (buffer)
     {
@@ -113,7 +118,7 @@ static void test_WSAEnumProtocolsA(void)
                                 buffer[i].dwServiceFlags1);
         }
 
-        HeapFree( GetProcessHeap(), 0, buffer );
+        free( buffer );
     }
 
     /* Test invalid protocols in the list */
@@ -123,7 +128,7 @@ static void test_WSAEnumProtocolsA(void)
     ok( error == WSAENOBUFS || broken(error == WSAEFAULT) /* NT4 */,
        "Expected 10055, received %ld\n", error);
 
-    buffer = HeapAlloc( GetProcessHeap(), 0, len );
+    buffer = malloc( len );
 
     if (buffer)
     {
@@ -141,7 +146,7 @@ static void test_WSAEnumProtocolsA(void)
                 }
         ok(found == 0x0A, "Expected 2 bits represented as 0xA, received 0x%x\n", found);
 
-        HeapFree( GetProcessHeap(), 0, buffer );
+        free( buffer );
     }
 }
 
@@ -164,7 +169,7 @@ static void test_WSAEnumProtocolsW(void)
     error = WSAGetLastError();
     ok( error == WSAENOBUFS, "Expected 10055, received %ld\n", error);
 
-    buffer = HeapAlloc( GetProcessHeap(), 0, len );
+    buffer = malloc( len );
 
     if (buffer)
     {
@@ -181,7 +186,7 @@ static void test_WSAEnumProtocolsW(void)
                                 buffer[i].dwServiceFlags1);
         }
 
-        HeapFree( GetProcessHeap(), 0, buffer );
+        free( buffer );
     }
 
     /* Test invalid protocols in the list */
@@ -191,7 +196,7 @@ static void test_WSAEnumProtocolsW(void)
     ok( error == WSAENOBUFS || broken(error == WSAEFAULT) /* NT4 */,
        "Expected 10055, received %ld\n", error);
 
-    buffer = HeapAlloc( GetProcessHeap(), 0, len );
+    buffer = malloc( len );
 
     if (buffer)
     {
@@ -209,7 +214,7 @@ static void test_WSAEnumProtocolsW(void)
                 }
         ok(found == 0x0A, "Expected 2 bits represented as 0xA, received 0x%x\n", found);
 
-        HeapFree( GetProcessHeap(), 0, buffer );
+        free( buffer );
     }
 }
 
@@ -1269,6 +1274,23 @@ static void test_WSAAddressToString(void)
         { { 0xab20, 0, 0, 0, 0, 0, 0, 0x120 }, 0x1234, 0xfa81, "[20ab::2001%4660]:33274" },
         { { 0xab20, 0, 0, 0, 0, 0, 0, 0x120 }, 0x1234, 0, "20ab::2001%4660" },
     };
+    static struct
+    {
+        BTH_ADDR address;
+        ULONG port;
+        char output[30];
+    }
+    bluetooth_tests[] =
+    {
+        { 0, 0, "(00:00:00:00:00:00)" },
+        { 0, 200, "(00:00:00:00:00:00):200" },
+        { 0xdeadbeefcafe, 0, "(DE:AD:BE:EF:CA:FE)" },
+        { 0xdeadbeefcafe, 4294967295, "(DE:AD:BE:EF:CA:FE):4294967295" },
+        /* BTH_ADDR values consisting of 8 bytes. */
+        { 0xdeadbeefdeadbeef, 0, "(BE:EF:DE:AD:BE:EF)" },
+        { 0xdeadbeefdeadbeef, 4294967295, "(BE:EF:DE:AD:BE:EF):4294967295" }
+    };
+
     SOCKADDR_IN sockaddr;
     SOCKADDR_IN6 sockaddr6;
     char output[64];
@@ -1362,6 +1384,33 @@ static void test_WSAAddressToString(void)
         ok( !ret, "got error %d\n", WSAGetLastError() );
         ok( !wcscmp( outputW, expected_outputW ), "got string %s\n", debugstr_w(outputW) );
         ok( len == wcslen(expected_outputW) + 1, "got len %lu\n", len );
+
+        winetest_pop_context();
+    }
+
+    for (i = 0; i < ARRAY_SIZE(bluetooth_tests); ++i)
+    {
+        SOCKADDR_BTH addr = {0};
+        const char *exp_outputA = bluetooth_tests[i].output;
+
+        addr.addressFamily = AF_BTH;
+        addr.btAddr = bluetooth_tests[i].address;
+        addr.port = bluetooth_tests[i].port;
+
+        winetest_push_context( "Test %u", i );
+
+        len = sizeof(output);
+        ret = WSAAddressToStringA( (SOCKADDR *)&addr, sizeof(addr), NULL, output, &len );
+        ok( !ret, "got error %d\n", WSAGetLastError() );
+        ok( !strcmp( output, exp_outputA ), "got string %s\n", debugstr_a( output ) );
+        ok( len == strlen( exp_outputA ) + 1, "got len %lu\n", len );
+
+        len = sizeof(outputW);
+        ret = WSAAddressToStringW( (SOCKADDR *)&addr, sizeof(addr), NULL, outputW, &len );
+        MultiByteToWideChar( CP_ACP, 0, exp_outputA, -1, expected_outputW, ARRAY_SIZE(expected_outputW) );
+        ok( !ret, "got error %d\n", WSAGetLastError() );
+        ok( !wcscmp( outputW, expected_outputW ), "got string %s\n", debugstr_w( outputW ) );
+        ok( len == wcslen( expected_outputW ) + 1, "got len %lu\n", len );
 
         winetest_pop_context();
     }
@@ -1917,8 +1966,8 @@ static void test_GetAddrInfoW(void)
     SetLastError(0xdeadbeef);
     result2 = NULL;
     ret = GetAddrInfoW(idn_domain, NULL, &hint, &result2);
-    ok(ret == WSAHOST_NOT_FOUND, "got %d expected WSAHOST_NOT_FOUND\n", ret);
-    ok(WSAGetLastError() == WSAHOST_NOT_FOUND, "expected 11001, got %d\n", WSAGetLastError());
+    ok(ret == WSAHOST_NOT_FOUND || ret == WSATRY_AGAIN, "got %d\n", ret);
+    ok(WSAGetLastError() == ret, "got %d\n", WSAGetLastError());
     ok(result2 == NULL, "got %p\n", result2);
 }
 
@@ -1926,6 +1975,7 @@ static struct completion_routine_test
 {
     WSAOVERLAPPED  *overlapped;
     DWORD           error;
+    DWORD           error2;
     ADDRINFOEXW   **result;
     HANDLE          event;
     DWORD           called;
@@ -1935,7 +1985,7 @@ static void CALLBACK completion_routine(DWORD error, DWORD byte_count, WSAOVERLA
 {
     struct completion_routine_test *test = &completion_routine_test;
 
-    ok(error == test->error, "got %lu\n", error);
+    ok(error == test->error || (test->error2 && error == test->error2), "got %lu\n", error);
     ok(!byte_count, "got %lu\n", byte_count);
     ok(overlapped == test->overlapped, "got %p\n", overlapped);
     ok(overlapped->Internal == test->error, "got %Iu\n", overlapped->Internal);
@@ -2073,6 +2123,7 @@ static void test_GetAddrInfoExW(void)
     overlapped.hEvent = NULL;
     completion_routine_test.overlapped = &overlapped;
     completion_routine_test.error = ERROR_SUCCESS;
+    completion_routine_test.error2 = ERROR_SUCCESS;
     completion_routine_test.result = &result;
     completion_routine_test.event = event;
     completion_routine_test.called = 0;
@@ -2093,6 +2144,7 @@ static void test_GetAddrInfoExW(void)
     result = (void *)0xdeadbeef;
     completion_routine_test.overlapped = &overlapped;
     completion_routine_test.error = WSAHOST_NOT_FOUND;
+    completion_routine_test.error2 = WSANO_DATA;
     completion_routine_test.called = 0;
     ResetEvent(event);
     ret = pGetAddrInfoExW(nxdomain, NULL, NS_DNS, NULL, NULL, &result, NULL, &overlapped, completion_routine, NULL);
@@ -2595,8 +2647,8 @@ static void test_gethostbyname(void)
     ret = GetIpForwardTable(NULL, &route_size, FALSE);
     ok(ret == ERROR_INSUFFICIENT_BUFFER, "GetIpForwardTable failed with a different error: %d\n", ret);
 
-    adapters = HeapAlloc(GetProcessHeap(), 0, adap_size);
-    routes = HeapAlloc(GetProcessHeap(), 0, route_size);
+    adapters = malloc(adap_size);
+    routes = malloc(route_size);
 
     ret = GetAdaptersInfo(adapters, &adap_size);
     ok(ret  == NO_ERROR, "GetAdaptersInfo failed, error: %d\n", ret);
@@ -2633,8 +2685,8 @@ static void test_gethostbyname(void)
     ok(found_default, "failed to find the first IP from gethostbyname!\n");
 
 cleanup:
-    HeapFree(GetProcessHeap(), 0, adapters);
-    HeapFree(GetProcessHeap(), 0, routes);
+    free(adapters);
+    free(routes);
 }
 
 static void test_gethostbyname_hack(void)
@@ -2792,13 +2844,13 @@ static void test_WSAEnumNameSpaceProvidersA(void)
     todo_wine
     ok(error == WSAEFAULT, "Expected 10014, got %lu\n", error);
 
-    name = HeapAlloc(GetProcessHeap(), 0, len);
+    name = malloc(len);
 
     ret = WSAEnumNameSpaceProvidersA(&len, name);
     todo_wine
     ok(ret > 0, "Expected more than zero name space providers\n");
 
-    HeapFree(GetProcessHeap(), 0, name);
+    free(name);
 }
 
 static void test_WSAEnumNameSpaceProvidersW(void)
@@ -2839,7 +2891,7 @@ static void test_WSAEnumNameSpaceProvidersW(void)
     todo_wine
     ok(error == WSAEFAULT, "Expected 10014, got %lu\n", error);
 
-    name = HeapAlloc(GetProcessHeap(), 0, len);
+    name = malloc(len);
 
     ret = WSAEnumNameSpaceProvidersW(&len, name);
     todo_wine
@@ -2868,7 +2920,45 @@ static void test_WSAEnumNameSpaceProvidersW(void)
         }
     }
 
-    HeapFree(GetProcessHeap(), 0, name);
+    free(name);
+}
+
+static void test_WSCGetApplicationCategory(void)
+{
+    int ret;
+    int errcode;
+    DWORD category;
+
+    if (!pWSCGetApplicationCategory)
+    {
+        win_skip("WSCGetApplicationCategory is not available.\n");
+        return;
+    }
+
+    errcode = 0xdeadbeef;
+    ret = pWSCGetApplicationCategory(NULL, 0, NULL, 0, NULL, &errcode);
+    ok(ret == SOCKET_ERROR, "got %d, expected SOCKET_ERROR\n", ret);
+    ok(errcode == WSAEINVAL, "got %d, expected WSAEINVAL\n", errcode);
+
+    errcode = 0xdeadbeef;
+    ret = pWSCGetApplicationCategory(L"", 0, NULL, 0, NULL, &errcode);
+    ok(ret == SOCKET_ERROR, "got %d, expected SOCKET_ERROR\n", ret);
+    todo_wine ok(errcode == WSAEINVAL, "got %d, expected WSAEINVAL\n", errcode);
+
+    errcode = 0xdeadbeef;
+    ret = pWSCGetApplicationCategory(L"", 0, L"", 0, NULL, &errcode);
+    ok(ret == SOCKET_ERROR, "got %d, expected SOCKET_ERROR\n", ret);
+    todo_wine ok(errcode == WSAEINVAL, "got %d, expected WSAEINVAL\n", errcode);
+
+    errcode = 0xdeadbeef;
+    ret = pWSCGetApplicationCategory(L"", 0, NULL, 0, &category, &errcode);
+    ok(ret == SOCKET_ERROR, "got %d, expected SOCKET_ERROR\n", ret);
+    todo_wine ok(errcode == WSAEINVAL, "got %d, expected WSAEINVAL\n", errcode);
+
+    errcode = 0xdeadbeef;
+    ret = pWSCGetApplicationCategory(L"", 0, L"", 0, &category, &errcode);
+    ok(ret == SOCKET_ERROR, "got %d, expected SOCKET_ERROR\n", ret);
+    todo_wine ok(errcode == WSAEINVAL, "got %d, expected WSAEINVAL\n", errcode);
 }
 
 static void test_WSCGetProviderInfo(void)
@@ -3051,6 +3141,7 @@ START_TEST( protocol )
     pInetNtopW = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "InetNtopW");
     p_inet_pton = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "inet_pton");
     pInetPtonW = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "InetPtonW");
+    pWSCGetApplicationCategory = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "WSCGetApplicationCategory");
     pWSCGetProviderInfo = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "WSCGetProviderInfo");
 
     ret = WSAStartup(0x202, &data);
@@ -3083,6 +3174,7 @@ START_TEST( protocol )
 
     test_WSAEnumNameSpaceProvidersA();
     test_WSAEnumNameSpaceProvidersW();
+    test_WSCGetApplicationCategory();
     test_WSCGetProviderInfo();
     test_WSCGetProviderPath();
 

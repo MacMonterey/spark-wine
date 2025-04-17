@@ -36,6 +36,116 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(ntdll);
 
+static BOOL is_equal_sid( const SID *sid1, const SID *sid2 )
+{
+    size_t size1 = offsetof( SID, SubAuthority[sid1->SubAuthorityCount] );
+    size_t size2 = offsetof( SID, SubAuthority[sid2->SubAuthorityCount] );
+    return size1 == size2 && !memcmp( sid1, sid2, size1 );
+}
+
+/***********************************************************************
+ *             NtCreateToken  (NTDLL.@)
+ */
+NTSTATUS WINAPI NtCreateToken( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBUTES *attr,
+                               TOKEN_TYPE type, LUID *token_id, LARGE_INTEGER *expire, TOKEN_USER *user,
+                               TOKEN_GROUPS *groups, TOKEN_PRIVILEGES *privs, TOKEN_OWNER *owner,
+                               TOKEN_PRIMARY_GROUP *group, TOKEN_DEFAULT_DACL *dacl, TOKEN_SOURCE *source)
+{
+    SECURITY_IMPERSONATION_LEVEL level = SecurityAnonymous;
+    unsigned int status, i, *attrs;
+    data_size_t objattr_size, groups_size, size;
+    struct object_attributes *objattr;
+    void *groups_info;
+    BYTE *p;
+    SID *sid;
+    int primary_group = -1;
+
+    TRACE( "(%p,0x%08x,%p,%d,%p,%p,%p,%p,%p,%p,%p,%p,%p)\n", handle, (int)access, attr,
+            type, token_id, expire, user, groups, privs, owner, group, dacl, source );
+
+    *handle = 0;
+    if ((status = alloc_object_attributes( attr, &objattr, &objattr_size ))) return status;
+
+    if (attr->SecurityQualityOfService)
+    {
+        SECURITY_QUALITY_OF_SERVICE *qos = attr->SecurityQualityOfService;
+        TRACE( "ObjectAttributes->SecurityQualityOfService = {%d, %d, %d, %s}\n",
+               (int)qos->Length, qos->ImpersonationLevel, qos->ContextTrackingMode,
+               qos->EffectiveOnly ? "TRUE" : "FALSE");
+        level = qos->ImpersonationLevel;
+    }
+
+    groups_size = groups->GroupCount * sizeof( attrs[0] );
+
+    for (i = 0; i < groups->GroupCount; i++)
+    {
+        SID *group_sid = group->PrimaryGroup;
+        sid = groups->Groups[i].Sid;
+        groups_size += offsetof( SID, SubAuthority[sid->SubAuthorityCount] );
+        if (is_equal_sid( sid, group_sid ))
+            primary_group = i;
+    }
+
+    if (primary_group == -1)
+    {
+        free( objattr );
+        return STATUS_INVALID_PRIMARY_GROUP;
+    }
+
+    groups_info = malloc( groups_size );
+    if (!groups_info)
+    {
+        free( objattr );
+        return STATUS_NO_MEMORY;
+    }
+
+    attrs = (unsigned int *)groups_info;
+    p = (BYTE *)&attrs[groups->GroupCount];
+    for (i = 0; i < groups->GroupCount; i++)
+    {
+        sid = groups->Groups[i].Sid;
+        attrs[i] = groups->Groups[i].Attributes;
+        size = offsetof( SID, SubAuthority[sid->SubAuthorityCount] );
+        memcpy( p, sid, size );
+        p += size;
+    }
+
+    SERVER_START_REQ( create_token )
+    {
+        req->token_id.low_part = token_id->LowPart;
+        req->token_id.high_part = token_id->HighPart;
+        req->access = access;
+        req->primary = (type == TokenPrimary);
+        req->impersonation_level = level;
+        req->expire = expire->QuadPart;
+
+        wine_server_add_data( req, objattr, objattr_size );
+
+        sid = user->User.Sid;
+        wine_server_add_data( req, sid, offsetof( SID, SubAuthority[sid->SubAuthorityCount] ) );
+
+        req->group_count = groups->GroupCount;
+        wine_server_add_data( req, groups_info, groups_size );
+
+        req->primary_group = primary_group;
+
+        req->priv_count = privs->PrivilegeCount;
+        wine_server_add_data( req, privs->Privileges, privs->PrivilegeCount * sizeof(privs->Privileges[0]) );
+
+        if (dacl && dacl->DefaultDacl)
+            wine_server_add_data( req, dacl->DefaultDacl, dacl->DefaultDacl->AclSize );
+
+        status = wine_server_call( req );
+        if (!status) *handle = wine_server_ptr_handle( reply->token );
+    }
+    SERVER_END_REQ;
+
+    free( groups_info );
+    free( objattr );
+
+    return status;
+}
+
 
 /***********************************************************************
  *             NtOpenProcessToken  (NTDLL.@)
@@ -148,6 +258,65 @@ NTSTATUS WINAPI NtDuplicateToken( HANDLE token, ACCESS_MASK access, OBJECT_ATTRI
     return status;
 }
 
+static const char *debugstr_TokenInformationClass( TOKEN_INFORMATION_CLASS class )
+{
+    static const char * const names[] =
+    {
+        NULL,
+        "TokenUser",
+        "TokenGroups",
+        "TokenPrivileges",
+        "TokenOwner",
+        "TokenPrimaryGroup",
+        "TokenDefaultDacl",
+        "TokenSource",
+        "TokenType",
+        "TokenImpersonationLevel",
+        "TokenStatistics",
+        "TokenRestrictedSids",
+        "TokenSessionId",
+        "TokenGroupsAndPrivileges",
+        "TokenSessionReference",
+        "TokenSandBoxInert",
+        "TokenAuditPolicy",
+        "TokenOrigin",
+        "TokenElevationType",
+        "TokenLinkedToken",
+        "TokenElevation",
+        "TokenHasRestrictions",
+        "TokenAccessInformation",
+        "TokenVirtualizationAllowed",
+        "TokenVirtualizationEnabled",
+        "TokenIntegrityLevel",
+        "TokenUIAccess",
+        "TokenMandatoryPolicy",
+        "TokenLogonSid",
+        "TokenIsAppContainer",
+        "TokenCapabilities",
+        "TokenAppContainerSid",
+        "TokenAppContainerNumber",
+        "TokenUserClaimAttributes",
+        "TokenDeviceClaimAttributes",
+        "TokenRestrictedUserClaimAttributes",
+        "TokenRestrictedDeviceClaimAttributes",
+        "TokenDeviceGroups",
+        "TokenRestrictedDeviceGroups",
+        "TokenSecurityAttributes",
+        "TokenIsRestricted",
+        "TokenProcessTrustLevel",
+        "TokenPrivateNameSpace",
+        "TokenSingletonAttributes",
+        "TokenBnoIsolation",
+        "TokenChildProcessFlags",
+        "TokenIsLessPrivilegedAppContainer",
+        "TokenIsSandboxed",
+        "TokenIsAppSilo",
+        "TokenLoggingInformation",
+    };
+
+    if (class < ARRAY_SIZE(names) && names[class]) return names[class];
+    return wine_dbg_sprintf( "%u", class );
+}
 
 /***********************************************************************
  *             NtQueryInformationToken  (NTDLL.@)
@@ -183,7 +352,7 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
         0,    /* TokenVirtualizationAllowed */
         sizeof(DWORD), /* TokenVirtualizationEnabled */
         sizeof(TOKEN_MANDATORY_LABEL) + sizeof(SID), /* TokenIntegrityLevel [sizeof(SID) includes one SubAuthority] */
-        0,    /* TokenUIAccess */
+        sizeof(DWORD), /* TokenUIAccess */
         0,    /* TokenMandatoryPolicy */
         0,    /* TokenLogonSid */
         sizeof(DWORD), /* TokenIsAppContainer */
@@ -204,7 +373,7 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
     ULONG len = 0;
     unsigned int status = STATUS_SUCCESS;
 
-    TRACE( "(%p,%d,%p,%d,%p)\n", token, class, info, (int)length, retlen );
+    TRACE( "(%p,%s,%p,%d,%p)\n", token, debugstr_TokenInformationClass(class), info, (int)length, retlen );
 
     if (class < MaxTokenInfoClass) len = info_len[class];
     if (retlen) *retlen = len;
@@ -455,6 +624,11 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
         }
         break;
 
+    case TokenUIAccess:
+        *(DWORD *)info = 1;
+        FIXME("TokenUIAccess stub!\n");
+        break;
+
     case TokenAppContainerSid:
         {
             TOKEN_APPCONTAINER_INFORMATION *container = info;
@@ -483,7 +657,7 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
         break;
 
     default:
-        ERR( "Unhandled token information class %u\n", class );
+        ERR( "Unhandled token information class %s\n", debugstr_TokenInformationClass(class) );
         return STATUS_NOT_IMPLEMENTED;
     }
     return status;

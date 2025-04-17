@@ -184,7 +184,7 @@ static struct heap *alloc_heap(void)
     if (!(ret = calloc( 1, size ))) return NULL;
 
     ret->magic      = HEAP_MAGIC;
-    InitializeCriticalSection( &ret->cs );
+    InitializeCriticalSectionEx( &ret->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO );
     ret->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": heap.cs");
 
     prop_init( heap_props, count, ret->prop, &ret[1] );
@@ -320,7 +320,7 @@ HRESULT WINAPI WsGetHeapProperty( WS_HEAP *handle, WS_HEAP_PROPERTY_ID id, void 
 }
 
 #define XML_BUFFER_INITIAL_ALLOCATED_SIZE 256
-struct xmlbuf *alloc_xmlbuf( WS_HEAP *heap, SIZE_T size, WS_XML_WRITER_ENCODING_TYPE encoding, WS_CHARSET charset,
+struct xmlbuf *alloc_xmlbuf( WS_HEAP *heap, SIZE_T size, unsigned int encoding, WS_CHARSET charset,
                              const WS_XML_DICTIONARY *dict_static, WS_XML_DICTIONARY *dict )
 {
     struct xmlbuf *ret;

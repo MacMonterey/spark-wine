@@ -31,9 +31,6 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-#define NONAMELESSUNION
-#define NONAMELESSSTRUCT
-
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "windef.h"
@@ -1138,17 +1135,17 @@ NTSTATUS android_dispatch_ioctl( void *arg )
         {
             irp->IoStatus.Information = 0;
             NtUserGetThreadInfo()->driver_data = params->client_id;
-            irp->IoStatus.u.Status = func( irp->AssociatedIrp.SystemBuffer, in_size,
-                                           irpsp->Parameters.DeviceIoControl.OutputBufferLength,
-                                           &irp->IoStatus.Information );
+            irp->IoStatus.Status = func( irp->AssociatedIrp.SystemBuffer, in_size,
+                                         irpsp->Parameters.DeviceIoControl.OutputBufferLength,
+                                         &irp->IoStatus.Information );
             NtUserGetThreadInfo()->driver_data = 0;
         }
-        else irp->IoStatus.u.Status = STATUS_INVALID_PARAMETER;
+        else irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
     }
     else
     {
         FIXME( "ioctl %x not supported\n", (int)irpsp->Parameters.DeviceIoControl.IoControlCode );
-        irp->IoStatus.u.Status = STATUS_NOT_SUPPORTED;
+        irp->IoStatus.Status = STATUS_NOT_SUPPORTED;
     }
     return STATUS_SUCCESS;
 }
@@ -1180,7 +1177,9 @@ void start_android_device(void)
 {
     void *ret_ptr;
     ULONG ret_len;
-    thread = ULongToHandle( KeUserModeCallback( client_start_device, NULL, 0, &ret_ptr, &ret_len ));
+    struct dispatch_callback_params params = {.callback = start_device_callback};
+    if (KeUserDispatchCallback( &params, sizeof(params), &ret_ptr, &ret_len )) return;
+    if (ret_len == sizeof(thread)) thread = *(HANDLE *)ret_ptr;
 }
 
 
@@ -1593,16 +1592,16 @@ void destroy_ioctl_window( HWND hwnd, BOOL opengl )
     android_ioctl( IOCTL_DESTROY_WINDOW, &req, sizeof(req), NULL, NULL );
 }
 
-int ioctl_window_pos_changed( HWND hwnd, const RECT *window_rect, const RECT *client_rect,
-                              const RECT *visible_rect, UINT style, UINT flags, HWND after, HWND owner )
+int ioctl_window_pos_changed( HWND hwnd, const struct window_rects *rects,
+                              UINT style, UINT flags, HWND after, HWND owner )
 {
     struct ioctl_android_window_pos_changed req;
 
     req.hdr.hwnd     = HandleToLong( hwnd );
     req.hdr.opengl   = FALSE;
-    req.window_rect  = *window_rect;
-    req.client_rect  = *client_rect;
-    req.visible_rect = *visible_rect;
+    req.window_rect  = rects->window;
+    req.client_rect  = rects->client;
+    req.visible_rect = rects->visible;
     req.style        = style;
     req.flags        = flags;
     req.after        = HandleToLong( after );

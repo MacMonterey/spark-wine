@@ -80,8 +80,7 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
                 wined3d_stateblock_set_vertex_declaration(device->state,
                         ddraw_find_decl(device->ddraw, D3DFVF_TLVERTEX));
 
-                wined3d_device_apply_stateblock(device->wined3d_device, device->state);
-                d3d_device_sync_surfaces(device);
+                d3d_device_apply_state(device, FALSE);
                 for (i = 0; i < count; ++i)
                     wined3d_device_context_draw(device->immediate_context, p[i].wFirst, p[i].wCount, 0, 0);
 
@@ -147,7 +146,7 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
                 for (i = 0; i < count; ++i)
                 {
                     D3DTRIANGLE *ci = (D3DTRIANGLE *)instr;
-                    TRACE("  v1: %d  v2: %d  v3: %d\n",ci->u1.v1, ci->u2.v2, ci->u3.v3);
+                    TRACE("  v1: %d  v2: %d  v3: %d\n",ci->v1, ci->v2, ci->v3);
                     TRACE("  Flags : ");
                     if (TRACE_ON(ddraw))
                     {
@@ -173,11 +172,11 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
                     switch (primitive_size)
                     {
                         case 3:
-                            indices[(i * primitive_size) + 2] = ci->u3.v3;
+                            indices[(i * primitive_size) + 2] = ci->v3;
                             /* Drop through. */
                         case 2:
-                            indices[(i * primitive_size) + 1] = ci->u2.v2;
-                            indices[(i * primitive_size)    ] = ci->u1.v1;
+                            indices[(i * primitive_size) + 1] = ci->v2;
+                            indices[(i * primitive_size)    ] = ci->v1;
                     }
                     instr += size;
                 }
@@ -189,8 +188,7 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
                 wined3d_stateblock_set_vertex_declaration(device->state,
                         ddraw_find_decl(device->ddraw, D3DFVF_TLVERTEX));
                 wined3d_stateblock_set_index_buffer(device->state, buffer->index_buffer, WINED3DFMT_R16_UINT);
-                wined3d_device_apply_stateblock(device->wined3d_device, device->state);
-                d3d_device_sync_surfaces(device);
+                d3d_device_apply_state(device, FALSE);
                 wined3d_device_context_draw_indexed(device->immediate_context, 0, index_pos, index_count, 0, 0);
 
                 buffer->index_pos = index_pos + index_count;
@@ -209,9 +207,9 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
                     D3DMATRIXMULTIPLY *ci = (D3DMATRIXMULTIPLY *)instr;
                     struct wined3d_matrix *a, *b, *c;
 
-                    a = ddraw_get_object(&device->handle_table, ci->hDestMatrix - 1, DDRAW_HANDLE_MATRIX);
-                    b = ddraw_get_object(&device->handle_table, ci->hSrcMatrix1 - 1, DDRAW_HANDLE_MATRIX);
-                    c = ddraw_get_object(&device->handle_table, ci->hSrcMatrix2 - 1, DDRAW_HANDLE_MATRIX);
+                    a = ddraw_get_object(NULL, ci->hDestMatrix - 1, DDRAW_HANDLE_MATRIX);
+                    b = ddraw_get_object(NULL, ci->hSrcMatrix1 - 1, DDRAW_HANDLE_MATRIX);
+                    c = ddraw_get_object(NULL, ci->hSrcMatrix2 - 1, DDRAW_HANDLE_MATRIX);
 
                     if (!a || !b || !c)
                     {
@@ -235,21 +233,21 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
                     D3DSTATE *ci = (D3DSTATE *)instr;
                     D3DMATRIX *m;
 
-                    m = ddraw_get_object(&device->handle_table, ci->u2.dwArg[0] - 1, DDRAW_HANDLE_MATRIX);
+                    m = ddraw_get_object(NULL, ci->dwArg[0] - 1, DDRAW_HANDLE_MATRIX);
                     if (!m)
                     {
-                        ERR("Invalid matrix handle %#lx.\n", ci->u2.dwArg[0]);
+                        ERR("Invalid matrix handle %#lx.\n", ci->dwArg[0]);
                     }
                     else
                     {
-                        if (ci->u1.dtstTransformStateType == D3DTRANSFORMSTATE_WORLD)
-                            device->world = ci->u2.dwArg[0];
-                        if (ci->u1.dtstTransformStateType == D3DTRANSFORMSTATE_VIEW)
-                            device->view = ci->u2.dwArg[0];
-                        if (ci->u1.dtstTransformStateType == D3DTRANSFORMSTATE_PROJECTION)
-                            device->proj = ci->u2.dwArg[0];
+                        if (ci->dtstTransformStateType == D3DTRANSFORMSTATE_WORLD)
+                            device->world = ci->dwArg[0];
+                        if (ci->dtstTransformStateType == D3DTRANSFORMSTATE_VIEW)
+                            device->view = ci->dwArg[0];
+                        if (ci->dtstTransformStateType == D3DTRANSFORMSTATE_PROJECTION)
+                            device->proj = ci->dwArg[0];
                         IDirect3DDevice3_SetTransform(&device->IDirect3DDevice3_iface,
-                                ci->u1.dtstTransformStateType, m);
+                                ci->dtstTransformStateType, m);
                     }
 
                     instr += size;
@@ -263,7 +261,7 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
                     D3DSTATE *ci = (D3DSTATE *)instr;
 
                     if (FAILED(IDirect3DDevice3_SetLightState(&device->IDirect3DDevice3_iface,
-                            ci->u1.dlstLightStateType, ci->u2.dwArg[0])))
+                            ci->dlstLightStateType, ci->dwArg[0])))
                         WARN("Failed to set light state.\n");
 
                     instr += size;
@@ -277,7 +275,7 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
                     D3DSTATE *ci = (D3DSTATE *)instr;
 
                     if (FAILED(IDirect3DDevice3_SetRenderState(&device->IDirect3DDevice3_iface,
-                            ci->u1.drstRenderStateType, ci->u2.dwArg[0])))
+                            ci->drstRenderStateType, ci->dwArg[0])))
                         WARN("Failed to set render state.\n");
 
                     instr += size;
@@ -311,10 +309,9 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
                             wined3d_stateblock_set_vertex_declaration(device->state,
                                     ddraw_find_decl(device->ddraw, op == D3DPROCESSVERTICES_TRANSFORMLIGHT
                                     ? D3DFVF_VERTEX : D3DFVF_LVERTEX));
-                            wined3d_device_apply_stateblock(device->wined3d_device, device->state);
                             d3d_device_sync_surfaces(device);
-                            wined3d_device_process_vertices(device->wined3d_device, ci->wStart, ci->wDest,
-                                    ci->dwCount, buffer->dst_vertex_buffer, NULL, 0, D3DFVF_TLVERTEX);
+                            wined3d_device_process_vertices(device->wined3d_device, device->state, ci->wStart,
+                                    ci->wDest, ci->dwCount, buffer->dst_vertex_buffer, NULL, 0, D3DFVF_TLVERTEX);
                             break;
 
                         case D3DPROCESSVERTICES_COPY:
@@ -347,14 +344,12 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
 
                     instr += size;
 
-                    if (!(dst = ddraw_get_object(&device->handle_table,
-                            ci->hDestTexture - 1, DDRAW_HANDLE_SURFACE)))
+                    if (!(dst = ddraw_get_object(NULL, ci->hDestTexture - 1, DDRAW_HANDLE_SURFACE)))
                     {
                         WARN("Invalid destination texture handle %#lx.\n", ci->hDestTexture);
                         continue;
                     }
-                    if (!(src = ddraw_get_object(&device->handle_table,
-                            ci->hSrcTexture - 1, DDRAW_HANDLE_SURFACE)))
+                    if (!(src = ddraw_get_object(NULL, ci->hSrcTexture - 1, DDRAW_HANDLE_SURFACE)))
                     {
                         WARN("Invalid source texture handle %#lx.\n", ci->hSrcTexture);
                         continue;
@@ -488,7 +483,7 @@ static ULONG WINAPI d3d_execute_buffer_Release(IDirect3DExecuteBuffer *iface)
     if (!ref)
     {
         if (buffer->need_free)
-            heap_free(buffer->desc.lpData);
+            free(buffer->desc.lpData);
         if (buffer->index_buffer)
             wined3d_buffer_decref(buffer->index_buffer);
         if (buffer->dst_vertex_buffer)
@@ -496,7 +491,7 @@ static ULONG WINAPI d3d_execute_buffer_Release(IDirect3DExecuteBuffer *iface)
             wined3d_buffer_decref(buffer->src_vertex_buffer);
             wined3d_buffer_decref(buffer->dst_vertex_buffer);
         }
-        heap_free(buffer);
+        free(buffer);
     }
 
     return ref;
@@ -780,7 +775,7 @@ HRESULT d3d_execute_buffer_init(struct d3d_execute_buffer *execute_buffer,
     if (!execute_buffer->desc.lpData && execute_buffer->desc.dwBufferSize)
     {
         execute_buffer->need_free = TRUE;
-        if (!(execute_buffer->desc.lpData = heap_alloc_zero(execute_buffer->desc.dwBufferSize)))
+        if (!(execute_buffer->desc.lpData = calloc(1, execute_buffer->desc.dwBufferSize)))
         {
             ERR("Failed to allocate execute buffer data.\n");
             return DDERR_OUTOFMEMORY;

@@ -55,12 +55,12 @@ NTSTATUS open_hkcu_key( const char *path, HANDLE *key )
     if (status) return status;
 
     sid = ((TOKEN_USER *)sid_data)->User.Sid;
-    len = sprintf( buffer, "\\Registry\\User\\S-%u-%u", sid->Revision,
+    len = snprintf( buffer, sizeof(buffer), "\\Registry\\User\\S-%u-%u", sid->Revision,
                    (int)MAKELONG( MAKEWORD( sid->IdentifierAuthority.Value[5], sid->IdentifierAuthority.Value[4] ),
                                   MAKEWORD( sid->IdentifierAuthority.Value[3], sid->IdentifierAuthority.Value[2] )));
     for (i = 0; i < sid->SubAuthorityCount; i++)
-        len += sprintf( buffer + len, "-%u", (int)sid->SubAuthority[i] );
-    len += sprintf( buffer + len, "\\%s", path );
+        len += snprintf( buffer + len, sizeof(buffer) - len, "-%u", (int)sid->SubAuthority[i] );
+    len += snprintf( buffer + len, sizeof(buffer) - len, "\\%s", path );
 
     ascii_to_unicode( bufferW, buffer, len + 1 );
     init_unicode_string( &name, bufferW );
@@ -176,8 +176,8 @@ NTSTATUS WINAPI NtOpenKey( HANDLE *key, ACCESS_MASK access, const OBJECT_ATTRIBU
 NTSTATUS WINAPI NtOpenKeyTransactedEx( HANDLE *key, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
                                        ULONG options, HANDLE transaction )
 {
-    FIXME( "(%p %x %p %x %p)\n", key, (int)access, attr, (int)options, transaction );
-    return STATUS_NOT_IMPLEMENTED;
+    FIXME( "(%p %x %p %x %p) semi-stub\n", key, (int)access, attr, (int)options, transaction );
+    return NtOpenKeyEx( key, access, attr, options );
 }
 
 
@@ -425,6 +425,16 @@ static void copy_key_value_info( KEY_VALUE_INFORMATION_CLASS info_class, void *i
         break;
     }
 
+    case KeyValuePartialInformationAlign64:
+    {
+        KEY_VALUE_PARTIAL_INFORMATION_ALIGN64 keyinfo;
+        keyinfo.Type       = type;
+        keyinfo.DataLength = data_len;
+        length = min( length, (char *)keyinfo.Data - (char *)&keyinfo );
+        memcpy( info, &keyinfo, length );
+        break;
+    }
+
     default:
         break;
     }
@@ -517,6 +527,11 @@ NTSTATUS WINAPI NtQueryValueKey( HANDLE handle, const UNICODE_STRING *name,
     case KeyValuePartialInformation:
         min_size = fixed_size = FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data);
         data_ptr = ((KEY_VALUE_PARTIAL_INFORMATION *)info)->Data;
+        break;
+
+    case KeyValuePartialInformationAlign64:
+        min_size = fixed_size = FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION_ALIGN64, Data);
+        data_ptr = ((KEY_VALUE_PARTIAL_INFORMATION_ALIGN64 *)info)->Data;
         break;
 
     default:

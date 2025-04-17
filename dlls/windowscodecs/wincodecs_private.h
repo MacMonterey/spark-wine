@@ -19,16 +19,12 @@
 #ifndef WINCODECS_PRIVATE_H
 #define WINCODECS_PRIVATE_H
 
+#include <stdbool.h>
+
 #include "wincodec.h"
 #include "wincodecsdk.h"
 
 #include "wine/debug.h"
-
-DEFINE_GUID(CLSID_WineTgaDecoder, 0xb11fc79a,0x67cc,0x43e6,0xa9,0xce,0xe3,0xd5,0x49,0x45,0xd3,0x04);
-
-DEFINE_GUID(GUID_WineContainerFormatTga, 0x0c44fda1,0xa5c5,0x4298,0x96,0x85,0x47,0x3f,0xc1,0x7c,0xd3,0x22);
-
-DEFINE_GUID(GUID_VendorWine, 0xddf46da1,0x7dc1,0x404e,0x98,0xf2,0xef,0xa4,0x8d,0xfc,0x95,0x0a);
 
 extern IID IID_IMILBitmap;
 extern IID IID_IMILBitmapSource;
@@ -129,70 +125,72 @@ DECLARE_INTERFACE_(IMILUnknown2,IUnknown)
 };
 #undef INTERFACE
 
-HRESULT create_instance(const CLSID *clsid, const IID *iid, void **ppv) DECLSPEC_HIDDEN;
+HRESULT create_instance(const CLSID *clsid, const IID *iid, void **ppv);
 
 typedef HRESULT(*class_constructor)(REFIID,void**);
-extern HRESULT FormatConverter_CreateInstance(REFIID riid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT ImagingFactory_CreateInstance(REFIID riid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT BmpDecoder_CreateInstance(REFIID riid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT PngDecoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT PngEncoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT BmpEncoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT DibDecoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT GifDecoder_CreateInstance(REFIID riid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT GifEncoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT IcoDecoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT JpegDecoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT JpegEncoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT TiffDecoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT TiffEncoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT TgaDecoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT DdsDecoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT DdsEncoder_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
+extern HRESULT FormatConverter_CreateInstance(REFIID riid, void** ppv);
+extern HRESULT ImagingFactory_CreateInstance(REFIID riid, void** ppv);
+extern HRESULT BmpDecoder_CreateInstance(REFIID riid, void** ppv);
+extern HRESULT PngDecoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT PngEncoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT BmpEncoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT DibDecoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT GifDecoder_CreateInstance(REFIID riid, void** ppv);
+extern HRESULT GifEncoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT IcoDecoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT JpegDecoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT JpegEncoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT TiffDecoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT TiffEncoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT TgaDecoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT DdsDecoder_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT DdsEncoder_CreateInstance(REFIID iid, void** ppv);
 
 extern HRESULT BitmapImpl_Create(UINT uiWidth, UINT uiHeight,
     UINT stride, UINT datasize, void *view, UINT offset,
     REFWICPixelFormatGUID pixelFormat, WICBitmapCreateCacheOption option,
-    IWICBitmap **ppIBitmap) DECLSPEC_HIDDEN;
-extern HRESULT BitmapScaler_Create(IWICBitmapScaler **scaler) DECLSPEC_HIDDEN;
-extern HRESULT FlipRotator_Create(IWICBitmapFlipRotator **fliprotator) DECLSPEC_HIDDEN;
-extern HRESULT PaletteImpl_Create(IWICPalette **palette) DECLSPEC_HIDDEN;
-extern HRESULT StreamImpl_Create(IWICStream **stream) DECLSPEC_HIDDEN;
-extern HRESULT ColorContext_Create(IWICColorContext **context) DECLSPEC_HIDDEN;
-extern HRESULT ColorTransform_Create(IWICColorTransform **transform) DECLSPEC_HIDDEN;
-extern HRESULT BitmapClipper_Create(IWICBitmapClipper **clipper) DECLSPEC_HIDDEN;
+    IWICBitmap **ppIBitmap);
+extern HRESULT BitmapScaler_Create(IWICBitmapScaler **scaler);
+extern HRESULT FlipRotator_Create(IWICBitmapFlipRotator **fliprotator);
+extern HRESULT PaletteImpl_Create(IWICPalette **palette);
+extern HRESULT StreamImpl_Create(IWICStream **stream);
+extern HRESULT ColorContext_Create(IWICColorContext **context);
+extern HRESULT ColorTransform_Create(IWICColorTransform **transform);
+extern HRESULT BitmapClipper_Create(IWICBitmapClipper **clipper);
+
+extern HRESULT create_stream_wrapper(IStream *input, ULONG offset, IStream **wrapper);
 
 extern HRESULT copy_pixels(UINT bpp, const BYTE *srcbuffer,
     UINT srcwidth, UINT srcheight, INT srcstride,
-    const WICRect *rc, UINT dststride, UINT dstbuffersize, BYTE *dstbuffer) DECLSPEC_HIDDEN;
+    const WICRect *rc, UINT dststride, UINT dstbuffersize, BYTE *dstbuffer);
 
 extern HRESULT configure_write_source(IWICBitmapFrameEncode *iface,
     IWICBitmapSource *source, const WICRect *prc,
     const WICPixelFormatGUID *format,
-    INT width, INT height, double xres, double yres) DECLSPEC_HIDDEN;
+    INT width, INT height, double xres, double yres);
 
 extern HRESULT write_source(IWICBitmapFrameEncode *iface,
     IWICBitmapSource *source, const WICRect *prc,
     const WICPixelFormatGUID *format, UINT bpp, BOOL need_palette,
-    INT width, INT height) DECLSPEC_HIDDEN;
+    INT width, INT height);
 
-extern void reverse_bgr8(UINT bytesperpixel, LPBYTE bits, UINT width, UINT height, INT stride) DECLSPEC_HIDDEN;
+extern void reverse_bgr8(UINT bytesperpixel, LPBYTE bits, UINT width, UINT height, INT stride);
 
-extern HRESULT get_pixelformat_bpp(const GUID *pixelformat, UINT *bpp) DECLSPEC_HIDDEN;
+extern HRESULT get_pixelformat_bpp(const GUID *pixelformat, UINT *bpp);
 
 extern HRESULT CreatePropertyBag2(const PROPBAG2 *options, UINT count,
-                                  IPropertyBag2 **property) DECLSPEC_HIDDEN;
+                                  IPropertyBag2 **property);
 
-extern HRESULT CreateComponentInfo(REFCLSID clsid, IWICComponentInfo **ppIInfo) DECLSPEC_HIDDEN;
-extern void ReleaseComponentInfos(void) DECLSPEC_HIDDEN;
-extern HRESULT CreateComponentEnumerator(DWORD componentTypes, DWORD options, IEnumUnknown **ppIEnumUnknown) DECLSPEC_HIDDEN;
-extern HRESULT get_decoder_info(REFCLSID clsid, IWICBitmapDecoderInfo **info) DECLSPEC_HIDDEN;
+extern HRESULT CreateComponentInfo(REFCLSID clsid, IWICComponentInfo **ppIInfo);
+extern void ReleaseComponentInfos(void);
+extern HRESULT CreateComponentEnumerator(DWORD componentTypes, DWORD options, IEnumUnknown **ppIEnumUnknown);
+extern HRESULT get_decoder_info(REFCLSID clsid, IWICBitmapDecoderInfo **info);
 
 typedef struct BmpDecoder BmpDecoder;
 
-extern HRESULT IcoDibDecoder_CreateInstance(BmpDecoder **ppDecoder) DECLSPEC_HIDDEN;
-extern void BmpDecoder_GetWICDecoder(BmpDecoder *This, IWICBitmapDecoder **ppDecoder) DECLSPEC_HIDDEN;
-extern void BmpDecoder_FindIconMask(BmpDecoder *This, ULONG *mask_offset, int *topdown) DECLSPEC_HIDDEN;
+extern HRESULT IcoDibDecoder_CreateInstance(BmpDecoder **ppDecoder);
+extern void BmpDecoder_GetWICDecoder(BmpDecoder *This, IWICBitmapDecoder **ppDecoder);
+extern void BmpDecoder_FindIconMask(BmpDecoder *This, ULONG *mask_offset, int *topdown);
 
 typedef struct _MetadataItem
 {
@@ -201,9 +199,15 @@ typedef struct _MetadataItem
     PROPVARIANT value;
 } MetadataItem;
 
+enum metadatahandler_flags
+{
+    METADATAHANDLER_IS_WRITER = 0x1,
+    METADATAHANDLER_FIXED_ITEMS = 0x2, /* Items cannot be added or removed. */
+};
+
 typedef struct _MetadataHandlerVtbl
 {
-    int is_writer;
+    DWORD flags;
     const CLSID *clsid;
     HRESULT (*fnLoad)(IStream *stream, const GUID *preferred_vendor,
         DWORD persist_options, MetadataItem **items, DWORD *item_count);
@@ -213,21 +217,35 @@ typedef struct _MetadataHandlerVtbl
         ULARGE_INTEGER *size);
 } MetadataHandlerVtbl;
 
-extern HRESULT MetadataReader_Create(const MetadataHandlerVtbl *vtable, REFIID iid, void** ppv) DECLSPEC_HIDDEN;
+extern HRESULT MetadataReader_Create(const MetadataHandlerVtbl *vtable, REFIID iid, void** ppv);
 
-extern HRESULT UnknownMetadataReader_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT IfdMetadataReader_CreateInstance(REFIID iid, void **ppv) DECLSPEC_HIDDEN;
-extern HRESULT PngChrmReader_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT PngGamaReader_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT PngTextReader_CreateInstance(REFIID iid, void** ppv) DECLSPEC_HIDDEN;
-extern HRESULT LSDReader_CreateInstance(REFIID iid, void **ppv) DECLSPEC_HIDDEN;
-extern HRESULT IMDReader_CreateInstance(REFIID iid, void **ppv) DECLSPEC_HIDDEN;
-extern HRESULT GCEReader_CreateInstance(REFIID iid, void **ppv) DECLSPEC_HIDDEN;
-extern HRESULT APEReader_CreateInstance(REFIID iid, void **ppv) DECLSPEC_HIDDEN;
-extern HRESULT GifCommentReader_CreateInstance(REFIID iid, void **ppv) DECLSPEC_HIDDEN;
-extern HRESULT MetadataQueryReader_CreateInstance(IWICMetadataBlockReader *, const WCHAR *, IWICMetadataQueryReader **) DECLSPEC_HIDDEN;
-extern HRESULT MetadataQueryWriter_CreateInstance(IWICMetadataBlockWriter *, const WCHAR *, IWICMetadataQueryWriter **) DECLSPEC_HIDDEN;
-extern HRESULT stream_initialize_from_filehandle(IWICStream *iface, HANDLE hfile) DECLSPEC_HIDDEN;
+extern HRESULT UnknownMetadataReader_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT UnknownMetadataWriter_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT IfdMetadataReader_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT IfdMetadataWriter_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT GpsMetadataReader_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT GpsMetadataWriter_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT ExifMetadataReader_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT ExifMetadataWriter_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT App1MetadataReader_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT App1MetadataWriter_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT PngChrmReader_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT PngGamaReader_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT PngHistReader_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT PngTextReader_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT PngTimeReader_CreateInstance(REFIID iid, void** ppv);
+extern HRESULT LSDReader_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT IMDReader_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT GCEReader_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT APEReader_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT GifCommentReader_CreateInstance(REFIID iid, void **ppv);
+extern HRESULT MetadataQueryReader_CreateInstanceFromBlockReader(IWICMetadataBlockReader *, IWICMetadataQueryReader **);
+extern HRESULT MetadataQueryWriter_CreateInstanceFromBlockWriter(IWICMetadataBlockWriter *, IWICMetadataQueryWriter **);
+extern HRESULT MetadataQueryReader_CreateInstance(IWICMetadataReader *, IWICMetadataQueryReader **);
+extern HRESULT MetadataQueryWriter_CreateInstance(IWICMetadataWriter *, IWICMetadataQueryWriter **);
+extern HRESULT stream_initialize_from_filehandle(IWICStream *iface, HANDLE hfile);
+
+extern bool wincodecs_array_reserve(void **elements, size_t *capacity, size_t count, size_t size);
 
 static inline const char *debug_wic_rect(const WICRect *rect)
 {
@@ -239,7 +257,6 @@ extern HMODULE windowscodecs_module;
 
 HRESULT read_png_chunk(IStream *stream, BYTE *type, BYTE **data, ULONG *data_size);
 
-/* unixlib iface */
 struct decoder_funcs;
 
 struct decoder_info
@@ -249,8 +266,12 @@ struct decoder_info
     CLSID clsid;
 };
 
-#define DECODER_FLAGS_CAPABILITY_MASK 0x1f
-#define DECODER_FLAGS_UNSUPPORTED_COLOR_CONTEXT 0x80000000
+enum decoder_flags
+{
+    DECODER_FLAGS_CAPABILITY_MASK = 0x1f,
+    DECODER_FLAGS_UNSUPPORTED_COLOR_CONTEXT = 0x80000000,
+    DECODER_FLAGS_METADATA_AT_DECODER = 0x40000000,
+};
 
 struct decoder_stat
 {
@@ -269,9 +290,14 @@ struct decoder_frame
     WICColor palette[256];
 };
 
-#define DECODER_BLOCK_OPTION_MASK 0x0001000F
-#define DECODER_BLOCK_FULL_STREAM 0x80000000
-#define DECODER_BLOCK_READER_CLSID 0x40000000
+enum decoder_block_options
+{
+    DECODER_BLOCK_OPTION_MASK = 0x0001000F,
+    DECODER_BLOCK_FULL_STREAM = 0x80000000,
+    DECODER_BLOCK_READER_CLSID = 0x40000000,
+    DECODER_BLOCK_OFFSET_IS_PTR = 0x20000000,
+};
+
 struct decoder_block
 {
     ULONGLONG offset;
@@ -289,6 +315,7 @@ struct decoder_funcs
 {
     HRESULT (CDECL *initialize)(struct decoder* This, IStream *stream, struct decoder_stat *st);
     HRESULT (CDECL *get_frame_info)(struct decoder* This, UINT frame, struct decoder_frame *info);
+    HRESULT (CDECL *get_decoder_palette)(struct decoder* This, UINT frame, WICColor *colors, UINT *num_colors);
     HRESULT (CDECL *copy_pixels)(struct decoder* This, UINT frame, const WICRect *prc,
         UINT stride, UINT buffersize, BYTE *buffer);
     HRESULT (CDECL *get_metadata_blocks)(struct decoder* This, UINT frame, UINT *count,
@@ -306,6 +333,7 @@ HRESULT CDECL stream_write(IStream *stream, const void *buffer, ULONG write, ULO
 HRESULT CDECL decoder_create(const CLSID *decoder_clsid, struct decoder_info *info, struct decoder **result);
 HRESULT CDECL decoder_initialize(struct decoder *This, IStream *stream, struct decoder_stat *st);
 HRESULT CDECL decoder_get_frame_info(struct decoder* This, UINT frame, struct decoder_frame *info);
+HRESULT CDECL decoder_get_decoder_palette(struct decoder* This, UINT frame, WICColor *colors, UINT *num_colors);
 HRESULT CDECL decoder_copy_pixels(struct decoder* This, UINT frame, const WICRect *prc,
     UINT stride, UINT buffersize, BYTE *buffer);
 HRESULT CDECL decoder_get_metadata_blocks(struct decoder* This, UINT frame, UINT *count,
@@ -313,6 +341,15 @@ HRESULT CDECL decoder_get_metadata_blocks(struct decoder* This, UINT frame, UINT
 HRESULT CDECL decoder_get_color_context(struct decoder* This, UINT frame, UINT num,
     BYTE **data, DWORD *datasize);
 void CDECL decoder_destroy(struct decoder *This);
+
+HRESULT create_metadata_reader(REFGUID format, const GUID *vendor, DWORD options, IStream *stream,
+        IWICMetadataReader **reader);
+HRESULT create_metadata_writer(REFGUID format, const GUID *vendor, DWORD options,
+        IWICMetadataWriter **writer);
+HRESULT create_metadata_query_writer_from_reader(IWICMetadataQueryReader *query_reader, const GUID *vendor,
+        IWICMetadataQueryWriter **query_writer);
+HRESULT create_metadata_writer_from_reader(IWICMetadataReader *reader, const GUID *vendor,
+        IWICMetadataWriter **writer);
 
 struct encoder_funcs;
 
@@ -392,9 +429,9 @@ HRESULT CDECL jpeg_encoder_create(struct encoder_info *info, struct encoder **re
 HRESULT CDECL icns_encoder_create(struct encoder_info *info, struct encoder **result);
 
 extern HRESULT CommonDecoder_CreateInstance(struct decoder *decoder,
-    const struct decoder_info *decoder_info, REFIID iid, void** ppv) DECLSPEC_HIDDEN;
+    const struct decoder_info *decoder_info, REFIID iid, void** ppv);
 
 extern HRESULT CommonEncoder_CreateInstance(struct encoder *encoder,
-    const struct encoder_info *encoder_info, REFIID iid, void** ppv) DECLSPEC_HIDDEN;
+    const struct encoder_info *encoder_info, REFIID iid, void** ppv);
 
 #endif /* WINCODECS_PRIVATE_H */

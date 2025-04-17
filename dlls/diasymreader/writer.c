@@ -28,7 +28,6 @@
 
 #include "wine/mscvpdb.h"
 #include "wine/debug.h"
-#include "wine/heap.h"
 
 #include "diasymreader_private.h"
 
@@ -107,7 +106,7 @@ static ULONG WINAPI SymDocumentWriter_Release(ISymUnmanagedDocumentWriter *iface
 
     if (ref == 0)
     {
-        heap_free(This);
+        free(This);
     }
 
     return ref;
@@ -187,7 +186,7 @@ static ULONG WINAPI SymWriter_Release(ISymUnmanagedWriter5 *iface)
     {
         This->lock.DebugInfo->Spare[0] = 0;
         DeleteCriticalSection(&This->lock);
-        heap_free(This);
+        free(This);
     }
 
     return ref;
@@ -205,7 +204,7 @@ static HRESULT WINAPI SymWriter_DefineDocument(ISymUnmanagedWriter5 *iface, cons
     if (!pRetVal)
         return E_POINTER;
 
-    result = heap_alloc(sizeof(*result));
+    result = malloc(sizeof(*result));
     if (!result)
         return E_OUTOFMEMORY;
 
@@ -596,14 +595,14 @@ HRESULT SymWriter_CreateInstance(REFIID iid, void **ppv)
     SymWriter *This;
     HRESULT hr;
 
-    This = heap_alloc(sizeof(*This));
+    This = malloc(sizeof(*This));
     if (!This)
         return E_OUTOFMEMORY;
 
     This->iface.lpVtbl = &SymWriter_Vtbl;
     This->IPdbWriter_iface.lpVtbl = &SymWriter_PdbWriter_Vtbl;
     This->ref = 1;
-    InitializeCriticalSection(&This->lock);
+    InitializeCriticalSectionEx(&This->lock, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO);
     This->lock.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": SymWriter.lock");
     UuidCreate(&This->pdb_guid);
     This->pdb_age = 1;

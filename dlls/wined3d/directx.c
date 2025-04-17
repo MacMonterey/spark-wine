@@ -22,6 +22,7 @@
  */
 
 #include "wined3d_private.h"
+#include "wined3d_gl.h"
 #include "winternl.h"
 #include "wine/list.h"
 
@@ -139,7 +140,7 @@ static HRESULT wined3d_output_init(struct wined3d_output *output, unsigned int o
     close_adapter_desc.hAdapter = open_adapter_desc.hAdapter;
     D3DKMTCloseAdapter(&close_adapter_desc);
 
-    create_device_desc.u.hAdapter = adapter->kmt_adapter;
+    create_device_desc.hAdapter = adapter->kmt_adapter;
     if (D3DKMTCreateDevice(&create_device_desc))
         return E_FAIL;
 
@@ -179,8 +180,8 @@ void wined3d_adapter_cleanup(struct wined3d_adapter *adapter)
 
     for (output_idx = 0; output_idx < adapter->output_count; ++output_idx)
         wined3d_output_cleanup(&adapter->outputs[output_idx]);
-    heap_free(adapter->outputs);
-    heap_free(adapter->formats);
+    free(adapter->outputs);
+    free(adapter->formats);
     close_adapter_desc.hAdapter = adapter->kmt_adapter;
     D3DKMTCloseAdapter(&close_adapter_desc);
 }
@@ -211,7 +212,7 @@ ULONG CDECL wined3d_decref(struct wined3d *wined3d)
 
             adapter->adapter_ops->adapter_destroy(adapter);
         }
-        heap_free(wined3d);
+        free(wined3d);
         wined3d_mutex_unlock();
     }
 
@@ -238,6 +239,9 @@ ULONG CDECL wined3d_decref(struct wined3d *wined3d)
  * 24 -> Windows 10 April 2018 Update - WDDM 2.4
  * 25 -> Windows 10 October 2018 Update - WDDM 2.5
  * 26 -> Windows 10 May 2019 Update - WDDM 2.6
+ * 27 -> Windows 10 May 2020 Update - WDDM 2.7
+ * 30 -> Windows 11 21H2 - WDDM 3.0
+ * 31 -> Windows 11 22H2 - WDDM 3.1
  *
  * "y" is the maximum Direct3D version / feature level the driver supports.
  * 11 -> 6
@@ -285,7 +289,7 @@ static const struct driver_version_information driver_version_table[] =
     {DRIVER_AMD_R600,           DRIVER_MODEL_NT5X,  "ati2dvag.dll",    10, 1280},
     {DRIVER_AMD_R300,           DRIVER_MODEL_NT6X,  "atiumdag.dll",    10, 741 },
     {DRIVER_AMD_R600,           DRIVER_MODEL_NT6X,  "atiumdag.dll",    10, 1280},
-    {DRIVER_AMD_RX,             DRIVER_MODEL_NT6X,  "aticfx32.dll", 15002,   61},
+    {DRIVER_AMD_RX,             DRIVER_MODEL_NT6X,  "aticfx32.dll", 23013, 1023}, /* Adrenalin 23.12.1 */
 
     /* Intel
      * The drivers are unified but not all versions support all GPUs. At some point the 2k/xp
@@ -297,7 +301,7 @@ static const struct driver_version_information driver_version_table[] =
     {DRIVER_INTEL_GMA3000,      DRIVER_MODEL_NT5X,  "igxprd32.dll",    10, 5218},
     {DRIVER_INTEL_GMA950,       DRIVER_MODEL_NT6X,  "igdumd32.dll",    10, 1504},
     {DRIVER_INTEL_GMA3000,      DRIVER_MODEL_NT6X,  "igdumd32.dll",    10, 1666},
-    {DRIVER_INTEL_HD4000,       DRIVER_MODEL_NT6X,  "igdumdim32.dll",  15, 4352},
+    {DRIVER_INTEL_HD4000,       DRIVER_MODEL_NT6X,  "igdumdim32.dll", 101, 4577},
 
     /* Nvidia
      * - Geforce8 and newer is supported by the current 340.52 driver on XP-Win8
@@ -314,7 +318,7 @@ static const struct driver_version_information driver_version_table[] =
     {DRIVER_NVIDIA_GEFORCE6,    DRIVER_MODEL_NT6X,  "nvd3dum.dll",     13,  783},
     {DRIVER_NVIDIA_GEFORCE8,    DRIVER_MODEL_NT6X,  "nvd3dum.dll",     13, 4052},
     {DRIVER_NVIDIA_FERMI,       DRIVER_MODEL_NT6X,  "nvd3dum.dll",     13, 9135},
-    {DRIVER_NVIDIA_KEPLER,      DRIVER_MODEL_NT6X,  "nvd3dum.dll",     14, 4587},
+    {DRIVER_NVIDIA_KEPLER,      DRIVER_MODEL_NT6X,  "nvd3dum.dll",     15, 3118}, /* 531.18 */
 
     /* Red Hat */
     {DRIVER_REDHAT_VIRGL,       DRIVER_MODEL_GENERIC, "virgl.dll",      0,    0},
@@ -462,11 +466,13 @@ static const struct wined3d_gpu_description gpu_description_table[] =
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1060,    "NVIDIA GeForce GTX 1060",          DRIVER_NVIDIA_KEPLER,  6144},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1060M,   "NVIDIA GeForce GTX 1060M",         DRIVER_NVIDIA_KEPLER,  6144},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1070,    "NVIDIA GeForce GTX 1070",          DRIVER_NVIDIA_KEPLER,  8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1070M,   "NVIDIA GeForce GTX 1070M",         DRIVER_NVIDIA_KEPLER,  8192},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1080,    "NVIDIA GeForce GTX 1080",          DRIVER_NVIDIA_KEPLER,  8192},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1080M,   "NVIDIA GeForce GTX 1080M",         DRIVER_NVIDIA_KEPLER,  8192},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1080TI,  "NVIDIA GeForce GTX 1080 Ti",       DRIVER_NVIDIA_KEPLER,  11264},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_TITANX_PASCAL,      "NVIDIA TITAN X (Pascal)",          DRIVER_NVIDIA_KEPLER,  12288},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_TITANV,             "NVIDIA TITAN V",                   DRIVER_NVIDIA_KEPLER,  12288},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1650     ,"NVIDIA GeForce GTX 1650"      ,   DRIVER_NVIDIA_KEPLER,  4096},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1650SUPER,"NVIDIA GeForce GTX 1650 SUPER",   DRIVER_NVIDIA_KEPLER,  4096},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1660SUPER,"NVIDIA GeForce GTX 1660 SUPER",   DRIVER_NVIDIA_KEPLER,  6144},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_GTX1660TI,  "NVIDIA GeForce GTX 1660 Ti",       DRIVER_NVIDIA_KEPLER,  6144},
@@ -474,8 +480,34 @@ static const struct wined3d_gpu_description gpu_description_table[] =
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX2070,    "NVIDIA GeForce RTX 2070",          DRIVER_NVIDIA_KEPLER,  8192},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX2080,    "NVIDIA GeForce RTX 2080",          DRIVER_NVIDIA_KEPLER,  8192},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX2080TI,  "NVIDIA GeForce RTX 2080 Ti",       DRIVER_NVIDIA_KEPLER,  11264},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3050,    "NVIDIA GeForce RTX 3050",          DRIVER_NVIDIA_KEPLER,  6144},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3060,    "NVIDIA GeForce RTX 3060",          DRIVER_NVIDIA_KEPLER,  8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3060_LHR, "NVIDIA GeForce RTX 3060 (Low Hash Rate)", DRIVER_NVIDIA_KEPLER, 8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3060TI_GA103, "NVIDIA GeForce RTX 3060 Ti (GA103)", DRIVER_NVIDIA_KEPLER, 8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3060TI_GA104, "NVIDIA GeForce RTX 3060 Ti (GA104)", DRIVER_NVIDIA_KEPLER, 8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3060TI_GA104_LHR, "NVIDIA GeForce RTX 3060 Ti (GA104, Low Hash Rate)", DRIVER_NVIDIA_KEPLER, 8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3070,    "NVIDIA GeForce RTX 3070",          DRIVER_NVIDIA_KEPLER,  8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3070_LHR, "NVIDIA GeForce RTX 3070 (Low Hash Rate)", DRIVER_NVIDIA_KEPLER, 8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3070_MOBILE, "NVIDIA GeForce RTX 3070 (mobile)", DRIVER_NVIDIA_KEPLER, 8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3070TI,  "NVIDIA GeForce RTX 3070 Ti",       DRIVER_NVIDIA_KEPLER,  8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3080_10GB, "NVIDIA GeForce RTX 3080 10GB",   DRIVER_NVIDIA_KEPLER,  10240},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3080_10GB_LHR, "NVIDIA GeForce RTX 3080 10GB (Low Hash Rate)", DRIVER_NVIDIA_KEPLER, 10240},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3080_12GB, "NVIDIA GeForce RTX 3080 12GB",   DRIVER_NVIDIA_KEPLER,  10240},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3080TI,  "NVIDIA GeForce RTX 3080 Ti",       DRIVER_NVIDIA_KEPLER,  12288},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3090,    "NVIDIA GeForce RTX 3090",          DRIVER_NVIDIA_KEPLER,  24576},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX3090TI,  "NVIDIA GeForce RTX 3090 Ti",       DRIVER_NVIDIA_KEPLER,  24576},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_TESLA_T4,           "NVIDIA Tesla T4",                  DRIVER_NVIDIA_KEPLER,  16384},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_AMPERE_A10,         "NVIDIA Ampere A10",                DRIVER_NVIDIA_KEPLER,  24576},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4060,    "NVIDIA GeForce RTX 4060",          DRIVER_NVIDIA_KEPLER,  8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4060TI8G, "NVIDIA GeForce RTX 4060 Ti 8GB",  DRIVER_NVIDIA_KEPLER,  8192},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4060TI16G, "NVIDIA GeForce RTX 4060 Ti 16GB", DRIVER_NVIDIA_KEPLER, 16384},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4070,    "NVIDIA GeForce RTX 4070",          DRIVER_NVIDIA_KEPLER,  12288},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4070SUPER, "NVIDIA GeForce RTX 4070 SUPER",  DRIVER_NVIDIA_KEPLER,  12288},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4070TI,  "NVIDIA GeForce RTX 4070 Ti",       DRIVER_NVIDIA_KEPLER,  12288},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4070TISUPER, "NVIDIA GeForce RTX 4070 Ti SUPER", DRIVER_NVIDIA_KEPLER, 16384},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4080,    "NVIDIA GeForce RTX 4080",          DRIVER_NVIDIA_KEPLER,  16384},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4080SUPER, "NVIDIA GeForce RTX 4080 SUPER",  DRIVER_NVIDIA_KEPLER,  16384},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4090,    "NVIDIA GeForce RTX 4090",          DRIVER_NVIDIA_KEPLER,  24576},
 
     /* AMD cards */
     {HW_VENDOR_AMD,        CARD_AMD_RAGE_128PRO,           "ATI Rage Fury",                    DRIVER_AMD_RAGE_128PRO,  16  },
@@ -773,7 +805,7 @@ bool wined3d_driver_info_init(struct wined3d_driver_info *driver_info,
                 break;
 
             case 10:
-                driver_os_version = 26;
+                driver_os_version = 31;
                 driver_model = DRIVER_MODEL_NT6X;
                 break;
 
@@ -828,6 +860,10 @@ bool wined3d_driver_info_init(struct wined3d_driver_info *driver_info,
         driver_feature_level = min(driver_feature_level, 18);
     else if (os_version.dwMajorVersion < 6)
         driver_feature_level = min(driver_feature_level, 14);
+
+    /* Drivers with the OS version 30+ all have the feature level word set to 0 */
+    if (driver_os_version >= 30)
+        driver_feature_level = 0;
 
     driver_info->vendor = gpu_desc->vendor;
     driver_info->device = gpu_desc->device;
@@ -1113,7 +1149,7 @@ HRESULT CDECL wined3d_adapter_register_budget_change_notification(const struct w
     struct wined3d_adapter_budget_change_notification *notification, *new_notification;
     BOOL found = FALSE;
 
-    new_notification = heap_alloc_zero(sizeof(*new_notification));
+    new_notification = calloc(1, sizeof(*new_notification));
     if (!new_notification)
         return E_OUTOFMEMORY;
 
@@ -1169,7 +1205,7 @@ HRESULT CDECL wined3d_adapter_unregister_budget_change_notification(DWORD cookie
         if (notification->cookie == cookie)
         {
             list_remove(&notification->entry);
-            heap_free(notification);
+            free(notification);
             break;
         }
     }
@@ -1261,7 +1297,7 @@ static void wined3d_output_update_modes(struct wined3d_output *output, bool cach
 
         if (mode.dmFields & DM_DISPLAYFLAGS)
         {
-            if (mode.u2.dmDisplayFlags & DM_INTERLACED)
+            if (mode.dmDisplayFlags & DM_INTERLACED)
                 wined3d_mode->scanline_ordering = WINED3D_SCANLINE_ORDERING_INTERLACED;
             else
                 wined3d_mode->scanline_ordering = WINED3D_SCANLINE_ORDERING_PROGRESSIVE;
@@ -1387,11 +1423,11 @@ HRESULT CDECL wined3d_output_find_closest_matching_mode(struct wined3d_output *o
         return E_FAIL;
     }
 
-    if (!(modes = heap_calloc(mode_count, sizeof(*modes))))
+    if (!(modes = calloc(mode_count, sizeof(*modes))))
         return E_OUTOFMEMORY;
-    if (!(matching_modes = heap_calloc(mode_count, sizeof(*matching_modes))))
+    if (!(matching_modes = calloc(mode_count, sizeof(*matching_modes))))
     {
-        heap_free(modes);
+        free(modes);
         return E_OUTOFMEMORY;
     }
 
@@ -1400,8 +1436,8 @@ HRESULT CDECL wined3d_output_find_closest_matching_mode(struct wined3d_output *o
         if (FAILED(hr = wined3d_output_get_mode(output, mode->format_id,
                 WINED3D_SCANLINE_ORDERING_UNKNOWN, i, &modes[i], true)))
         {
-            heap_free(matching_modes);
-            heap_free(modes);
+            free(matching_modes);
+            free(modes);
             return hr;
         }
         matching_modes[i] = &modes[i];
@@ -1436,8 +1472,8 @@ HRESULT CDECL wined3d_output_find_closest_matching_mode(struct wined3d_output *o
         struct wined3d_display_mode current_mode;
         if (FAILED(hr = wined3d_output_get_display_mode(output, &current_mode, NULL)))
         {
-            heap_free(matching_modes);
-            heap_free(modes);
+            free(matching_modes);
+            free(modes);
             return hr;
         }
         mode->width = current_mode.width;
@@ -1459,8 +1495,8 @@ HRESULT CDECL wined3d_output_find_closest_matching_mode(struct wined3d_output *o
 
     *mode = *matching_modes[j];
 
-    heap_free(matching_modes);
-    heap_free(modes);
+    free(matching_modes);
+    free(modes);
 
     TRACE("Returning %ux%u@%u %s %#x.\n", mode->width, mode->height,
             mode->refresh_rate, debug_d3dformat(mode->format_id),
@@ -1511,14 +1547,14 @@ HRESULT CDECL wined3d_output_get_display_mode(const struct wined3d_output *outpu
 
     if (!(m.dmFields & DM_DISPLAYFLAGS))
         mode->scanline_ordering = WINED3D_SCANLINE_ORDERING_UNKNOWN;
-    else if (m.u2.dmDisplayFlags & DM_INTERLACED)
+    else if (m.dmDisplayFlags & DM_INTERLACED)
         mode->scanline_ordering = WINED3D_SCANLINE_ORDERING_INTERLACED;
     else
         mode->scanline_ordering = WINED3D_SCANLINE_ORDERING_PROGRESSIVE;
 
     if (rotation)
     {
-        switch (m.u1.s2.dmDisplayOrientation)
+        switch (m.dmDisplayOrientation)
         {
             case DMDO_DEFAULT:
                 *rotation = WINED3D_DISPLAY_ROTATION_0;
@@ -1533,7 +1569,7 @@ HRESULT CDECL wined3d_output_get_display_mode(const struct wined3d_output *outpu
                 *rotation = WINED3D_DISPLAY_ROTATION_270;
                 break;
             default:
-                FIXME("Unhandled display rotation %#lx.\n", m.u1.s2.dmDisplayOrientation);
+                FIXME("Unhandled display rotation %#lx.\n", m.dmDisplayOrientation);
                 *rotation = WINED3D_DISPLAY_ROTATION_UNSPECIFIED;
                 break;
         }
@@ -1560,7 +1596,7 @@ static BOOL equal_display_mode(const DEVMODEW *mode1, const DEVMODEW *mode2)
         return FALSE;
 
     if (mode1->dmFields & mode2->dmFields & DM_DISPLAYFLAGS
-            && mode1->u2.dmDisplayFlags != mode2->u2.dmDisplayFlags)
+            && mode1->dmDisplayFlags != mode2->dmDisplayFlags)
         return FALSE;
 
     if (mode1->dmFields & mode2->dmFields & DM_DISPLAYFREQUENCY
@@ -1568,12 +1604,12 @@ static BOOL equal_display_mode(const DEVMODEW *mode1, const DEVMODEW *mode2)
         return FALSE;
 
     if (mode1->dmFields & mode2->dmFields & DM_DISPLAYORIENTATION
-            && mode1->u1.s2.dmDisplayOrientation != mode2->u1.s2.dmDisplayOrientation)
+            && mode1->dmDisplayOrientation != mode2->dmDisplayOrientation)
         return FALSE;
 
     if (mode1->dmFields & mode2->dmFields & DM_POSITION
-            && (mode1->u1.s2.dmPosition.x != mode2->u1.s2.dmPosition.x
-            || mode1->u1.s2.dmPosition.y != mode2->u1.s2.dmPosition.y))
+            && (mode1->dmPosition.x != mode2->dmPosition.x
+            || mode1->dmPosition.y != mode2->dmPosition.y))
         return FALSE;
 
     return TRUE;
@@ -1684,7 +1720,7 @@ HRESULT CDECL wined3d_output_set_display_mode(struct wined3d_output *output,
     {
         new_mode.dmFields |= DM_DISPLAYFLAGS;
         if (mode->scanline_ordering == WINED3D_SCANLINE_ORDERING_INTERLACED)
-            new_mode.u2.dmDisplayFlags |= DM_INTERLACED;
+            new_mode.dmDisplayFlags |= DM_INTERLACED;
     }
     new_format_id = mode->format_id;
 
@@ -2172,12 +2208,45 @@ unsigned int CDECL wined3d_calculate_format_pitch(const struct wined3d_adapter *
 }
 
 HRESULT CDECL wined3d_check_device_format_conversion(const struct wined3d_output *output,
-        enum wined3d_device_type device_type, enum wined3d_format_id src_format,
-        enum wined3d_format_id dst_format)
+        enum wined3d_device_type device_type, enum wined3d_format_id src_format_id,
+        enum wined3d_format_id dst_format_id)
 {
-    FIXME("output %p, device_type %s, src_format %s, dst_format %s stub!\n",
-            output, debug_d3ddevicetype(device_type), debug_d3dformat(src_format),
-            debug_d3dformat(dst_format));
+    const struct wined3d_format *src_format = wined3d_get_format(output->adapter, src_format_id, 0);
+    const struct wined3d_format *dst_format = wined3d_get_format(output->adapter, dst_format_id, 0);
+
+    TRACE("output %p, device_type %s, src_format %s, dst_format %s.\n",
+            output, debug_d3ddevicetype(device_type), debug_d3dformat(src_format_id),
+            debug_d3dformat(dst_format_id));
+
+    if (!(src_format->caps[WINED3D_GL_RES_TYPE_TEX_2D] & WINED3D_FORMAT_CAP_BLIT))
+    {
+        TRACE("Source format does not support blitting.\n");
+        return WINED3DERR_NOTAVAILABLE;
+    }
+
+    if (!(dst_format->caps[WINED3D_GL_RES_TYPE_TEX_2D] & WINED3D_FORMAT_CAP_BLIT))
+    {
+        TRACE("Destination format does not support blitting.\n");
+        return WINED3DERR_NOTAVAILABLE;
+    }
+
+    /* Source cannot be depth/stencil (although it can be YUV or compressed,
+     * and AMD also allows blitting from luminance formats). */
+    if (src_format->depth_size || src_format->stencil_size)
+    {
+        TRACE("Source format is depth/stencil.\n");
+        return WINED3DERR_NOTAVAILABLE;
+    }
+
+    /* The destination format must be a simple RGB format (no luminance, YUV,
+     * compression, etc.) All such formats have a nonzero red_size; the only
+     * exceptions are X24G8 (not supported in d3d9) and A8 (which, it turns out,
+     * no vendor reports support for converting to). */
+    if (!dst_format->red_size)
+    {
+        TRACE("Destination format is not a simple RGB format.\n");
+        return WINED3DERR_NOTAVAILABLE;
+    }
 
     return WINED3D_OK;
 }
@@ -2425,12 +2494,8 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d_adapter *adapter,
                           WINED3DPTEXTURECAPS_PROJECTED          |
                           WINED3DPTEXTURECAPS_PERSPECTIVE;
 
-    if (!d3d_info->texture_npot)
-    {
-        caps->TextureCaps |= WINED3DPTEXTURECAPS_POW2;
-        if (d3d_info->texture_npot_conditional)
-            caps->TextureCaps |= WINED3DPTEXTURECAPS_NONPOW2CONDITIONAL;
-    }
+    if (!d3d_info->unconditional_npot)
+        caps->TextureCaps |= WINED3DPTEXTURECAPS_POW2 | WINED3DPTEXTURECAPS_NONPOW2CONDITIONAL;
 
     caps->TextureFilterCaps =  WINED3DPTFILTERCAPS_MAGFLINEAR       |
                                WINED3DPTFILTERCAPS_MAGFPOINT        |
@@ -2521,8 +2586,8 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d_adapter *adapter,
     caps->PixelShader1xMaxValue = shader_caps.ps_1x_max_value;
 
     caps->TextureOpCaps                    = fragment_caps.TextureOpCaps;
-    caps->MaxTextureBlendStages            = fragment_caps.MaxTextureBlendStages;
-    caps->MaxSimultaneousTextures          = fragment_caps.MaxSimultaneousTextures;
+    caps->MaxTextureBlendStages            = fragment_caps.max_blend_stages;
+    caps->MaxSimultaneousTextures          = fragment_caps.max_textures;
 
     caps->MaxUserClipPlanes                = vertex_caps.max_user_clip_planes;
     caps->MaxActiveLights                  = vertex_caps.max_active_lights;
@@ -2700,6 +2765,8 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d_adapter *adapter,
 
     caps->shader_double_precision = d3d_info->shader_double_precision;
     caps->viewport_array_index_any_shader = d3d_info->viewport_array_index_any_shader;
+    caps->stencil_export = d3d_info->stencil_export;
+    caps->simple_instancing = d3d_info->simple_instancing;
 
     caps->max_feature_level = d3d_info->feature_level;
 
@@ -2757,84 +2824,12 @@ static const struct wined3d_state_entry_template misc_state_template_no3d[] =
     {STATE_VDECL,                                         {STATE_VDECL, state_nop}},
     {STATE_RASTERIZER,                                    {STATE_VDECL}},
     {STATE_SCISSORRECT,                                   {STATE_VDECL}},
-    {STATE_POINTSPRITECOORDORIGIN,                        {STATE_VDECL}},
-
-    {STATE_TEXTURESTAGE(0, WINED3D_TSS_BUMPENV_MAT00),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(0, WINED3D_TSS_BUMPENV_MAT01),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(0, WINED3D_TSS_BUMPENV_MAT10),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(0, WINED3D_TSS_BUMPENV_MAT11),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(1, WINED3D_TSS_BUMPENV_MAT00),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(1, WINED3D_TSS_BUMPENV_MAT01),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(1, WINED3D_TSS_BUMPENV_MAT10),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(1, WINED3D_TSS_BUMPENV_MAT11),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(2, WINED3D_TSS_BUMPENV_MAT00),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(2, WINED3D_TSS_BUMPENV_MAT01),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(2, WINED3D_TSS_BUMPENV_MAT10),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(2, WINED3D_TSS_BUMPENV_MAT11),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(3, WINED3D_TSS_BUMPENV_MAT00),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(3, WINED3D_TSS_BUMPENV_MAT01),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(3, WINED3D_TSS_BUMPENV_MAT10),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(3, WINED3D_TSS_BUMPENV_MAT11),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(4, WINED3D_TSS_BUMPENV_MAT00),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(4, WINED3D_TSS_BUMPENV_MAT01),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(4, WINED3D_TSS_BUMPENV_MAT10),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(4, WINED3D_TSS_BUMPENV_MAT11),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(5, WINED3D_TSS_BUMPENV_MAT00),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(5, WINED3D_TSS_BUMPENV_MAT01),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(5, WINED3D_TSS_BUMPENV_MAT10),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(5, WINED3D_TSS_BUMPENV_MAT11),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(6, WINED3D_TSS_BUMPENV_MAT00),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(6, WINED3D_TSS_BUMPENV_MAT01),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(6, WINED3D_TSS_BUMPENV_MAT10),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(6, WINED3D_TSS_BUMPENV_MAT11),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(7, WINED3D_TSS_BUMPENV_MAT00),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(7, WINED3D_TSS_BUMPENV_MAT01),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(7, WINED3D_TSS_BUMPENV_MAT10),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(7, WINED3D_TSS_BUMPENV_MAT11),    {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(0, WINED3D_TSS_BUMPENV_LSCALE),   {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(0, WINED3D_TSS_BUMPENV_LOFFSET),  {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(1, WINED3D_TSS_BUMPENV_LSCALE),   {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(1, WINED3D_TSS_BUMPENV_LOFFSET),  {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(2, WINED3D_TSS_BUMPENV_LSCALE),   {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(2, WINED3D_TSS_BUMPENV_LOFFSET),  {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(3, WINED3D_TSS_BUMPENV_LSCALE),   {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(3, WINED3D_TSS_BUMPENV_LOFFSET),  {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(4, WINED3D_TSS_BUMPENV_LSCALE),   {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(4, WINED3D_TSS_BUMPENV_LOFFSET),  {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(5, WINED3D_TSS_BUMPENV_LSCALE),   {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(5, WINED3D_TSS_BUMPENV_LOFFSET),  {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(6, WINED3D_TSS_BUMPENV_LSCALE),   {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(6, WINED3D_TSS_BUMPENV_LOFFSET),  {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(7, WINED3D_TSS_BUMPENV_LSCALE),   {STATE_VDECL}},
-    {STATE_TEXTURESTAGE(7, WINED3D_TSS_BUMPENV_LOFFSET),  {STATE_VDECL}},
-
     {STATE_VIEWPORT,                                      {STATE_VDECL}},
     {STATE_INDEXBUFFER,                                   {STATE_VDECL}},
     {STATE_RENDER(WINED3D_RS_LINEPATTERN),                {STATE_VDECL}},
     {STATE_RENDER(WINED3D_RS_ZFUNC),                      {STATE_VDECL}},
     {STATE_RENDER(WINED3D_RS_DITHERENABLE),               {STATE_VDECL}},
     {STATE_RENDER(WINED3D_RS_MULTISAMPLEANTIALIAS),       {STATE_VDECL}},
-    /* Samplers */
-    {STATE_SAMPLER(0),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(1),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(2),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(3),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(4),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(5),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(6),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(7),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(8),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(9),                                    {STATE_VDECL}},
-    {STATE_SAMPLER(10),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(11),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(12),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(13),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(14),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(15),                                   {STATE_VDECL}},
-    {STATE_SAMPLER(16), /* Vertex sampler 0 */            {STATE_VDECL}},
-    {STATE_SAMPLER(17), /* Vertex sampler 1 */            {STATE_VDECL}},
-    {STATE_SAMPLER(18), /* Vertex sampler 2 */            {STATE_VDECL}},
-    {STATE_SAMPLER(19), /* Vertex sampler 3 */            {STATE_VDECL}},
     {STATE_BASEVERTEXINDEX,                               {STATE_VDECL}},
     {STATE_FRAMEBUFFER,                                   {STATE_VDECL}},
     {STATE_SHADER(WINED3D_SHADER_TYPE_PIXEL),             {STATE_VDECL}},
@@ -2848,7 +2843,7 @@ static const struct wined3d_state_entry_template misc_state_template_no3d[] =
 static void adapter_no3d_destroy(struct wined3d_adapter *adapter)
 {
     wined3d_adapter_cleanup(adapter);
-    heap_free(adapter);
+    free(adapter);
 }
 
 static HRESULT adapter_no3d_create_device(struct wined3d *wined3d, const struct wined3d_adapter *adapter,
@@ -2856,17 +2851,19 @@ static HRESULT adapter_no3d_create_device(struct wined3d *wined3d, const struct 
         const enum wined3d_feature_level *levels, unsigned int level_count,
         struct wined3d_device_parent *device_parent, struct wined3d_device **device)
 {
+    /* No extensions in the state table, only extension 0, which is implicitly supported. */
+    static const BOOL supported_extensions[] = {TRUE};
     struct wined3d_device_no3d *device_no3d;
     HRESULT hr;
 
-    if (!(device_no3d = heap_alloc_zero(sizeof(*device_no3d))))
+    if (!(device_no3d = calloc(1, sizeof(*device_no3d))))
         return E_OUTOFMEMORY;
 
     if (FAILED(hr = wined3d_device_init(&device_no3d->d, wined3d, adapter->ordinal, device_type, focus_window,
-            flags, surface_alignment, levels, level_count, adapter->gl_info.supported, device_parent)))
+            flags, surface_alignment, levels, level_count, supported_extensions, device_parent)))
     {
         WARN("Failed to initialize device, hr %#lx.\n", hr);
-        heap_free(device_no3d);
+        free(device_no3d);
         return hr;
     }
 
@@ -2878,7 +2875,7 @@ static HRESULT adapter_no3d_create_device(struct wined3d *wined3d, const struct 
 static void adapter_no3d_destroy_device(struct wined3d_device *device)
 {
     wined3d_device_cleanup(device);
-    heap_free(device);
+    free(device);
 }
 
 static struct wined3d_context *adapter_no3d_acquire_context(struct wined3d_device *device,
@@ -2979,7 +2976,7 @@ static void adapter_no3d_unmap_bo_address(struct wined3d_context *context,
 
 static void adapter_no3d_copy_bo_address(struct wined3d_context *context,
         const struct wined3d_bo_address *dst, const struct wined3d_bo_address *src,
-        unsigned int range_count, const struct wined3d_range *ranges)
+        unsigned int range_count, const struct wined3d_range *ranges, uint32_t map_flags)
 {
     unsigned int i;
 
@@ -3010,7 +3007,7 @@ static void adapter_no3d_destroy_bo(struct wined3d_context *context, struct wine
 }
 
 static HRESULT adapter_no3d_create_swapchain(struct wined3d_device *device,
-        struct wined3d_swapchain_desc *desc, struct wined3d_swapchain_state_parent *state_parent,
+        const struct wined3d_swapchain_desc *desc, struct wined3d_swapchain_state_parent *state_parent,
         void *parent, const struct wined3d_parent_ops *parent_ops, struct wined3d_swapchain **swapchain)
 {
     struct wined3d_swapchain *swapchain_no3d;
@@ -3019,14 +3016,14 @@ static HRESULT adapter_no3d_create_swapchain(struct wined3d_device *device,
     TRACE("device %p, desc %p, state_parent %p, parent %p, parent_ops %p, swapchain %p.\n",
             device, desc, state_parent, parent, parent_ops, swapchain);
 
-    if (!(swapchain_no3d = heap_alloc_zero(sizeof(*swapchain_no3d))))
+    if (!(swapchain_no3d = calloc(1, sizeof(*swapchain_no3d))))
         return E_OUTOFMEMORY;
 
     if (FAILED(hr = wined3d_swapchain_no3d_init(swapchain_no3d, device, desc, state_parent, parent,
             parent_ops)))
     {
         WARN("Failed to initialise swapchain, hr %#lx.\n", hr);
-        heap_free(swapchain_no3d);
+        free(swapchain_no3d);
         return hr;
     }
 
@@ -3039,7 +3036,7 @@ static HRESULT adapter_no3d_create_swapchain(struct wined3d_device *device,
 static void adapter_no3d_destroy_swapchain(struct wined3d_swapchain *swapchain)
 {
     wined3d_swapchain_cleanup(swapchain);
-    heap_free(swapchain);
+    free(swapchain);
 }
 
 static HRESULT adapter_no3d_create_buffer(struct wined3d_device *device,
@@ -3052,13 +3049,13 @@ static HRESULT adapter_no3d_create_buffer(struct wined3d_device *device,
     TRACE("device %p, desc %p, data %p, parent %p, parent_ops %p, buffer %p.\n",
             device, desc, data, parent, parent_ops, buffer);
 
-    if (!(buffer_no3d = heap_alloc_zero(sizeof(*buffer_no3d))))
+    if (!(buffer_no3d = calloc(1, sizeof(*buffer_no3d))))
         return E_OUTOFMEMORY;
 
     if (FAILED(hr = wined3d_buffer_no3d_init(buffer_no3d, device, desc, data, parent, parent_ops)))
     {
         WARN("Failed to initialise buffer, hr %#lx.\n", hr);
-        heap_free(buffer_no3d);
+        free(buffer_no3d);
         return hr;
     }
 
@@ -3082,7 +3079,7 @@ static void adapter_no3d_destroy_buffer(struct wined3d_buffer *buffer)
     if (swapchain_count)
         wined3d_device_incref(device);
     wined3d_buffer_cleanup(buffer);
-    wined3d_cs_destroy_object(device->cs, heap_free, buffer);
+    wined3d_cs_destroy_object(device->cs, free, buffer);
     if (swapchain_count)
         wined3d_device_decref(device);
 }
@@ -3104,7 +3101,7 @@ static HRESULT adapter_no3d_create_texture(struct wined3d_device *device,
             layer_count, level_count, flags, parent, parent_ops)))
     {
         WARN("Failed to initialise texture, hr %#lx.\n", hr);
-        heap_free(texture_no3d);
+        free(texture_no3d);
         return hr;
     }
 
@@ -3132,7 +3129,7 @@ static void adapter_no3d_destroy_texture(struct wined3d_texture *texture)
     texture->resource.parent_ops->wined3d_object_destroyed(texture->resource.parent);
 
     wined3d_texture_cleanup(texture);
-    wined3d_cs_destroy_object(device->cs, heap_free, texture);
+    wined3d_cs_destroy_object(device->cs, free, texture);
 
     if (swapchain_count)
         wined3d_device_decref(device);
@@ -3148,13 +3145,13 @@ static HRESULT adapter_no3d_create_rendertarget_view(const struct wined3d_view_d
     TRACE("desc %s, resource %p, parent %p, parent_ops %p, view %p.\n",
             wined3d_debug_view_desc(desc, resource), resource, parent, parent_ops, view);
 
-    if (!(view_no3d = heap_alloc_zero(sizeof(*view_no3d))))
+    if (!(view_no3d = calloc(1, sizeof(*view_no3d))))
         return E_OUTOFMEMORY;
 
     if (FAILED(hr = wined3d_rendertarget_view_no3d_init(view_no3d, desc, resource, parent, parent_ops)))
     {
         WARN("Failed to initialise view, hr %#lx.\n", hr);
-        heap_free(view_no3d);
+        free(view_no3d);
         return hr;
     }
 
@@ -3178,7 +3175,7 @@ static void adapter_no3d_destroy_rendertarget_view(struct wined3d_rendertarget_v
     if (swapchain_count)
         wined3d_device_incref(device);
     wined3d_rendertarget_view_cleanup(view);
-    wined3d_cs_destroy_object(device->cs, heap_free, view);
+    wined3d_cs_destroy_object(device->cs, free, view);
     if (swapchain_count)
         wined3d_device_decref(device);
 }
@@ -3209,6 +3206,21 @@ static HRESULT adapter_no3d_create_unordered_access_view(const struct wined3d_vi
 }
 
 static void adapter_no3d_destroy_unordered_access_view(struct wined3d_unordered_access_view *view)
+{
+    TRACE("view %p.\n", view);
+}
+
+static HRESULT adapter_no3d_create_video_decoder_output_view(const struct wined3d_view_desc *desc,
+        struct wined3d_texture *texture, void *parent, const struct wined3d_parent_ops *parent_ops,
+        struct wined3d_decoder_output_view **view)
+{
+    TRACE("desc %s, texture %p, parent %p, parent_ops %p, view %p.\n",
+            wined3d_debug_view_desc(desc, &texture->resource), texture, parent, parent_ops, view);
+
+    return E_NOTIMPL;
+}
+
+static void adapter_no3d_destroy_video_decoder_output_view(struct wined3d_decoder_output_view *view)
 {
     TRACE("view %p.\n", view);
 }
@@ -3293,6 +3305,8 @@ static const struct wined3d_adapter_ops wined3d_adapter_no3d_ops =
     .adapter_destroy_shader_resource_view = adapter_no3d_destroy_shader_resource_view,
     .adapter_create_unordered_access_view = adapter_no3d_create_unordered_access_view,
     .adapter_destroy_unordered_access_view = adapter_no3d_destroy_unordered_access_view,
+    .adapter_create_video_decoder_output_view = adapter_no3d_create_video_decoder_output_view,
+    .adapter_destroy_video_decoder_output_view = adapter_no3d_destroy_video_decoder_output_view,
     .adapter_create_sampler = adapter_no3d_create_sampler,
     .adapter_destroy_sampler = adapter_no3d_destroy_sampler,
     .adapter_create_query = adapter_no3d_create_query,
@@ -3308,7 +3322,7 @@ static void wined3d_adapter_no3d_init_d3d_info(struct wined3d_adapter *adapter, 
     struct wined3d_d3d_info *d3d_info = &adapter->d3d_info;
 
     d3d_info->wined3d_creation_flags = wined3d_creation_flags;
-    d3d_info->texture_npot = TRUE;
+    d3d_info->unconditional_npot = true;
     d3d_info->feature_level = WINED3D_FEATURE_LEVEL_5;
 }
 
@@ -3324,7 +3338,7 @@ static struct wined3d_adapter *wined3d_adapter_no3d_create(unsigned int ordinal,
 
     TRACE("ordinal %u, wined3d_creation_flags %#x.\n", ordinal, wined3d_creation_flags);
 
-    if (!(adapter = heap_alloc_zero(sizeof(*adapter))))
+    if (!(adapter = calloc(1, sizeof(*adapter))))
         return NULL;
 
     if (ordinal == 0 && wined3d_get_primary_adapter_luid(&primary_luid))
@@ -3332,21 +3346,21 @@ static struct wined3d_adapter *wined3d_adapter_no3d_create(unsigned int ordinal,
 
     if (!wined3d_adapter_init(adapter, ordinal, luid, &wined3d_adapter_no3d_ops))
     {
-        heap_free(adapter);
+        free(adapter);
         return NULL;
     }
 
     if (!wined3d_adapter_no3d_init_format_info(adapter))
     {
         wined3d_adapter_cleanup(adapter);
-        heap_free(adapter);
+        free(adapter);
         return NULL;
     }
 
     if (!wined3d_driver_info_init(&adapter->driver_info, &gpu_description, WINED3D_FEATURE_LEVEL_NONE, 0, 0))
     {
         wined3d_adapter_cleanup(adapter);
-        heap_free(adapter);
+        free(adapter);
         return NULL;
     }
     adapter->vram_bytes_used = 0;
@@ -3356,6 +3370,7 @@ static struct wined3d_adapter *wined3d_adapter_no3d_create(unsigned int ordinal,
     adapter->fragment_pipe = &none_fragment_pipe;
     adapter->misc_state_template = misc_state_template_no3d;
     adapter->shader_backend = &none_shader_backend;
+    adapter->decoder_ops = &wined3d_null_decoder_ops;
 
     wined3d_adapter_no3d_init_d3d_info(adapter, wined3d_creation_flags);
 
@@ -3453,7 +3468,7 @@ done:
     {
         for (output_idx = 0; output_idx < adapter->output_count; ++output_idx)
             wined3d_output_cleanup(&adapter->outputs[output_idx]);
-        heap_free(adapter->outputs);
+        free(adapter->outputs);
         close_adapter_desc.hAdapter = adapter->kmt_adapter;
         D3DKMTCloseAdapter(&close_adapter_desc);
     }

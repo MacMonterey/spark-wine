@@ -27,6 +27,7 @@
 
 #include <windef.h>
 #include <winternl.h>
+#include <rtlsupportapi.h>
 #include <excpt.h>
 
 #ifdef __cplusplus
@@ -109,34 +110,34 @@ typedef struct { int reg; } __wine_jmp_buf;
 #endif
 
 extern int __cdecl __attribute__ ((__nothrow__,__returns_twice__)) __wine_setjmpex( __wine_jmp_buf *buf,
-                                                   EXCEPTION_REGISTRATION_RECORD *frame ) DECLSPEC_HIDDEN;
-extern void DECLSPEC_NORETURN __cdecl __wine_longjmp( __wine_jmp_buf *buf, int retval ) DECLSPEC_HIDDEN;
+                                                   EXCEPTION_REGISTRATION_RECORD *frame );
+extern void DECLSPEC_NORETURN __cdecl __wine_longjmp( __wine_jmp_buf *buf, int retval );
 extern void DECLSPEC_NORETURN __cdecl __wine_rtl_unwind( EXCEPTION_REGISTRATION_RECORD* frame, EXCEPTION_RECORD *record,
-                                                         void (*target)(void) ) DECLSPEC_HIDDEN;
+                                                         void (*target)(void) );
 extern DWORD __cdecl __wine_exception_handler( EXCEPTION_RECORD *record,
                                                EXCEPTION_REGISTRATION_RECORD *frame,
                                                CONTEXT *context,
-                                               EXCEPTION_REGISTRATION_RECORD **pdispatcher ) DECLSPEC_HIDDEN;
+                                               EXCEPTION_REGISTRATION_RECORD **pdispatcher );
 extern DWORD __cdecl __wine_exception_ctx_handler( EXCEPTION_RECORD *record,
                                                    EXCEPTION_REGISTRATION_RECORD *frame,
                                                    CONTEXT *context,
-                                                   EXCEPTION_REGISTRATION_RECORD **pdispatcher ) DECLSPEC_HIDDEN;
+                                                   EXCEPTION_REGISTRATION_RECORD **pdispatcher );
 extern DWORD __cdecl __wine_exception_handler_page_fault( EXCEPTION_RECORD *record,
                                                           EXCEPTION_REGISTRATION_RECORD *frame,
                                                           CONTEXT *context,
-                                                          EXCEPTION_REGISTRATION_RECORD **pdispatcher ) DECLSPEC_HIDDEN;
+                                                          EXCEPTION_REGISTRATION_RECORD **pdispatcher );
 extern DWORD __cdecl __wine_exception_handler_all( EXCEPTION_RECORD *record,
                                                    EXCEPTION_REGISTRATION_RECORD *frame,
                                                    CONTEXT *context,
-                                                   EXCEPTION_REGISTRATION_RECORD **pdispatcher ) DECLSPEC_HIDDEN;
+                                                   EXCEPTION_REGISTRATION_RECORD **pdispatcher );
 extern DWORD __cdecl __wine_finally_handler( EXCEPTION_RECORD *record,
                                              EXCEPTION_REGISTRATION_RECORD *frame,
                                              CONTEXT *context,
-                                             EXCEPTION_REGISTRATION_RECORD **pdispatcher ) DECLSPEC_HIDDEN;
+                                             EXCEPTION_REGISTRATION_RECORD **pdispatcher );
 extern DWORD __cdecl __wine_finally_ctx_handler( EXCEPTION_RECORD *record,
                                                  EXCEPTION_REGISTRATION_RECORD *frame,
                                                  CONTEXT *context,
-                                                 EXCEPTION_REGISTRATION_RECORD **pdispatcher ) DECLSPEC_HIDDEN;
+                                                 EXCEPTION_REGISTRATION_RECORD **pdispatcher );
 
 #define __TRY \
     do { __WINE_FRAME __f; \
@@ -250,11 +251,11 @@ typedef struct __tagWINE_FRAME
 
 static inline EXCEPTION_REGISTRATION_RECORD *__wine_push_frame( EXCEPTION_REGISTRATION_RECORD *frame )
 {
-#if defined(__GNUC__) && defined(__i386__)
+#if (defined(__GNUC__) || defined(__clang__)) && defined(__i386__)
     EXCEPTION_REGISTRATION_RECORD *prev;
-    __asm__ __volatile__(".byte 0x64\n\tmovl (0),%0"
+    __asm__ __volatile__("movl %%fs:0,%0"
                          "\n\tmovl %0,(%1)"
-                         "\n\t.byte 0x64\n\tmovl %1,(0)"
+                         "\n\tmovl %1,%%fs:0"
                          : "=&r" (prev) : "r" (frame) : "memory" );
     return prev;
 #else
@@ -267,8 +268,8 @@ static inline EXCEPTION_REGISTRATION_RECORD *__wine_push_frame( EXCEPTION_REGIST
 
 static inline EXCEPTION_REGISTRATION_RECORD *__wine_pop_frame( EXCEPTION_REGISTRATION_RECORD *frame )
 {
-#if defined(__GNUC__) && defined(__i386__)
-    __asm__ __volatile__(".byte 0x64\n\tmovl %0,(0)"
+#if (defined(__GNUC__) || defined(__clang__)) && defined(__i386__)
+    __asm__ __volatile__("movl %0,%%fs:0"
                          : : "r" (frame->Prev) : "memory" );
     return frame->Prev;
 
@@ -281,9 +282,9 @@ static inline EXCEPTION_REGISTRATION_RECORD *__wine_pop_frame( EXCEPTION_REGISTR
 
 static inline EXCEPTION_REGISTRATION_RECORD *__wine_get_frame(void)
 {
-#if defined(__GNUC__) && defined(__i386__)
+#if (defined(__GNUC__) || defined(__clang__)) && defined(__i386__)
     EXCEPTION_REGISTRATION_RECORD *ret;
-    __asm__ __volatile__(".byte 0x64\n\tmovl (0),%0" : "=r" (ret) );
+    __asm__ __volatile__("movl %%fs:0,%0" : "=r" (ret) );
     return ret;
 #else
     NT_TIB *teb = (NT_TIB *)NtCurrentTeb();

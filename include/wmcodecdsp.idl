@@ -53,6 +53,12 @@ coclass CResamplerMediaObject {}
 coclass CMSH264DecoderMFT {}
 
 [
+    threading(both),
+    uuid(6ca50344-051a-4ded-9779-a43305165e35)
+]
+coclass CMSH264EncoderMFT {}
+
+[
     uuid(2d709e52-123f-49b5-9cbc-9af5cde28fb9)
 ]
 coclass CMSMPEGDecoderMFT {}
@@ -91,3 +97,16 @@ coclass CWMVDecMediaObject {}
     uuid(7e320092-596a-41b2-bbeb-175d10504eb6)
 ]
 coclass CWMVXEncMediaObject {}
+
+typedef float ChMtxType;
+
+[
+    local,
+    object,
+    uuid(e7e9984f-f09f-4da4-903f-6e2e0efe56b5),
+]
+interface IWMResamplerProps : IUnknown
+{
+    HRESULT SetHalfFilterLength(LONG length);
+    HRESULT SetUserChannelMtx(ChMtxType *conversion_matrix);
+}

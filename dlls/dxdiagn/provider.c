@@ -22,8 +22,6 @@
 
 
 #define COBJMACROS
-#define NONAMELESSUNION
-#define NONAMELESSSTRUCT
 #include "dxdiag_private.h"
 #include "winver.h"
 #include "objidl.h"
@@ -33,6 +31,7 @@
 #include "d3d9.h"
 #include "strmif.h"
 #include "initguid.h"
+#include "mmdeviceapi.h"
 #include "wine/fil_data.h"
 #include "psapi.h"
 #include "wbemcli.h"
@@ -638,6 +637,10 @@ static HRESULT build_systeminfo_tree(IDxDiagContainerImpl_Container *node)
     if (FAILED(hr))
         return hr;
 
+    hr = add_bool_property(node, L"bIsD3DDebugRuntime", FALSE);
+    if (FAILED(hr))
+        return hr;
+
     hr = add_bool_property(node, L"bNECPC98", FALSE);
     if (FAILED(hr))
         return hr;
@@ -792,7 +795,7 @@ static BOOL get_texture_memory(GUID *adapter, DWORD *available_mem)
     if (SUCCEEDED(hr))
     {
         dd_caps.dwCaps = DDSCAPS_LOCALVIDMEM | DDSCAPS_VIDEOMEMORY;
-        dd_caps.dwCaps2 = dd_caps.dwCaps3 = dd_caps.u1.dwCaps4 = 0;
+        dd_caps.dwCaps2 = dd_caps.dwCaps3 = dd_caps.dwCaps4 = 0;
         hr = IDirectDraw7_GetAvailableVidMem(pDirectDraw, &dd_caps, available_mem, NULL);
         IDirectDraw7_Release(pDirectDraw);
         if (SUCCEEDED(hr))
@@ -887,8 +890,8 @@ static HRESULT fill_display_information_d3d(IDxDiagContainerImpl_Container *node
                 goto cleanup;
 
             swprintf(buffer, ARRAY_SIZE(buffer), L"%u.%u.%04u.%04u",
-                    HIWORD(adapter_info.DriverVersion.u.HighPart), LOWORD(adapter_info.DriverVersion.u.HighPart),
-                    HIWORD(adapter_info.DriverVersion.u.LowPart), LOWORD(adapter_info.DriverVersion.u.LowPart));
+                    HIWORD(adapter_info.DriverVersion.HighPart), LOWORD(adapter_info.DriverVersion.HighPart),
+                    HIWORD(adapter_info.DriverVersion.LowPart), LOWORD(adapter_info.DriverVersion.LowPart));
 
             hr = add_bstr_property(display_adapter, L"szDriverVersion", buffer);
             if (FAILED(hr))
@@ -998,6 +1001,18 @@ static HRESULT fill_display_information_d3d(IDxDiagContainerImpl_Container *node
             goto cleanup;
 
         hr = add_bool_property(display_adapter, L"b3DAccelerationExists", hardware_accel);
+        if (FAILED(hr))
+            goto cleanup;
+
+        hr = add_bool_property(display_adapter, L"bAGPEnabled", hardware_accel);
+        if (FAILED(hr))
+            goto cleanup;
+
+        hr = add_bool_property(display_adapter, L"bAGPExistenceValid", hardware_accel);
+        if (FAILED(hr))
+            goto cleanup;
+
+        hr = add_bool_property(display_adapter, L"bAGPExists", hardware_accel);
         if (FAILED(hr))
             goto cleanup;
 
@@ -1154,7 +1169,7 @@ static HRESULT fill_display_information_fallback(IDxDiagContainerImpl_Container 
         return S_OK;
 
     dd_caps.dwCaps = DDSCAPS_LOCALVIDMEM | DDSCAPS_VIDEOMEMORY;
-    dd_caps.dwCaps2 = dd_caps.dwCaps3 = dd_caps.u1.dwCaps4 = 0;
+    dd_caps.dwCaps2 = dd_caps.dwCaps3 = dd_caps.dwCaps4 = 0;
     hr = IDirectDraw7_GetAvailableVidMem(pDirectDraw, &dd_caps, &tmp, NULL);
     if (SUCCEEDED(hr))
     {
@@ -1190,7 +1205,7 @@ static HRESULT fill_display_information_fallback(IDxDiagContainerImpl_Container 
         if (surface_descr.dwFlags & DDSD_PIXELFORMAT)
         {
             hr = add_ui4_property(display_adapter, L"dwBpp",
-                    surface_descr.u4.ddpfPixelFormat.u1.dwRGBBitCount);
+                    surface_descr.ddpfPixelFormat.dwRGBBitCount);
             if (FAILED(hr))
                 goto cleanup;
         }
@@ -1228,6 +1243,7 @@ static HRESULT build_displaydevices_tree(IDxDiagContainerImpl_Container *node)
 struct enum_context
 {
     IDxDiagContainerImpl_Container *cont;
+    IMMDeviceCollection *devices;
     HRESULT hr;
     int index;
 };
@@ -1247,6 +1263,7 @@ BOOL CALLBACK dsound_enum(LPGUID guid, LPCWSTR desc, LPCWSTR module, LPVOID cont
     IDxDiagContainerImpl_Container *device;
     WCHAR buffer[256];
     const WCHAR *p, *name;
+    UINT32 i, count;
 
     /* the default device is enumerated twice, one time without GUID */
     if (!guid) return TRUE;
@@ -1282,6 +1299,62 @@ BOOL CALLBACK dsound_enum(LPGUID guid, LPCWSTR desc, LPCWSTR module, LPVOID cont
     if (FAILED(enum_ctx->hr))
         return FALSE;
 
+    if (enum_ctx->devices && SUCCEEDED(IMMDeviceCollection_GetCount(enum_ctx->devices, &count)))
+    {
+        static const PROPERTYKEY devicepath_key =
+        {
+            {0xb3f8fa53, 0x0004, 0x438e, {0x90, 0x03, 0x51, 0xa4, 0x6e, 0x13, 0x9b, 0xfc}}, 2
+        };
+        IPropertyStore *ps;
+        WCHAR *start, *end;
+        IMMDevice *mmdev;
+        PROPVARIANT pv;
+        HRESULT hr;
+
+        for (i = 0; i < count; ++i)
+        {
+            mmdev = NULL;
+            ps = NULL;
+            hr = IMMDeviceCollection_Item(enum_ctx->devices, i, &mmdev);
+            if (SUCCEEDED(hr))
+                hr = IMMDevice_OpenPropertyStore(mmdev, STGM_READ, &ps);
+            PropVariantInit(&pv);
+            if (SUCCEEDED(hr))
+                hr = IPropertyStore_GetValue(ps, (const PROPERTYKEY*)&PKEY_AudioEndpoint_GUID, &pv);
+            if (SUCCEEDED(hr))
+            {
+                StringFromGUID2(guid, buffer, ARRAY_SIZE(buffer));
+                hr = pv.vt == VT_LPWSTR && !wcsicmp(buffer, pv.pwszVal) ? S_OK : E_FAIL;
+                PropVariantClear(&pv);
+            }
+            PropVariantInit(&pv);
+            if (SUCCEEDED(hr))
+                hr = IPropertyStore_GetValue(ps, &devicepath_key, &pv);
+            if (SUCCEEDED(hr) && pv.vt == VT_LPWSTR)
+            {
+                if ((start = wcsstr(pv.pwszVal, L"}.")))
+                    start += 2;
+                else
+                    start = pv.pwszVal;
+                if (wcsnicmp(start, L"ROOT", 4) && (end = wcschr(start, '\\')) && (end = wcschr(end + 1, '\\'))
+                        && end - start < ARRAY_SIZE(buffer))
+                {
+                    memcpy(buffer, start, (end - start) * sizeof(WCHAR));
+                    buffer[end - start] = 0;
+                    start = buffer;
+                }
+                add_bstr_property(device, L"szHardwareID", start);
+                PropVariantClear(&pv);
+            }
+            if (ps)
+                IPropertyStore_Release(ps);
+            if (mmdev)
+                IMMDevice_Release(mmdev);
+            if (SUCCEEDED(hr))
+                break;
+        }
+    }
+
     enum_ctx->index++;
     return TRUE;
 }
@@ -1290,6 +1363,7 @@ static HRESULT build_directsound_tree(IDxDiagContainerImpl_Container *node)
 {
     struct enum_context enum_ctx;
     IDxDiagContainerImpl_Container *cont;
+    IMMDeviceEnumerator *mmdevenum;
 
     cont = allocate_information_node(L"DxDiag_SoundDevices");
     if (!cont)
@@ -1301,7 +1375,20 @@ static HRESULT build_directsound_tree(IDxDiagContainerImpl_Container *node)
     enum_ctx.hr = S_OK;
     enum_ctx.index = 0;
 
+    enum_ctx.devices = NULL;
+    if (SUCCEEDED(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER, &IID_IMMDeviceEnumerator,
+            (void **)&mmdevenum)))
+    {
+        IMMDeviceEnumerator_EnumAudioEndpoints(mmdevenum, eAll, DEVICE_STATE_ACTIVE, &enum_ctx.devices);
+        IMMDeviceEnumerator_Release(mmdevenum);
+    }
+
     DirectSoundEnumerateW(dsound_enum, &enum_ctx);
+    if (enum_ctx.devices)
+    {
+        IMMDeviceCollection_Release(enum_ctx.devices);
+        enum_ctx.devices = NULL;
+    }
     if (FAILED(enum_ctx.hr))
         return enum_ctx.hr;
 
@@ -1654,7 +1741,7 @@ static HRESULT build_directshowfilters_tree(IDxDiagContainerImpl_Container *node
         return hr;
 
     hr = ICreateDevEnum_CreateClassEnumerator(pCreateDevEnum, &CLSID_ActiveMovieCategories, &pEmCat, 0);
-    if (FAILED(hr))
+    if (hr != S_OK)
         goto cleanup;
 
     while (IEnumMoniker_Next(pEmCat, 1, &pMCat, NULL) == S_OK)

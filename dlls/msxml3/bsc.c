@@ -17,7 +17,6 @@
  */
 
 #define COBJMACROS
-#define NONAMELESSUNION
 
 #include <stdarg.h>
 
@@ -98,7 +97,7 @@ static ULONG WINAPI bsc_Release(
             IBinding_Release(bsc->binding);
         if (bsc->memstream)
             IStream_Release(bsc->memstream);
-        heap_free(bsc);
+        free(bsc);
     }
 
     return ref;
@@ -206,7 +205,7 @@ static HRESULT WINAPI bsc_OnDataAvailable(
 
     do
     {
-        hr = IStream_Read(pstgmed->u.pstm, buf, sizeof(buf), &read);
+        hr = IStream_Read(pstgmed->pstm, buf, sizeof(buf), &read);
         if(FAILED(hr))
             break;
 
@@ -310,7 +309,7 @@ HRESULT bind_url(IMoniker *mon, HRESULT (*onDataAvailable)(void*,char*,DWORD),
     if(FAILED(hr))
         return hr;
 
-    bsc = heap_alloc(sizeof(bsc_t));
+    bsc = malloc(sizeof(bsc_t));
 
     bsc->IBindStatusCallback_iface.lpVtbl = &bsc_vtbl;
     bsc->ref = 1;

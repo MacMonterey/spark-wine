@@ -422,7 +422,7 @@ static struct reader *alloc_reader(void)
     ret->nb_prefixes = ret->nb_prefixes_allocated = 1;
 
     ret->magic       = READER_MAGIC;
-    InitializeCriticalSection( &ret->cs );
+    InitializeCriticalSectionEx( &ret->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO );
     ret->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": reader.cs");
 
     prop_init( reader_props, count, ret->prop, &ret[1] );
@@ -914,7 +914,7 @@ WS_XML_UINT64_TEXT *alloc_uint64_text( UINT64 value )
     return ret;
 }
 
-WS_XML_FLOAT_TEXT *alloc_float_text( float value )
+static WS_XML_FLOAT_TEXT *alloc_float_text( float value )
 {
     WS_XML_FLOAT_TEXT *ret;
 

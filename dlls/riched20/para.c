@@ -148,7 +148,7 @@ ME_Row *para_end_row( ME_Paragraph *para )
     return &item->member.row;
 }
 
-void ME_MakeFirstParagraph(ME_TextEditor *editor)
+void ME_MakeFirstParagraph(ME_TextEditor *editor, HDC hdc)
 {
   ME_Context c;
   CHARFORMAT2W cf;
@@ -160,7 +160,6 @@ void ME_MakeFirstParagraph(ME_TextEditor *editor)
   ME_Run *run;
   ME_Style *style;
   int eol_len;
-  HDC hdc = ITextHost_TxGetDC( editor->texthost );
 
   ME_InitContext( &c, editor, hdc );
 
@@ -222,7 +221,6 @@ void ME_MakeFirstParagraph(ME_TextEditor *editor)
   wine_rb_init( &editor->marked_paras, para_mark_compare );
   para_mark_add( editor, para );
   ME_DestroyContext(&c);
-  ITextHost_TxReleaseDC( editor->texthost, hdc );
 }
 
 static void para_mark_rewrap_paras( ME_TextEditor *editor, ME_Paragraph *first, const ME_Paragraph *end )
@@ -488,8 +486,9 @@ static BOOL para_set_fmt( ME_TextEditor *editor, ME_Paragraph *para, const PARAF
   COPY_FIELD(PFM_ALIGNMENT, wAlignment);
   if (dwMask & PFM_TABSTOPS)
   {
-    para->fmt.cTabCount = pFmt->cTabCount;
-    memcpy(para->fmt.rgxTabs, pFmt->rgxTabs, pFmt->cTabCount*sizeof(LONG));
+    /* Clamp between 0 and MAX_TAB_STOPS */
+    para->fmt.cTabCount = max(0, min(pFmt->cTabCount, MAX_TAB_STOPS));
+    memcpy(para->fmt.rgxTabs, pFmt->rgxTabs, para->fmt.cTabCount * sizeof(LONG));
   }
 
 #define EFFECTS_MASK (PFM_RTLPARA|PFM_KEEP|PFM_KEEPNEXT|PFM_PAGEBREAKBEFORE| \

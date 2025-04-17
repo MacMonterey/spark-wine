@@ -44,7 +44,6 @@
 #include "ddk/hidsdi.h"
 #include "ddk/hidpi.h"
 #include "wine/test.h"
-#include "wine/heap.h"
 #include "wine/mssign.h"
 
 #include "driver.h"
@@ -60,9 +59,6 @@ static BOOL (WINAPI *pRtlFreeUnicodeString)(UNICODE_STRING *);
 static BOOL (WINAPI *pCancelIoEx)(HANDLE, OVERLAPPED *);
 static BOOL (WINAPI *pIsWow64Process)(HANDLE, BOOL *);
 static BOOL (WINAPI *pSetFileCompletionNotificationModes)(HANDLE, UCHAR);
-static HRESULT (WINAPI *pSignerSign)(SIGNER_SUBJECT_INFO *subject, SIGNER_CERT *cert,
-        SIGNER_SIGNATURE_INFO *signature, SIGNER_PROVIDER_INFO *provider,
-        const WCHAR *timestamp, CRYPT_ATTRIBUTES *attr, void *sip_data);
 
 static void load_resource(const WCHAR *name, WCHAR *filename)
 {
@@ -250,6 +246,10 @@ static void testsign_cleanup(struct testsign_context *ctx)
 
 static void testsign_sign(struct testsign_context *ctx, const WCHAR *filename)
 {
+    static HRESULT (WINAPI *pSignerSign)(SIGNER_SUBJECT_INFO *subject, SIGNER_CERT *cert,
+            SIGNER_SIGNATURE_INFO *signature, SIGNER_PROVIDER_INFO *provider,
+            const WCHAR *timestamp, CRYPT_ATTRIBUTES *attr, void *sip_data);
+
     SIGNER_ATTR_AUTHCODE authcode = {sizeof(authcode)};
     SIGNER_SIGNATURE_INFO signature = {sizeof(signature)};
     SIGNER_SUBJECT_INFO subject = {sizeof(subject)};
@@ -258,6 +258,9 @@ static void testsign_sign(struct testsign_context *ctx, const WCHAR *filename)
     SIGNER_FILE_INFO file = {sizeof(file)};
     DWORD index = 0;
     HRESULT hr;
+
+    if (!pSignerSign)
+        pSignerSign = (void *)GetProcAddress(LoadLibraryA("mssign32"), "SignerSign");
 
     subject.dwSubjectChoice = 1;
     subject.pdwIndex = &index;
@@ -386,29 +389,29 @@ static void cat_okfile(void)
     SetFilePointer(okfile, 0, NULL, FILE_BEGIN);
     SetEndOfFile(okfile);
 
+    InterlockedAdd(&winetest_successes, InterlockedExchange(&test_data->successes, 0));
     winetest_add_failures(InterlockedExchange(&test_data->failures, 0));
+    InterlockedAdd(&winetest_todo_successes, InterlockedExchange(&test_data->todo_successes, 0));
     winetest_add_failures(InterlockedExchange(&test_data->todo_failures, 0));
+    InterlockedAdd(&winetest_skipped, InterlockedExchange(&test_data->skipped, 0));
 }
 
 static ULONG64 modified_value;
 
 static void main_test(void)
 {
-    struct main_test_input *test_input;
+    struct main_test_input test_input;
     DWORD size;
     BOOL res;
 
-    test_input = heap_alloc( sizeof(*test_input) );
-    test_input->process_id = GetCurrentProcessId();
-    test_input->teststr_offset = (SIZE_T)((BYTE *)&teststr - (BYTE *)NtCurrentTeb()->Peb->ImageBaseAddress);
-    test_input->modified_value = &modified_value;
+    test_input.process_id = GetCurrentProcessId();
+    test_input.teststr_offset = (SIZE_T)((BYTE *)&teststr - (BYTE *)NtCurrentTeb()->Peb->ImageBaseAddress);
+    test_input.modified_value = &modified_value;
     modified_value = 0;
 
-    res = DeviceIoControl(device, IOCTL_WINETEST_MAIN_TEST, test_input, sizeof(*test_input), NULL, 0, &size, NULL);
+    res = DeviceIoControl(device, IOCTL_WINETEST_MAIN_TEST, &test_input, sizeof(test_input), NULL, 0, &size, NULL);
     ok(res, "DeviceIoControl failed: %lu\n", GetLastError());
     ok(!size, "got size %lu\n", size);
-
-    heap_free(test_input);
 }
 
 static void test_basic_ioctl(void)
@@ -673,7 +676,7 @@ static void do_return_status(ULONG ioctl, struct return_status_params *params)
     }
     else
     {
-        ok(GetLastError() == RtlNtStatusToDosError(expect_status), "got error %lu\n", GetLastError());
+        ok(GetLastError() == RtlNtStatusToDosErrorNoTeb(expect_status), "got error %lu\n", GetLastError());
     }
     if (NT_ERROR(expect_status))
         ok(size == 0xdeadf00d, "got size %lu\n", size);
@@ -1316,7 +1319,6 @@ static void add_file_to_catalog(HANDLE catalog, const WCHAR *file)
 {
     SIP_SUBJECTINFO subject_info = {sizeof(SIP_SUBJECTINFO)};
     SIP_INDIRECT_DATA *indirect_data;
-    const WCHAR *filepart = file;
     CRYPTCATMEMBER *member;
     WCHAR hash_buffer[100];
     GUID subject_guid;
@@ -1331,7 +1333,6 @@ static void add_file_to_catalog(HANDLE catalog, const WCHAR *file)
     subject_info.pgSubjectType = &subject_guid;
     subject_info.pwsFileName = file;
     subject_info.DigestAlgorithm.pszObjId = (char *)szOID_OIWSEC_sha1;
-    subject_info.dwFlags = SPC_INC_PE_RESOURCES_FLAG | SPC_INC_PE_IMPORT_ADDR_TABLE_FLAG | SPC_EXC_PE_PAGE_HASHES_FLAG | 0x10000;
     ret = CryptSIPCreateIndirectData(&subject_info, &size, NULL);
     todo_wine ok(ret, "Failed to get indirect data size, error %lu\n", GetLastError());
 
@@ -1347,19 +1348,6 @@ static void add_file_to_catalog(HANDLE catalog, const WCHAR *file)
         member = CryptCATPutMemberInfo(catalog, (WCHAR *)file,
                 hash_buffer, &subject_guid, 0, size, (BYTE *)indirect_data);
         ok(!!member, "Failed to write member, error %lu\n", GetLastError());
-
-        if (wcsrchr(file, '\\'))
-            filepart = wcsrchr(file, '\\') + 1;
-
-        ret = !!CryptCATPutAttrInfo(catalog, member, (WCHAR *)L"File",
-                CRYPTCAT_ATTR_NAMEASCII | CRYPTCAT_ATTR_DATAASCII | CRYPTCAT_ATTR_AUTHENTICATED,
-                (wcslen(filepart) + 1) * 2, (BYTE *)filepart);
-        ok(ret, "Failed to write attr, error %lu\n", GetLastError());
-
-        ret = !!CryptCATPutAttrInfo(catalog, member, (WCHAR *)L"OSAttr",
-                CRYPTCAT_ATTR_NAMEASCII | CRYPTCAT_ATTR_DATAASCII | CRYPTCAT_ATTR_AUTHENTICATED,
-                sizeof(L"2:6.0"), (BYTE *)L"2:6.0");
-        ok(ret, "Failed to write attr, error %lu\n", GetLastError());
     }
 
     free(indirect_data);
@@ -1875,7 +1863,7 @@ static void test_pnp_driver(struct testsign_context *ctx)
     GetFullPathNameA("winetest.inf", sizeof(path), path, NULL);
     ret = SetupCopyOEMInfA(path, NULL, 0, 0, dest, sizeof(dest), NULL, &filepart);
     ok(ret, "Failed to copy INF, error %#lx\n", GetLastError());
-    ret = SetupUninstallOEMInfA(filepart, 0, NULL);
+    ret = SetupUninstallOEMInfA(filepart, SUOI_FORCEDELETE, NULL);
     ok(ret, "Failed to uninstall INF, error %lu\n", GetLastError());
 
     ret = DeleteFileA("winetest.cat");
@@ -1906,7 +1894,6 @@ START_TEST(ntoskrnl)
     pIsWow64Process = (void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "IsWow64Process");
     pSetFileCompletionNotificationModes = (void *)GetProcAddress(GetModuleHandleA("kernel32.dll"),
                                                                  "SetFileCompletionNotificationModes");
-    pSignerSign = (void *)GetProcAddress(LoadLibraryA("mssign32"), "SignerSign");
 
     if (IsWow64Process(GetCurrentProcess(), &is_wow64) && is_wow64)
     {

@@ -29,12 +29,9 @@
 
 #include "wine/unixlib.h"
 #include "wine/wgl.h"
-#include "wine/wgl_driver.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(dib);
-
-static const struct osmesa_funcs *osmesa_funcs;
 
 static const DWORD bit_fields_888[3] = {0xff0000, 0x00ff00, 0x0000ff};
 static const DWORD bit_fields_555[3] = {0x7c00, 0x03e0, 0x001f};
@@ -398,224 +395,6 @@ static UINT dibdrv_SetBoundsRect( PHYSDEV dev, RECT *rect, UINT flags )
     return DCB_RESET;  /* we don't have device-specific bounds */
 }
 
-struct wgl_context;
-
-static const struct
-{
-    BYTE color_bits;
-    BYTE red_bits, red_shift;
-    BYTE green_bits, green_shift;
-    BYTE blue_bits, blue_shift;
-    BYTE alpha_bits, alpha_shift;
-    BYTE accum_bits;
-    BYTE depth_bits;
-    BYTE stencil_bits;
-} pixel_formats[] =
-{
-    { 32,  8, 16, 8, 8,  8, 0,  8, 24,  16, 32, 8 },
-    { 32,  8, 16, 8, 8,  8, 0,  8, 24,  16, 16, 8 },
-    { 32,  8, 0,  8, 8,  8, 16, 8, 24,  16, 32, 8 },
-    { 32,  8, 0,  8, 8,  8, 16, 8, 24,  16, 16, 8 },
-    { 32,  8, 8,  8, 16, 8, 24, 8, 0,   16, 32, 8 },
-    { 32,  8, 8,  8, 16, 8, 24, 8, 0,   16, 16, 8 },
-    { 24,  8, 0,  8, 8,  8, 16, 0, 0,   16, 32, 8 },
-    { 24,  8, 0,  8, 8,  8, 16, 0, 0,   16, 16, 8 },
-    { 24,  8, 16, 8, 8,  8, 0,  0, 0,   16, 32, 8 },
-    { 24,  8, 16, 8, 8,  8, 0,  0, 0,   16, 16, 8 },
-    { 16,  5, 0,  6, 5,  5, 11, 0, 0,   16, 32, 8 },
-    { 16,  5, 0,  6, 5,  5, 11, 0, 0,   16, 16, 8 },
-};
-
-/**********************************************************************
- *	     dibdrv_wglDescribePixelFormat
- */
-static int dibdrv_wglDescribePixelFormat( HDC hdc, int fmt, UINT size, PIXELFORMATDESCRIPTOR *descr )
-{
-    int ret = ARRAY_SIZE( pixel_formats );
-
-    if (!descr) return ret;
-    if (fmt <= 0 || fmt > ret) return 0;
-    if (size < sizeof(*descr)) return 0;
-
-    memset( descr, 0, sizeof(*descr) );
-    descr->nSize            = sizeof(*descr);
-    descr->nVersion         = 1;
-    descr->dwFlags          = PFD_SUPPORT_GDI | PFD_SUPPORT_OPENGL | PFD_DRAW_TO_BITMAP | PFD_GENERIC_FORMAT;
-    descr->iPixelType       = PFD_TYPE_RGBA;
-    descr->cColorBits       = pixel_formats[fmt - 1].color_bits;
-    descr->cRedBits         = pixel_formats[fmt - 1].red_bits;
-    descr->cRedShift        = pixel_formats[fmt - 1].red_shift;
-    descr->cGreenBits       = pixel_formats[fmt - 1].green_bits;
-    descr->cGreenShift      = pixel_formats[fmt - 1].green_shift;
-    descr->cBlueBits        = pixel_formats[fmt - 1].blue_bits;
-    descr->cBlueShift       = pixel_formats[fmt - 1].blue_shift;
-    descr->cAlphaBits       = pixel_formats[fmt - 1].alpha_bits;
-    descr->cAlphaShift      = pixel_formats[fmt - 1].alpha_shift;
-    descr->cAccumBits       = pixel_formats[fmt - 1].accum_bits;
-    descr->cAccumRedBits    = pixel_formats[fmt - 1].accum_bits / 4;
-    descr->cAccumGreenBits  = pixel_formats[fmt - 1].accum_bits / 4;
-    descr->cAccumBlueBits   = pixel_formats[fmt - 1].accum_bits / 4;
-    descr->cAccumAlphaBits  = pixel_formats[fmt - 1].accum_bits / 4;
-    descr->cDepthBits       = pixel_formats[fmt - 1].depth_bits;
-    descr->cStencilBits     = pixel_formats[fmt - 1].stencil_bits;
-    descr->cAuxBuffers      = 0;
-    descr->iLayerType       = PFD_MAIN_PLANE;
-    return ret;
-}
-
-/***********************************************************************
- *		dibdrv_wglCopyContext
- */
-static BOOL dibdrv_wglCopyContext( struct wgl_context *src, struct wgl_context *dst, UINT mask )
-{
-    FIXME( "not supported yet\n" );
-    return FALSE;
-}
-
-/***********************************************************************
- *		dibdrv_wglDeleteContext
- */
-static BOOL dibdrv_wglDeleteContext( struct wgl_context *context )
-{
-    if (!osmesa_funcs) return FALSE;
-    return osmesa_funcs->delete_context( context );
-}
-
-/***********************************************************************
- *		dibdrv_wglGetPixelFormat
- */
-static int dibdrv_wglGetPixelFormat( HDC hdc )
-{
-    DC *dc = get_dc_ptr( hdc );
-    int ret = 0;
-
-    if (dc)
-    {
-        ret = dc->pixel_format;
-        release_dc_ptr( dc );
-    }
-    return ret;
-}
-
-/***********************************************************************
- *		dibdrv_wglCreateContext
- */
-static struct wgl_context *dibdrv_wglCreateContext( HDC hdc )
-{
-    PIXELFORMATDESCRIPTOR descr;
-    int format = dibdrv_wglGetPixelFormat( hdc );
-
-    if (!format) format = 1;
-    if (!dibdrv_wglDescribePixelFormat( hdc, format, sizeof(descr), &descr )) return NULL;
-
-    if (!osmesa_funcs) return NULL;
-    return osmesa_funcs->create_context( hdc, &descr );
-}
-
-/***********************************************************************
- *		dibdrv_wglGetProcAddress
- */
-static PROC dibdrv_wglGetProcAddress( const char *proc )
-{
-    if (!strncmp( proc, "wgl", 3 )) return NULL;
-    if (!osmesa_funcs) return NULL;
-    return osmesa_funcs->get_proc_address( proc );
-}
-
-/***********************************************************************
- *		dibdrv_wglMakeCurrent
- */
-static BOOL dibdrv_wglMakeCurrent( HDC hdc, struct wgl_context *context )
-{
-    HBITMAP bitmap;
-    BITMAPOBJ *bmp;
-    dib_info dib;
-    BOOL ret = FALSE;
-
-    if (!osmesa_funcs) return FALSE;
-    if (!context) return osmesa_funcs->make_current( NULL, NULL, 0, 0, 0, 0 );
-
-    bitmap = NtGdiGetDCObject( hdc, NTGDI_OBJ_SURF );
-    bmp = GDI_GetObjPtr( bitmap, NTGDI_OBJ_BITMAP );
-    if (!bmp) return FALSE;
-
-    if (init_dib_info_from_bitmapobj( &dib, bmp ))
-    {
-        char *bits;
-        int width = dib.rect.right - dib.rect.left;
-        int height = dib.rect.bottom - dib.rect.top;
-
-        if (dib.stride < 0)
-            bits = (char *)dib.bits.ptr + (dib.rect.bottom - 1) * dib.stride;
-        else
-            bits = (char *)dib.bits.ptr + dib.rect.top * dib.stride;
-        bits += dib.rect.left * dib.bit_count / 8;
-
-        TRACE( "context %p bits %p size %ux%u\n", context, bits, width, height );
-
-        ret = osmesa_funcs->make_current( context, bits, width, height, dib.bit_count, dib.stride );
-    }
-    GDI_ReleaseObj( bitmap );
-    return ret;
-}
-
-/**********************************************************************
- *	     dibdrv_wglSetPixelFormat
- */
-static BOOL dibdrv_wglSetPixelFormat( HDC hdc, int fmt, const PIXELFORMATDESCRIPTOR *descr )
-{
-    if (fmt <= 0 || fmt > ARRAY_SIZE( pixel_formats )) return FALSE;
-    return NtGdiSetPixelFormat( hdc, fmt );
-}
-
-/***********************************************************************
- *		dibdrv_wglShareLists
- */
-static BOOL dibdrv_wglShareLists( struct wgl_context *org, struct wgl_context *dest )
-{
-    FIXME( "not supported yet\n" );
-    return FALSE;
-}
-
-/***********************************************************************
- *		dibdrv_wglSwapBuffers
- */
-static BOOL dibdrv_wglSwapBuffers( HDC hdc )
-{
-    return TRUE;
-}
-
-static struct opengl_funcs opengl_funcs =
-{
-    {
-        dibdrv_wglCopyContext,         /* p_wglCopyContext */
-        dibdrv_wglCreateContext,       /* p_wglCreateContext */
-        dibdrv_wglDeleteContext,       /* p_wglDeleteContext */
-        dibdrv_wglDescribePixelFormat, /* p_wglDescribePixelFormat */
-        dibdrv_wglGetPixelFormat,      /* p_wglGetPixelFormat */
-        dibdrv_wglGetProcAddress,      /* p_wglGetProcAddress */
-        dibdrv_wglMakeCurrent,         /* p_wglMakeCurrent */
-        dibdrv_wglSetPixelFormat,      /* p_wglSetPixelFormat */
-        dibdrv_wglShareLists,          /* p_wglShareLists */
-        dibdrv_wglSwapBuffers,         /* p_wglSwapBuffers */
-    }
-};
-
-/**********************************************************************
- *	     dibdrv_get_wgl_driver
- */
-struct opengl_funcs *dibdrv_get_wgl_driver(void)
-{
-    if (!osmesa_funcs && !(osmesa_funcs = init_opengl_lib()))
-    {
-        static int warned;
-        if (!warned++) ERR( "OSMesa not available, no OpenGL bitmap support\n" );
-        return (void *)-1;
-    }
-    osmesa_funcs->get_gl_funcs( &opengl_funcs );
-    return &opengl_funcs;
-}
-
 const struct gdi_dc_funcs dib_driver =
 {
     NULL,                               /* pAbortDoc */
@@ -707,11 +486,6 @@ const struct gdi_dc_funcs dib_driver =
     dibdrv_StrokeAndFillPath,           /* pStrokeAndFillPath */
     dibdrv_StrokePath,                  /* pStrokePath */
     NULL,                               /* pUnrealizePalette */
-    NULL,                               /* pD3DKMTCheckVidPnExclusiveOwnership */
-    NULL,                               /* pD3DKMTCloseAdapter */
-    NULL,                               /* pD3DKMTOpenAdapterFromLuid */
-    NULL,                               /* pD3DKMTQueryVideoMemoryInfo */
-    NULL,                               /* pD3DKMTSetVidPnSourceOwner */
     GDI_PRIORITY_DIB_DRV                /* priority */
 };
 
@@ -730,6 +504,7 @@ struct windrv_physdev
     struct gdi_physdev     dev;
     struct dibdrv_physdev *dibdrv;
     struct window_surface *surface;
+    UINT lock_count;
 };
 
 static const struct gdi_dc_funcs window_driver;
@@ -739,35 +514,56 @@ static inline struct windrv_physdev *get_windrv_physdev( PHYSDEV dev )
     return (struct windrv_physdev *)dev;
 }
 
+/* gdi_lock should not be locked */
 static inline void lock_surface( struct windrv_physdev *dev )
 {
-    /* gdi_lock should not be locked */
-    dev->surface->funcs->lock( dev->surface );
-    if (IsRectEmpty( dev->dibdrv->bounds ) || dev->surface->draw_start_ticks == 0)
-        dev->surface->draw_start_ticks = NtGetTickCount();
+    struct window_surface *surface = dev->surface;
+
+    if (!dev->lock_count++)
+    {
+        window_surface_lock( surface );
+        if (IsRectEmpty( dev->dibdrv->bounds ) || !surface->draw_start_ticks)
+            surface->draw_start_ticks = NtGetTickCount();
+    }
 }
 
 static inline void unlock_surface( struct windrv_physdev *dev )
 {
-    BOOL should_flush = NtGetTickCount() - dev->surface->draw_start_ticks > FLUSH_PERIOD;
-    dev->surface->funcs->unlock( dev->surface );
-    if (should_flush) dev->surface->funcs->flush( dev->surface );
+    struct window_surface *surface = dev->surface;
+
+    if (!--dev->lock_count)
+    {
+        DWORD ticks = NtGetTickCount() - surface->draw_start_ticks;
+        window_surface_unlock( surface );
+        if (ticks > FLUSH_PERIOD) window_surface_flush( dev->surface );
+    }
 }
 
-static void unlock_bits_surface( struct gdi_image_bits *bits )
+static inline void lock_surfaces( struct windrv_physdev *dst_dev, struct windrv_physdev *src_dev )
 {
-    struct window_surface *surface = bits->param;
-    surface->funcs->unlock( surface );
+    lock_surface( dst_dev );
+    if (src_dev && !src_dev->lock_count++ && dst_dev->surface != src_dev->surface)
+        window_surface_lock( src_dev->surface );
+}
+
+static inline void unlock_surfaces( struct windrv_physdev *dst_dev, struct windrv_physdev *src_dev )
+{
+    if (src_dev && !--src_dev->lock_count && dst_dev->surface != src_dev->surface)
+        window_surface_unlock( src_dev->surface );
+    unlock_surface( dst_dev );
+}
+
+static void unlock_windrv_bits( struct gdi_image_bits *bits )
+{
+    unlock_surface( bits->param );
 }
 
 void dibdrv_set_window_surface( DC *dc, struct window_surface *surface )
 {
-    char buffer[FIELD_OFFSET( BITMAPINFO, bmiColors[256] )];
-    BITMAPINFO *info = (BITMAPINFO *)buffer;
-    void *bits;
     PHYSDEV windev;
     struct windrv_physdev *physdev;
     struct dibdrv_physdev *dibdrv;
+    BITMAPOBJ *bmp;
 
     TRACE( "%p %p\n", dc->hSelf, surface );
 
@@ -775,6 +571,7 @@ void dibdrv_set_window_surface( DC *dc, struct window_surface *surface )
 
     if (surface)
     {
+        if (surface->alpha_mask) surface = &dummy_surface;
         if (windev) push_dc_driver( &dc->physDev, windev, windev->funcs );
         else
         {
@@ -788,11 +585,22 @@ void dibdrv_set_window_surface( DC *dc, struct window_surface *surface )
         physdev->surface = surface;
 
         dibdrv = physdev->dibdrv;
-        bits = surface->funcs->get_info( surface, info );
-        init_dib_info_from_bitmapinfo( &dibdrv->dib, info, bits );
+        if (!(bmp = GDI_GetObjPtr( surface->color_bitmap, NTGDI_OBJ_BITMAP )))
+        {
+            static BITMAPINFO info = {.bmiHeader = {.biSize = sizeof(BITMAPINFOHEADER), .biWidth = 1, .biHeight = 1,
+                                                    .biPlanes = 1, .biBitCount = 32, .biCompression = BI_RGB}};
+            static DWORD bits;
+
+            init_dib_info_from_bitmapinfo( &dibdrv->dib, &info, &bits );
+        }
+        else
+        {
+            init_dib_info_from_bitmapobj( &dibdrv->dib, bmp );
+            GDI_ReleaseObj( surface->color_bitmap );
+        }
         dibdrv->dib.rect = dc->attr->vis_rect;
         OffsetRect( &dibdrv->dib.rect, -dc->device_rect.left, -dc->device_rect.top );
-        dibdrv->bounds = surface->funcs->get_bounds( surface );
+        dibdrv->bounds = &surface->bounds;
         DC_InitDC( dc );
     }
     else if (windev)
@@ -806,13 +614,16 @@ void dibdrv_set_window_surface( DC *dc, struct window_surface *surface )
 static BOOL windrv_AlphaBlend( PHYSDEV dst_dev, struct bitblt_coords *dst,
                                PHYSDEV src_dev, struct bitblt_coords *src, BLENDFUNCTION func )
 {
-    struct windrv_physdev *physdev = get_windrv_physdev( dst_dev );
+    struct windrv_physdev *dst_physdev = get_windrv_physdev( dst_dev ), *src_physdev;
     BOOL ret;
 
-    lock_surface( physdev );
+    if (src_dev->funcs == &window_driver) src_physdev = get_windrv_physdev( src_dev );
+    else src_physdev = NULL;
+
+    lock_surfaces( dst_physdev, src_physdev );
     dst_dev = GET_NEXT_PHYSDEV( dst_dev, pAlphaBlend );
     ret = dst_dev->funcs->pAlphaBlend( dst_dev, dst, src_dev, src, func );
-    unlock_surface( physdev );
+    unlock_surfaces( dst_physdev, src_physdev );
     return ret;
 }
 
@@ -871,6 +682,8 @@ static BOOL windrv_Chord( PHYSDEV dev, INT left, INT top, INT right, INT bottom,
 static BOOL windrv_CreateDC( PHYSDEV *dev, LPCWSTR device, LPCWSTR output, const DEVMODEW *devmode )
 {
     struct windrv_physdev *physdev = calloc( 1, sizeof(*physdev) );
+    PHYSDEV dibdrv;
+    DC *dc;
 
     if (!physdev) return FALSE;
 
@@ -879,7 +692,9 @@ static BOOL windrv_CreateDC( PHYSDEV *dev, LPCWSTR device, LPCWSTR output, const
         free( physdev );
         return FALSE;
     }
-    physdev->dibdrv = get_dibdrv_pdev( *dev );
+    dc = get_physdev_dc( *dev );
+    dibdrv = find_dc_driver( dc, &dib_driver );
+    physdev->dibdrv = get_dibdrv_pdev( dibdrv );
     push_dc_driver( dev, &physdev->dev, &window_driver );
     return TRUE;
 }
@@ -956,8 +771,8 @@ static DWORD windrv_GetImage( PHYSDEV dev, BITMAPINFO *info,
     {
         /* use the freeing callback to unlock the surface */
         assert( !bits->free );
-        bits->free = unlock_bits_surface;
-        bits->param = physdev->surface;
+        bits->free = unlock_windrv_bits;
+        bits->param = physdev;
     }
     else unlock_surface( physdev );
     return ret;
@@ -1148,13 +963,16 @@ static COLORREF windrv_SetPixel( PHYSDEV dev, INT x, INT y, COLORREF color )
 static BOOL windrv_StretchBlt( PHYSDEV dst_dev, struct bitblt_coords *dst,
                                PHYSDEV src_dev, struct bitblt_coords *src, DWORD rop )
 {
-    struct windrv_physdev *physdev = get_windrv_physdev( dst_dev );
+    struct windrv_physdev *dst_physdev = get_windrv_physdev( dst_dev ), *src_physdev;
     BOOL ret;
 
-    lock_surface( physdev );
+    if (src_dev->funcs == &window_driver) src_physdev = get_windrv_physdev( src_dev );
+    else src_physdev = NULL;
+
+    lock_surfaces( dst_physdev, src_physdev );
     dst_dev = GET_NEXT_PHYSDEV( dst_dev, pStretchBlt );
     ret = dst_dev->funcs->pStretchBlt( dst_dev, dst, src_dev, src, rop );
-    unlock_surface( physdev );
+    unlock_surfaces( dst_physdev, src_physdev );
     return ret;
 }
 
@@ -1264,10 +1082,5 @@ static const struct gdi_dc_funcs window_driver =
     NULL,                               /* pStrokeAndFillPath */
     NULL,                               /* pStrokePath */
     NULL,                               /* pUnrealizePalette */
-    NULL,                               /* pD3DKMTCheckVidPnExclusiveOwnership */
-    NULL,                               /* pD3DKMTCloseAdapter */
-    NULL,                               /* pD3DKMTOpenAdapterFromLuid */
-    NULL,                               /* pD3DKMTQueryVideoMemoryInfo */
-    NULL,                               /* pD3DKMTSetVidPnSourceOwner */
     GDI_PRIORITY_DIB_DRV + 10           /* priority */
 };

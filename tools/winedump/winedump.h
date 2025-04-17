@@ -168,7 +168,7 @@ BOOL  dll_next_symbol (parsed_symbol * sym);
 /* Symbol functions */
 void  symbol_init(parsed_symbol* symbol, const char* name);
 
-BOOL  symbol_demangle (parsed_symbol *symbol);
+char *demangle( const char *name );
 
 BOOL  symbol_search (parsed_symbol *symbol);
 
@@ -216,7 +216,7 @@ const char *get_machine_str(int mach);
 
 /* file dumping functions */
 enum FileSig {SIG_UNKNOWN, SIG_DOS, SIG_PE, SIG_DBG, SIG_PDB, SIG_NE, SIG_LE, SIG_MDMP, SIG_COFFLIB, SIG_LNK,
-              SIG_EMF, SIG_EMFSPOOL, SIG_MF, SIG_FNT, SIG_TLB, SIG_NLS};
+              SIG_EMF, SIG_EMFSPOOL, SIG_MF, SIG_FNT, SIG_TLB, SIG_NLS, SIG_REG};
 
 const void*	PRD(unsigned long prd, unsigned long len);
 unsigned long	Offset(const void* ptr);
@@ -224,16 +224,19 @@ unsigned long	Offset(const void* ptr);
 typedef void (*file_dumper)(void);
 BOOL            dump_analysis(const char*, file_dumper, enum FileSig);
 
+void            dump_data_offset( const unsigned char *ptr, unsigned int size, unsigned int offset, const char *prefix );
 void            dump_data( const unsigned char *ptr, unsigned int size, const char *prefix );
 const char*	get_time_str( unsigned long );
 unsigned int    strlenW( const unsigned short *str );
 void            dump_unicode_str( const unsigned short *str, int len );
+const char*     get_hexint64_str( DWORD64 l );
+const char*     get_uint64_str( DWORD64 l );
 const char*     get_guid_str(const GUID* guid);
 const char*     get_unicode_str( const WCHAR *str, int len );
 const char*     get_symbol_str(const char* symname);
 void            print_fake_dll(void);
 void            dump_file_header(const IMAGE_FILE_HEADER *, BOOL);
-void            dump_optional_header(const IMAGE_OPTIONAL_HEADER32 *, UINT);
+void            dump_optional_header(const IMAGE_OPTIONAL_HEADER32 *);
 void            dump_section(const IMAGE_SECTION_HEADER *, const char* strtable);
 void            dump_section_characteristics(DWORD characteristics, const char* sep);
 
@@ -257,14 +260,18 @@ enum FileSig    get_kind_emfspool(void);
 void            emfspool_dump(void);
 enum FileSig    get_kind_mf(void);
 void            mf_dump(void);
-enum FileSig    get_kind_pdb(void);
-void            pdb_dump(void);
+enum FileSig    get_kind_pdb(int fd);
+void            pdb_dump(int fd);
 enum FileSig    get_kind_fnt(void);
 void            fnt_dump( void );
 enum FileSig    get_kind_tlb(void);
 void            tlb_dump(void);
 enum FileSig    get_kind_nls(void);
 void            nls_dump(void);
+enum FileSig    get_kind_reg(void);
+void            reg_dump(void);
+
+extern void tlb_dump_resource( void *ptr, size_t size, const char *prefix );
 
 BOOL            codeview_dump_symbols(const void* root, unsigned long start, unsigned long size);
 BOOL            codeview_dump_types_from_offsets(const void* table, const DWORD* offsets, unsigned num_types);

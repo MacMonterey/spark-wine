@@ -111,38 +111,31 @@ static UINT32 alloc_rawinput_handle(void)
 /* make sure bRawData can hold UsagePage and Usage without requiring additional allocation */
 C_ASSERT(offsetof(RAWINPUT, data.hid.bRawData[2 * sizeof(USAGE)]) < sizeof(RAWINPUT));
 
-static void send_wm_input_device_change(BASE_DEVICE_EXTENSION *ext, LPARAM param)
+static void send_wm_input_device_change( struct phys_device *pdo, LPARAM param )
 {
-    HIDP_COLLECTION_DESC *desc = ext->u.pdo.device_desc.CollectionDesc;
-    RAWINPUT rawinput;
-    INPUT input;
+    HIDP_COLLECTION_DESC *desc = pdo->collection_desc;
+    INPUT input = {.type = INPUT_HARDWARE};
+    struct hid_packet hid = {0};
 
-    TRACE("ext %p, lparam %p\n", ext, (void *)param);
+    TRACE( "pdo %p, lparam %p\n", pdo, (void *)param );
 
-    if (!IsEqualGUID( ext->class_guid, &GUID_DEVINTERFACE_HID )) return;
+    if (!IsEqualGUID( pdo->base.class_guid, &GUID_DEVINTERFACE_HID )) return;
 
-    rawinput.header.dwType = RIM_TYPEHID;
-    rawinput.header.dwSize = offsetof(RAWINPUT, data.hid.bRawData[2 * sizeof(USAGE)]);
-    rawinput.header.hDevice = ULongToHandle(ext->u.pdo.rawinput_handle);
-    rawinput.header.wParam = param;
-    rawinput.data.hid.dwCount = 0;
-    rawinput.data.hid.dwSizeHid = 0;
-    ((USAGE *)rawinput.data.hid.bRawData)[0] = desc->UsagePage;
-    ((USAGE *)rawinput.data.hid.bRawData)[1] = desc->Usage;
-
-    input.type = INPUT_HARDWARE;
     input.hi.uMsg = WM_INPUT_DEVICE_CHANGE;
-    input.hi.wParamH = 0;
-    input.hi.wParamL = 0;
-    __wine_send_input(0, &input, &rawinput);
+    input.hi.wParamH = HIWORD(param);
+    input.hi.wParamL = LOWORD(param);
+
+    hid.head.device = pdo->rawinput_handle;
+    hid.head.usage = MAKELONG(desc->Usage, desc->UsagePage);
+    NtUserSendHardwareInput(0, 0, &input, (LPARAM)&hid);
 }
 
 static NTSTATUS WINAPI driver_add_device(DRIVER_OBJECT *driver, DEVICE_OBJECT *bus_pdo)
 {
     WCHAR device_id[MAX_DEVICE_ID_LEN], instance_id[MAX_DEVICE_ID_LEN];
-    BASE_DEVICE_EXTENSION *ext;
+    struct func_device *fdo;
     BOOL is_xinput_class;
-    DEVICE_OBJECT *fdo;
+    DEVICE_OBJECT *device;
     NTSTATUS status;
     minidriver *minidriver;
 
@@ -161,154 +154,211 @@ static NTSTATUS WINAPI driver_add_device(DRIVER_OBJECT *driver, DEVICE_OBJECT *b
     TRACE("Adding device to PDO %p, id %s\\%s.\n", bus_pdo, debugstr_w(device_id), debugstr_w(instance_id));
     minidriver = find_minidriver(driver);
 
-    if ((status = IoCreateDevice(driver, sizeof(*ext) + minidriver->minidriver.DeviceExtensionSize,
-            NULL, FILE_DEVICE_BUS_EXTENDER, 0, FALSE, &fdo)))
+    if ((status = IoCreateDevice( driver, sizeof(*fdo) + minidriver->minidriver.DeviceExtensionSize,
+                                  NULL, FILE_DEVICE_BUS_EXTENDER, 0, FALSE, &device )))
     {
         ERR( "Failed to create bus FDO, status %#lx.\n", status );
         return status;
     }
-    ext = fdo->DeviceExtension;
-    ext->is_fdo = TRUE;
-    ext->u.fdo.hid_ext.MiniDeviceExtension = ext + 1;
-    ext->u.fdo.hid_ext.PhysicalDeviceObject = bus_pdo;
-    ext->u.fdo.hid_ext.NextDeviceObject = bus_pdo;
-    swprintf(ext->device_id, ARRAY_SIZE(ext->device_id), L"HID\\%s", wcsrchr(device_id, '\\') + 1);
-    wcscpy(ext->instance_id, instance_id);
+    fdo = device->DeviceExtension;
+    fdo->base.is_fdo = TRUE;
+    fdo->base.hid.MiniDeviceExtension = fdo + 1;
+    fdo->base.hid.PhysicalDeviceObject = bus_pdo;
+    fdo->base.hid.NextDeviceObject = bus_pdo;
+    swprintf( fdo->base.device_id, ARRAY_SIZE(fdo->base.device_id), L"HID\\%s", wcsrchr( device_id, '\\' ) + 1 );
+    wcscpy( fdo->base.instance_id, instance_id );
 
-    if (get_device_id(bus_pdo, BusQueryContainerID, ext->container_id))
-        ext->container_id[0] = 0;
+    if (get_device_id( bus_pdo, BusQueryContainerID, fdo->base.container_id ))
+        fdo->base.container_id[0] = 0;
 
     is_xinput_class = !wcsncmp(device_id, L"WINEXINPUT\\", 7) && wcsstr(device_id, L"&XI_") != NULL;
-    if (is_xinput_class) ext->class_guid = &GUID_DEVINTERFACE_WINEXINPUT;
-    else ext->class_guid = &GUID_DEVINTERFACE_HID;
+    if (is_xinput_class) fdo->base.class_guid = &GUID_DEVINTERFACE_WINEXINPUT;
+    else fdo->base.class_guid = &GUID_DEVINTERFACE_HID;
 
-    status = minidriver->AddDevice(minidriver->minidriver.DriverObject, fdo);
+    status = minidriver->AddDevice( minidriver->minidriver.DriverObject, device );
     if (status != STATUS_SUCCESS)
     {
         ERR( "Minidriver AddDevice failed (%lx)\n", status );
-        IoDeleteDevice(fdo);
+        IoDeleteDevice( device );
         return status;
     }
 
-    IoAttachDeviceToDeviceStack(fdo, bus_pdo);
-    fdo->Flags &= ~DO_DEVICE_INITIALIZING;
+    IoAttachDeviceToDeviceStack( device, bus_pdo );
+    device->Flags &= ~DO_DEVICE_INITIALIZING;
 
     return STATUS_SUCCESS;
 }
 
-static void create_child(minidriver *minidriver, DEVICE_OBJECT *fdo)
+static NTSTATUS get_hid_device_desc( minidriver *minidriver, DEVICE_OBJECT *device, HIDP_DEVICE_DESC *desc )
 {
-    BASE_DEVICE_EXTENSION *fdo_ext = fdo->DeviceExtension, *pdo_ext;
-    HID_DEVICE_ATTRIBUTES attr = {0};
     HID_DESCRIPTOR descriptor = {0};
-    HIDP_COLLECTION_DESC *desc;
-    DEVICE_OBJECT *child_pdo;
-    BYTE *reportDescriptor;
+    IO_STATUS_BLOCK io;
+    BYTE *report_desc;
+    INT i;
+
+    call_minidriver( IOCTL_HID_GET_DEVICE_DESCRIPTOR, device, NULL, 0, &descriptor, sizeof(descriptor), &io );
+    if (io.Status) return io.Status;
+
+    for (i = 0; i < descriptor.bNumDescriptors; i++)
+        if (descriptor.DescriptorList[i].bReportType == HID_REPORT_DESCRIPTOR_TYPE)
+            break;
+    if (i >= descriptor.bNumDescriptors) return STATUS_NOT_FOUND;
+
+    if (!(report_desc = malloc( descriptor.DescriptorList[i].wReportLength ))) return STATUS_NO_MEMORY;
+    call_minidriver( IOCTL_HID_GET_REPORT_DESCRIPTOR, device, NULL, 0, report_desc,
+                     descriptor.DescriptorList[i].wReportLength, &io );
+    if (!io.Status) io.Status = HidP_GetCollectionDescription( report_desc, descriptor.DescriptorList[i].wReportLength,
+                                                               PagedPool, desc );
+    free( report_desc );
+
+    if (io.Status && io.Status != HIDP_STATUS_SUCCESS) return STATUS_INVALID_PARAMETER;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS initialize_device( minidriver *minidriver, DEVICE_OBJECT *device )
+{
+    struct func_device *fdo = fdo_from_DEVICE_OBJECT( device );
+    ULONG index = HID_STRING_ID_ISERIALNUMBER;
+    IO_STATUS_BLOCK io;
+    NTSTATUS status;
+
+    call_minidriver( IOCTL_HID_GET_DEVICE_ATTRIBUTES, device, NULL, 0, &fdo->attrs,
+                     sizeof(fdo->attrs), &io );
+    if (io.Status != STATUS_SUCCESS)
+    {
+        ERR( "Minidriver failed to get attributes, status %#lx.\n", io.Status );
+        return io.Status;
+    }
+
+    call_minidriver( IOCTL_HID_GET_STRING, device, ULongToPtr(index), sizeof(index),
+                     &fdo->serial, sizeof(fdo->serial), &io );
+    if (io.Status != STATUS_SUCCESS)
+    {
+        ERR( "Minidriver failed to get serial number, status %#lx.\n", io.Status );
+        return io.Status;
+    }
+
+    if ((status = get_hid_device_desc( minidriver, device, &fdo->device_desc )))
+    {
+        ERR( "Failed to get HID device description, status %#lx\n", status );
+        return status;
+    }
+
+    if (!(fdo->child_pdos = malloc( fdo->device_desc.CollectionDescLength * sizeof(*fdo->child_pdos) )))
+    {
+        ERR( "Cannot allocate child PDOs array\n" );
+        return STATUS_NO_MEMORY;
+    }
+
+    fdo->poll_interval = minidriver->minidriver.DevicesArePolled ? DEFAULT_POLL_INTERVAL : 0;
+    KeInitializeEvent( &fdo->halt_event, NotificationEvent, FALSE );
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS create_child_pdos( minidriver *minidriver, DEVICE_OBJECT *device )
+{
+    struct func_device *fdo = fdo_from_DEVICE_OBJECT( device );
+    DEVICE_OBJECT *child_device;
+    struct phys_device *pdo;
     UNICODE_STRING string;
     WCHAR pdo_name[255];
-    IO_STATUS_BLOCK io;
     USAGE page, usage;
     NTSTATUS status;
     INT i;
 
-    call_minidriver( IOCTL_HID_GET_DEVICE_ATTRIBUTES, fdo, NULL, 0, &attr, sizeof(attr), &io );
-    if (io.Status != STATUS_SUCCESS)
+    for (i = 0; i < fdo->device_desc.CollectionDescLength; ++i)
     {
-        ERR( "Minidriver failed to get attributes, status %#lx.\n", io.Status );
-        return;
+        if (fdo->device_desc.CollectionDescLength > 1)
+            swprintf( pdo_name, ARRAY_SIZE(pdo_name), L"\\Device\\HID#%p&%p&%d", device->DriverObject,
+                      fdo->base.hid.PhysicalDeviceObject, i );
+        else
+            swprintf( pdo_name, ARRAY_SIZE(pdo_name), L"\\Device\\HID#%p&%p", device->DriverObject,
+                      fdo->base.hid.PhysicalDeviceObject );
+
+        RtlInitUnicodeString(&string, pdo_name);
+        if ((status = IoCreateDevice( device->DriverObject, sizeof(*pdo), &string, 0, 0, FALSE, &child_device )))
+        {
+            ERR( "Failed to create child PDO, status %#lx.\n", status );
+            return status;
+        }
+
+        fdo->child_pdos[i] = child_device;
+        fdo->child_count++;
+
+        pdo = pdo_from_DEVICE_OBJECT( child_device );
+        pdo->base.hid = fdo->base.hid;
+        pdo->parent_fdo = device;
+        list_init( &pdo->queues );
+        KeInitializeSpinLock( &pdo->lock );
+
+        pdo->collection_desc = fdo->device_desc.CollectionDesc + i;
+
+        if (fdo->device_desc.CollectionDescLength > 1)
+        {
+            swprintf( pdo->base.device_id, ARRAY_SIZE(pdo->base.device_id), L"%s&Col%02d",
+                      fdo->base.device_id, pdo->collection_desc->CollectionNumber );
+            swprintf( pdo->base.instance_id, ARRAY_SIZE(pdo->base.instance_id), L"%u&%s&%x&%u&%04u",
+                      fdo->attrs.VersionNumber, fdo->serial, 0, 0, i );
+        }
+        else
+        {
+            wcscpy( pdo->base.device_id, fdo->base.device_id );
+            wcscpy( pdo->base.instance_id, fdo->base.instance_id );
+        }
+        wcscpy( pdo->base.container_id, fdo->base.container_id );
+        pdo->base.class_guid = fdo->base.class_guid;
+
+        pdo->information.VendorID = fdo->attrs.VendorID;
+        pdo->information.ProductID = fdo->attrs.ProductID;
+        pdo->information.VersionNumber = fdo->attrs.VersionNumber;
+        pdo->information.Polled = minidriver->minidriver.DevicesArePolled;
+        pdo->information.DescriptorSize = pdo->collection_desc->PreparsedDataLength;
+
+        page = pdo->collection_desc->UsagePage;
+        usage = pdo->collection_desc->Usage;
+        if (page == HID_USAGE_PAGE_GENERIC && usage == HID_USAGE_GENERIC_MOUSE)
+            pdo->rawinput_handle = WINE_MOUSE_HANDLE;
+        else if (page == HID_USAGE_PAGE_GENERIC && usage == HID_USAGE_GENERIC_KEYBOARD)
+            pdo->rawinput_handle = WINE_KEYBOARD_HANDLE;
+        else
+            pdo->rawinput_handle = alloc_rawinput_handle();
+
+        TRACE( "created pdo %p, rawinput handle %#x\n", pdo, pdo->rawinput_handle );
     }
 
-    swprintf(pdo_name, ARRAY_SIZE(pdo_name), L"\\Device\\HID#%p&%p", fdo->DriverObject,
-            fdo_ext->u.fdo.hid_ext.PhysicalDeviceObject);
-    RtlInitUnicodeString(&string, pdo_name);
-    if ((status = IoCreateDevice(fdo->DriverObject, sizeof(*pdo_ext), &string, 0, 0, FALSE, &child_pdo)))
+    IoInvalidateDeviceRelations( fdo->base.hid.PhysicalDeviceObject, BusRelations );
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS create_device_thread( DEVICE_OBJECT *device )
+{
+    struct func_device *fdo = fdo_from_DEVICE_OBJECT( device );
+    ULONG i, input_length = 0;
+    HIDP_REPORT_IDS *report;
+
+    for (i = 0; i < fdo->device_desc.CollectionDescLength; i++)
     {
-        ERR( "Failed to create child PDO, status %#lx.\n", io.Status );
-        return;
-    }
-    fdo_ext->u.fdo.child_pdo = child_pdo;
-
-    pdo_ext = child_pdo->DeviceExtension;
-    pdo_ext->u.pdo.parent_fdo = fdo;
-    list_init( &pdo_ext->u.pdo.queues );
-    KeInitializeSpinLock( &pdo_ext->u.pdo.queues_lock );
-    wcscpy(pdo_ext->device_id, fdo_ext->device_id);
-    wcscpy(pdo_ext->instance_id, fdo_ext->instance_id);
-    wcscpy(pdo_ext->container_id, fdo_ext->container_id);
-    pdo_ext->class_guid = fdo_ext->class_guid;
-
-    pdo_ext->u.pdo.information.VendorID = attr.VendorID;
-    pdo_ext->u.pdo.information.ProductID = attr.ProductID;
-    pdo_ext->u.pdo.information.VersionNumber = attr.VersionNumber;
-    pdo_ext->u.pdo.information.Polled = minidriver->minidriver.DevicesArePolled;
-
-    call_minidriver( IOCTL_HID_GET_DEVICE_DESCRIPTOR, fdo, NULL, 0, &descriptor, sizeof(descriptor), &io );
-    if (io.Status != STATUS_SUCCESS)
-    {
-        ERR( "Cannot get Device Descriptor, status %#lx\n", status );
-        IoDeleteDevice(child_pdo);
-        return;
-    }
-    for (i = 0; i < descriptor.bNumDescriptors; i++)
-        if (descriptor.DescriptorList[i].bReportType == HID_REPORT_DESCRIPTOR_TYPE)
-            break;
-
-    if (i >= descriptor.bNumDescriptors)
-    {
-        ERR("No Report Descriptor found in reply\n");
-        IoDeleteDevice(child_pdo);
-        return;
+        HIDP_COLLECTION_DESC *desc = fdo->device_desc.CollectionDesc + i;
+        input_length = max( input_length, desc->InputLength );
     }
 
-    reportDescriptor = malloc(descriptor.DescriptorList[i].wReportLength);
-    call_minidriver( IOCTL_HID_GET_REPORT_DESCRIPTOR, fdo, NULL, 0, reportDescriptor,
-                     descriptor.DescriptorList[i].wReportLength, &io );
-    if (io.Status != STATUS_SUCCESS)
-    {
-        ERR( "Cannot get Report Descriptor, status %#lx\n", status );
-        free(reportDescriptor);
-        IoDeleteDevice(child_pdo);
-        return;
-    }
+    if (!(fdo->io_packet = malloc( sizeof(*fdo->io_packet) + input_length ))) return STATUS_NO_MEMORY;
 
-    io.Status = HidP_GetCollectionDescription( reportDescriptor, descriptor.DescriptorList[i].wReportLength,
-                                               PagedPool, &pdo_ext->u.pdo.device_desc );
-    free(reportDescriptor);
-    if (io.Status != HIDP_STATUS_SUCCESS)
-    {
-        ERR("Cannot parse Report Descriptor\n");
-        IoDeleteDevice(child_pdo);
-        return;
-    }
+    if (!(report = find_report_with_type_and_id( &fdo->device_desc, 0, HidP_Input, 0, TRUE ))) WARN( "no input report found.\n" );
+    fdo->io_packet->reportId = report ? report->ReportID : 0;
+    fdo->io_packet->reportBuffer = (BYTE *)(fdo->io_packet + 1);
+    fdo->io_packet->reportBufferLen = input_length;
 
-    desc = pdo_ext->u.pdo.device_desc.CollectionDesc;
-    pdo_ext->u.pdo.information.DescriptorSize = desc->PreparsedDataLength;
-
-    page = desc->UsagePage;
-    usage = desc->Usage;
-    if (page == HID_USAGE_PAGE_GENERIC && usage == HID_USAGE_GENERIC_MOUSE)
-        pdo_ext->u.pdo.rawinput_handle = WINE_MOUSE_HANDLE;
-    else if (page == HID_USAGE_PAGE_GENERIC && usage == HID_USAGE_GENERIC_KEYBOARD)
-        pdo_ext->u.pdo.rawinput_handle = WINE_KEYBOARD_HANDLE;
-    else
-        pdo_ext->u.pdo.rawinput_handle = alloc_rawinput_handle();
-
-    IoInvalidateDeviceRelations(fdo_ext->u.fdo.hid_ext.PhysicalDeviceObject, BusRelations);
-
-    pdo_ext->u.pdo.poll_interval = DEFAULT_POLL_INTERVAL;
-
-    HID_StartDeviceThread(child_pdo);
-
-    send_wm_input_device_change(pdo_ext, GIDC_ARRIVAL);
-
-    TRACE( "created device %p, rawinput handle %#x\n", pdo_ext, pdo_ext->u.pdo.rawinput_handle );
+    if (!(fdo->thread = CreateThread( NULL, 0, hid_device_thread, device, 0, NULL ))) return STATUS_UNSUCCESSFUL;
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS fdo_pnp(DEVICE_OBJECT *device, IRP *irp)
 {
     minidriver *minidriver = find_minidriver(device->DriverObject);
     IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
-    BASE_DEVICE_EXTENSION *ext = device->DeviceExtension;
+    struct func_device *fdo = fdo_from_DEVICE_OBJECT( device );
+    NTSTATUS status;
 
     TRACE("irp %p, minor function %#x.\n", irp, stack->MinorFunction);
 
@@ -317,66 +367,144 @@ static NTSTATUS fdo_pnp(DEVICE_OBJECT *device, IRP *irp)
         case IRP_MN_QUERY_DEVICE_RELATIONS:
         {
             DEVICE_RELATIONS *devices;
-            DEVICE_OBJECT *child;
+            UINT32 i;
 
             if (stack->Parameters.QueryDeviceRelations.Type != BusRelations)
                 return minidriver->PNPDispatch(device, irp);
 
-            if (!(devices = ExAllocatePool(PagedPool, offsetof(DEVICE_RELATIONS, Objects[1]))))
+            if (!(devices = ExAllocatePool( PagedPool, offsetof( DEVICE_RELATIONS, Objects[fdo->child_count] ) )))
             {
                 irp->IoStatus.Status = STATUS_NO_MEMORY;
                 IoCompleteRequest(irp, IO_NO_INCREMENT);
                 return STATUS_NO_MEMORY;
             }
 
-            if ((child = ext->u.fdo.child_pdo))
+            for (i = 0, devices->Count = 0; i < fdo->child_count; ++i)
             {
-                devices->Objects[0] = ext->u.fdo.child_pdo;
-                call_fastcall_func1(ObfReferenceObject, ext->u.fdo.child_pdo);
-                devices->Count = 1;
-            }
-            else
-            {
-                devices->Count = 0;
+                devices->Objects[i] = fdo->child_pdos[i];
+                call_fastcall_func1( ObfReferenceObject, fdo->child_pdos[i] );
+                devices->Count++;
             }
 
             irp->IoStatus.Information = (ULONG_PTR)devices;
             irp->IoStatus.Status = STATUS_SUCCESS;
             IoSkipCurrentIrpStackLocation(irp);
-            return IoCallDriver(ext->u.fdo.hid_ext.NextDeviceObject, irp);
+            return IoCallDriver( fdo->base.hid.NextDeviceObject, irp );
         }
 
         case IRP_MN_START_DEVICE:
-        {
-            NTSTATUS ret;
-
-            if ((ret = minidriver->PNPDispatch(device, irp)))
-                return ret;
-            create_child(minidriver, device);
-            return STATUS_SUCCESS;
-        }
+            status = minidriver->PNPDispatch( device, irp );
+            if (!status) status = initialize_device( minidriver, device );
+            if (!status) status = create_child_pdos( minidriver, device );
+            if (!status) status = create_device_thread( device );
+            return status;
 
         case IRP_MN_REMOVE_DEVICE:
-        {
-            NTSTATUS ret;
+            if (fdo->thread)
+            {
+                KeSetEvent( &fdo->halt_event, IO_NO_INCREMENT, FALSE );
+                WaitForSingleObject( fdo->thread, INFINITE );
+            }
 
-            ret = minidriver->PNPDispatch(device, irp);
+            if ((status = minidriver->PNPDispatch( device, irp ))) return status;
+            if (fdo->io_irp) KeWaitForSingleObject( &fdo->io_event, Executive, KernelMode, FALSE, NULL );
+            free( fdo->io_packet );
 
-            IoDetachDevice(ext->u.fdo.hid_ext.NextDeviceObject);
-            IoDeleteDevice(device);
-            return ret;
-        }
+            HidP_FreeCollectionDescription( &fdo->device_desc );
+            free( fdo->child_pdos );
+            IoDetachDevice( fdo->base.hid.NextDeviceObject );
+            IoDeleteDevice( device );
+            return status;
+
+        case IRP_MN_SURPRISE_REMOVAL:
+            if ((status = minidriver->PNPDispatch( device, irp ))) return status;
+            KeSetEvent( &fdo->halt_event, IO_NO_INCREMENT, FALSE );
+            return STATUS_SUCCESS;
 
         default:
             return minidriver->PNPDispatch(device, irp);
     }
 }
 
-static NTSTATUS pdo_pnp(DEVICE_OBJECT *device, IRP *irp)
+static WCHAR *query_hardware_ids(DEVICE_OBJECT *device)
+{
+    static const WCHAR vid_pid_format[] = L"HID\\VID_%04X&PID_%04X";
+    static const WCHAR vid_usage_format[] = L"HID\\VID_%04X&UP:%04X_U:%04X";
+    static const WCHAR usage_format[] = L"HID_DEVICE_UP:%04X_U:%04X";
+    static const WCHAR hid_format[] = L"HID_DEVICE";
+
+    struct phys_device *pdo = pdo_from_DEVICE_OBJECT( device );
+    HIDP_COLLECTION_DESC *desc = pdo->collection_desc;
+    HID_COLLECTION_INFORMATION *info = &pdo->information;
+    WCHAR *dst;
+    DWORD size;
+
+    size = sizeof(vid_pid_format);
+    size += sizeof(vid_usage_format);
+    size += sizeof(usage_format);
+    size += sizeof(hid_format);
+
+    if ((dst = ExAllocatePool(PagedPool, size + sizeof(WCHAR))))
+    {
+        DWORD len = size / sizeof(WCHAR), pos = 0;
+        pos += swprintf( dst + pos, len - pos, vid_pid_format, info->VendorID, info->ProductID ) + 1;
+        pos += swprintf( dst + pos, len - pos, vid_usage_format, info->VendorID, desc->UsagePage, desc->Usage ) + 1;
+        pos += swprintf( dst + pos, len - pos, usage_format, desc->UsagePage, desc->Usage ) + 1;
+        pos += swprintf( dst + pos, len - pos, hid_format ) + 1;
+        dst[pos] = 0;
+    }
+
+    return dst;
+}
+
+static WCHAR *query_compatible_ids(DEVICE_OBJECT *device)
+{
+    WCHAR *dst;
+    if ((dst = ExAllocatePool(PagedPool, sizeof(WCHAR)))) dst[0] = 0;
+    return dst;
+}
+
+static WCHAR *query_device_id(DEVICE_OBJECT *device)
+{
+    struct device *ext = device->DeviceExtension;
+    DWORD size = (wcslen(ext->device_id) + 1) * sizeof(WCHAR);
+    WCHAR *dst;
+
+    if ((dst = ExAllocatePool(PagedPool, size)))
+        memcpy(dst, ext->device_id, size);
+
+    return dst;
+}
+
+static WCHAR *query_instance_id(DEVICE_OBJECT *device)
+{
+    struct device *ext = device->DeviceExtension;
+    DWORD size = (wcslen(ext->instance_id) + 1) * sizeof(WCHAR);
+    WCHAR *dst;
+
+    if ((dst = ExAllocatePool(PagedPool, size)))
+        memcpy(dst, ext->instance_id, size);
+
+    return dst;
+}
+
+static WCHAR *query_container_id(DEVICE_OBJECT *device)
+{
+    struct device *ext = device->DeviceExtension;
+    DWORD size = (wcslen(ext->container_id) + 1) * sizeof(WCHAR);
+    WCHAR *dst;
+
+    if ((dst = ExAllocatePool(PagedPool, size)))
+        memcpy(dst, ext->container_id, size);
+
+    return dst;
+}
+
+static NTSTATUS pdo_pnp( DEVICE_OBJECT *device, IRP *irp )
 {
     IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation(irp);
-    BASE_DEVICE_EXTENSION *ext = device->DeviceExtension;
-    HIDP_COLLECTION_DESC *desc = ext->u.pdo.device_desc.CollectionDesc;
+    struct phys_device *pdo = pdo_from_DEVICE_OBJECT( device );
+    HIDP_COLLECTION_DESC *desc = pdo->collection_desc;
     NTSTATUS status = irp->IoStatus.Status;
     struct hid_queue *queue, *next;
     KIRQL irql;
@@ -387,60 +515,40 @@ static NTSTATUS pdo_pnp(DEVICE_OBJECT *device, IRP *irp)
     {
         case IRP_MN_QUERY_ID:
         {
-            WCHAR *id = ExAllocatePool(PagedPool, sizeof(WCHAR) * REGSTR_VAL_MAX_HCID_LEN);
-            TRACE("IRP_MN_QUERY_ID[%i]\n", irpsp->Parameters.QueryId.IdType);
-            switch (irpsp->Parameters.QueryId.IdType)
+            BUS_QUERY_ID_TYPE type = irpsp->Parameters.QueryId.IdType;
+            switch (type)
             {
-                case BusQueryHardwareIDs:
-                case BusQueryCompatibleIDs:
+            case BusQueryHardwareIDs:
+                irp->IoStatus.Information = (ULONG_PTR)query_hardware_ids(device);
+                if (!irp->IoStatus.Information) status = STATUS_NO_MEMORY;
+                else status = STATUS_SUCCESS;
+                break;
+            case BusQueryCompatibleIDs:
+                irp->IoStatus.Information = (ULONG_PTR)query_compatible_ids(device);
+                if (!irp->IoStatus.Information) status = STATUS_NO_MEMORY;
+                else status = STATUS_SUCCESS;
+                break;
+            case BusQueryDeviceID:
+                irp->IoStatus.Information = (ULONG_PTR)query_device_id(device);
+                if (!irp->IoStatus.Information) status = STATUS_NO_MEMORY;
+                else status = STATUS_SUCCESS;
+                break;
+            case BusQueryInstanceID:
+                irp->IoStatus.Information = (ULONG_PTR)query_instance_id(device);
+                if (!irp->IoStatus.Information) status = STATUS_NO_MEMORY;
+                else status = STATUS_SUCCESS;
+                break;
+            case BusQueryContainerID:
+                if (pdo->base.container_id[0])
                 {
-                    WCHAR *ptr;
-                    ptr = id;
-                    /* Device instance ID */
-                    lstrcpyW(ptr, ext->device_id);
-                    ptr += lstrlenW(ext->device_id);
-                    lstrcpyW(ptr, L"\\");
-                    ptr += 1;
-                    lstrcpyW(ptr, ext->instance_id);
-                    ptr += lstrlenW(ext->instance_id) + 1;
-                    /* Device ID */
-                    lstrcpyW(ptr, ext->device_id);
-                    ptr += lstrlenW(ext->device_id) + 1;
-                    /* Bus ID */
-                    lstrcpyW(ptr, L"HID");
-                    ptr += lstrlenW(L"HID") + 1;
-                    *ptr = 0;
-                    irp->IoStatus.Information = (ULONG_PTR)id;
-                    status = STATUS_SUCCESS;
-                    break;
+                    irp->IoStatus.Information = (ULONG_PTR)query_container_id(device);
+                    if (!irp->IoStatus.Information) status = STATUS_NO_MEMORY;
+                    else status = STATUS_SUCCESS;
                 }
-                case BusQueryDeviceID:
-                    lstrcpyW(id, ext->device_id);
-                    irp->IoStatus.Information = (ULONG_PTR)id;
-                    status = STATUS_SUCCESS;
-                    break;
-                case BusQueryInstanceID:
-                    lstrcpyW(id, ext->instance_id);
-                    irp->IoStatus.Information = (ULONG_PTR)id;
-                    status = STATUS_SUCCESS;
-                    break;
-                case BusQueryContainerID:
-                    if (ext->container_id[0])
-                    {
-                        lstrcpyW(id, ext->container_id);
-                        irp->IoStatus.Information = (ULONG_PTR)id;
-                        status = STATUS_SUCCESS;
-                    }
-                    else
-                    {
-                        ExFreePool(id);
-                    }
-                    break;
-
-                case BusQueryDeviceSerialNumber:
-                    FIXME("unimplemented id type %#x\n", irpsp->Parameters.QueryId.IdType);
-                    ExFreePool(id);
-                    break;
+                break;
+            default:
+                WARN("IRP_MN_QUERY_ID type %u, not implemented!\n", type);
+                break;
             }
             break;
         }
@@ -455,7 +563,9 @@ static NTSTATUS pdo_pnp(DEVICE_OBJECT *device, IRP *irp)
         }
 
         case IRP_MN_START_DEVICE:
-            if ((status = IoRegisterDeviceInterface(device, ext->class_guid, NULL, &ext->u.pdo.link_name)))
+            send_wm_input_device_change( pdo, GIDC_ARRIVAL );
+
+            if ((status = IoRegisterDeviceInterface( device, pdo->base.class_guid, NULL, &pdo->link_name )))
             {
                 ERR( "Failed to register interface, status %#lx.\n", status );
                 break;
@@ -464,49 +574,36 @@ static NTSTATUS pdo_pnp(DEVICE_OBJECT *device, IRP *irp)
             /* FIXME: This should probably be done in mouhid.sys. */
             if (desc->UsagePage == HID_USAGE_PAGE_GENERIC && desc->Usage == HID_USAGE_GENERIC_MOUSE)
             {
-                if (!IoRegisterDeviceInterface(device, &GUID_DEVINTERFACE_MOUSE, NULL, &ext->u.pdo.mouse_link_name))
-                    ext->u.pdo.is_mouse = TRUE;
+                if (!IoRegisterDeviceInterface( device, &GUID_DEVINTERFACE_MOUSE, NULL, &pdo->mouse_link_name ))
+                    pdo->is_mouse = TRUE;
             }
             if (desc->UsagePage == HID_USAGE_PAGE_GENERIC && desc->Usage == HID_USAGE_GENERIC_KEYBOARD)
             {
-                if (!IoRegisterDeviceInterface(device, &GUID_DEVINTERFACE_KEYBOARD, NULL, &ext->u.pdo.keyboard_link_name))
-                    ext->u.pdo.is_keyboard = TRUE;
+                if (!IoRegisterDeviceInterface( device, &GUID_DEVINTERFACE_KEYBOARD, NULL, &pdo->keyboard_link_name ))
+                    pdo->is_keyboard = TRUE;
             }
 
-            IoSetDeviceInterfaceState(&ext->u.pdo.link_name, TRUE);
-            if (ext->u.pdo.is_mouse)
-                IoSetDeviceInterfaceState(&ext->u.pdo.mouse_link_name, TRUE);
-            if (ext->u.pdo.is_keyboard)
-                IoSetDeviceInterfaceState(&ext->u.pdo.keyboard_link_name, TRUE);
+            IoSetDeviceInterfaceState( &pdo->link_name, TRUE );
+            if (pdo->is_mouse) IoSetDeviceInterfaceState( &pdo->mouse_link_name, TRUE );
+            if (pdo->is_keyboard) IoSetDeviceInterfaceState( &pdo->keyboard_link_name, TRUE );
 
-            ext->u.pdo.removed = FALSE;
+            pdo->removed = FALSE;
             status = STATUS_SUCCESS;
             break;
 
         case IRP_MN_REMOVE_DEVICE:
-            send_wm_input_device_change(ext, GIDC_REMOVAL);
+            send_wm_input_device_change( pdo, GIDC_REMOVAL );
 
-            IoSetDeviceInterfaceState(&ext->u.pdo.link_name, FALSE);
-            if (ext->u.pdo.is_mouse)
-                IoSetDeviceInterfaceState(&ext->u.pdo.mouse_link_name, FALSE);
-            if (ext->u.pdo.is_keyboard)
-                IoSetDeviceInterfaceState(&ext->u.pdo.keyboard_link_name, FALSE);
+            IoSetDeviceInterfaceState( &pdo->link_name, FALSE );
+            if (pdo->is_mouse) IoSetDeviceInterfaceState( &pdo->mouse_link_name, FALSE );
+            if (pdo->is_keyboard) IoSetDeviceInterfaceState( &pdo->keyboard_link_name, FALSE );
 
-            if (ext->u.pdo.thread)
-            {
-                SetEvent(ext->u.pdo.halt_event);
-                WaitForSingleObject(ext->u.pdo.thread, INFINITE);
-            }
-            CloseHandle(ext->u.pdo.halt_event);
-
-            KeAcquireSpinLock( &ext->u.pdo.queues_lock, &irql );
-            LIST_FOR_EACH_ENTRY_SAFE( queue, next, &ext->u.pdo.queues, struct hid_queue, entry )
+            KeAcquireSpinLock( &pdo->lock, &irql );
+            LIST_FOR_EACH_ENTRY_SAFE( queue, next, &pdo->queues, struct hid_queue, entry )
                 hid_queue_destroy( queue );
-            KeReleaseSpinLock( &ext->u.pdo.queues_lock, irql );
+            KeReleaseSpinLock( &pdo->lock, irql );
 
-            HidP_FreeCollectionDescription(&ext->u.pdo.device_desc);
-
-            RtlFreeUnicodeString(&ext->u.pdo.link_name);
+            RtlFreeUnicodeString( &pdo->link_name );
 
             irp->IoStatus.Status = STATUS_SUCCESS;
             IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -514,16 +611,12 @@ static NTSTATUS pdo_pnp(DEVICE_OBJECT *device, IRP *irp)
             return STATUS_SUCCESS;
 
         case IRP_MN_SURPRISE_REMOVAL:
-            KeAcquireSpinLock(&ext->u.pdo.lock, &irql);
-            ext->u.pdo.removed = TRUE;
-            KeReleaseSpinLock(&ext->u.pdo.lock, irql);
-
-            KeAcquireSpinLock( &ext->u.pdo.queues_lock, &irql );
-            LIST_FOR_EACH_ENTRY_SAFE( queue, next, &ext->u.pdo.queues, struct hid_queue, entry )
+            KeAcquireSpinLock( &pdo->lock, &irql );
+            pdo->removed = TRUE;
+            LIST_FOR_EACH_ENTRY_SAFE( queue, next, &pdo->queues, struct hid_queue, entry )
                 hid_queue_remove_pending_irps( queue );
-            KeReleaseSpinLock( &ext->u.pdo.queues_lock, irql );
+            KeReleaseSpinLock( &pdo->lock, irql );
 
-            SetEvent(ext->u.pdo.halt_event);
             status = STATUS_SUCCESS;
             break;
 
@@ -538,7 +631,7 @@ static NTSTATUS pdo_pnp(DEVICE_OBJECT *device, IRP *irp)
 
 static NTSTATUS WINAPI driver_pnp(DEVICE_OBJECT *device, IRP *irp)
 {
-    BASE_DEVICE_EXTENSION *ext = device->DeviceExtension;
+    struct device *ext = device->DeviceExtension;
 
     if (ext->is_fdo)
         return fdo_pnp(device, irp);
@@ -548,7 +641,7 @@ static NTSTATUS WINAPI driver_pnp(DEVICE_OBJECT *device, IRP *irp)
 
 static NTSTATUS WINAPI driver_create(DEVICE_OBJECT *device, IRP *irp)
 {
-    BASE_DEVICE_EXTENSION *ext = device->DeviceExtension;
+    struct device *ext = device->DeviceExtension;
 
     if (ext->is_fdo)
     {

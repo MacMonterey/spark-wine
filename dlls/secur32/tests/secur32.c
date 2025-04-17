@@ -446,14 +446,14 @@ static void test_kerberos(void)
 
 
     status = QuerySecurityPackageInfoA(provider, &info);
-    ok(status == SEC_E_OK, "Kerberos package not installed, skipping test\n");
+    ok(status == SEC_E_OK, "Kerberos package not installed (%08lx), skipping test\n", status);
     if(status != SEC_E_OK)
         return;
 
     ok( (info->fCapabilities & ~optional_mask) == expected_flags, "got %08lx, expected %08lx\n", info->fCapabilities, expected_flags );
     ok( info->wVersion == 1, "got %u\n", info->wVersion );
     ok( info->wRPCID == RPC_C_AUTHN_GSS_KERBEROS, "got %u\n", info->wRPCID );
-    ok( info->cbMaxToken >= 12000, "got %lu\n", info->cbMaxToken );
+    ok( info->cbMaxToken == 48000 || broken(info->cbMaxToken == 12000) /* Win7 */, "got %lu\n", info->cbMaxToken );
     ok( !lstrcmpA( info->Name, "Kerberos" ), "got %s\n", info->Name );
     ok( !lstrcmpA( info->Comment, "Microsoft Kerberos V1.0" ), "got %s\n", info->Comment );
     FreeContextBuffer( info );
@@ -479,7 +479,12 @@ static void test_ticket_cache(void)
 
     RtlInitAnsiString( &name, MICROSOFT_KERBEROS_NAME_A );
     status = LsaLookupAuthenticationPackage( lsa, &name, &package );
-    ok( !status, "got %08lx\n", status );
+    ok(status == SEC_E_OK, "Kerberos package not installed (%08lx), skipping test\n", status);
+    if(status != SEC_E_OK)
+    {
+      LsaDeregisterLogonProcess( lsa );
+      return;
+    }
 
     status = LsaCallAuthenticationPackage( lsa, package, &req, sizeof(req), (void **)&resp, &len, &status );
     ok( !status, "got %08lx\n", status );

@@ -347,7 +347,7 @@ static HRESULT WINAPI rendertarget_DrawGlyphRun(IDWriteBitmapRenderTarget1 *ifac
     DWRITE_RENDERING_MODE1 rendermode;
     DWRITE_GRID_FIT_MODE gridfitmode;
     DWRITE_TEXTURE_TYPE texturetype;
-    DWRITE_GLYPH_RUN scaled_run;
+    DWRITE_MATRIX m, scale = { 0 };
     IDWriteFontFace3 *fontface;
     RECT target_rect, bounds;
     HRESULT hr;
@@ -429,9 +429,10 @@ static HRESULT WINAPI rendertarget_DrawGlyphRun(IDWriteBitmapRenderTarget1 *ifac
         return hr;
     }
 
-    scaled_run = *run;
-    scaled_run.fontEmSize *= target->ppdip;
-    hr = IDWriteFactory7_CreateGlyphRunAnalysis(target->factory, &scaled_run, &target->m, rendermode, measuring_mode,
+    m = target->m;
+    scale.m11 = scale.m22 = target->ppdip;
+    dwrite_matrix_multiply(&m, &scale);
+    hr = IDWriteFactory7_CreateGlyphRunAnalysis(target->factory, run, &m, rendermode, measuring_mode,
             gridfitmode, target->antialiasmode, originX, originY, &analysis);
     if (FAILED(hr))
     {
@@ -478,6 +479,10 @@ static HRESULT WINAPI rendertarget_DrawGlyphRun(IDWriteBitmapRenderTarget1 *ifac
         }
 
         free(bitmap);
+    }
+    else if (bbox_ret)
+    {
+        *bbox_ret = bounds;
     }
 
     IDWriteGlyphRunAnalysis_Release(analysis);
@@ -758,7 +763,7 @@ struct font_fileinfo
 /* Undocumented gdi32 exports, used to access actually selected font information */
 extern BOOL WINAPI GetFontRealizationInfo(HDC hdc, struct font_realization_info *info);
 extern BOOL WINAPI GetFontFileInfo(DWORD instance_id, DWORD file_index, struct font_fileinfo *info, SIZE_T size, SIZE_T *needed);
-extern BOOL WINAPI GetFontFileData(DWORD instance_id, DWORD file_index, UINT64 offset, void *buff, DWORD buff_size);
+extern BOOL WINAPI GetFontFileData(DWORD instance_id, DWORD file_index, UINT64 offset, void *buff, SIZE_T buff_size);
 
 static HRESULT WINAPI gdiinterop_CreateFontFaceFromHdc(IDWriteGdiInterop1 *iface,
     HDC hdc, IDWriteFontFace **fontface)

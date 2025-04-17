@@ -32,77 +32,6 @@
 #define MAGIC_DSS1 ('D' | ('S' << 8) | ('S' << 16) | ('1' << 24))
 #define MAGIC_DSS2 ('D' | ('S' << 8) | ('S' << 16) | ('2' << 24))
 
-typedef struct
-{
-    ULONG64 len;
-    DWORD h[8];
-    UCHAR buf[64];
-} SHA256_CTX;
-
-void sha256_init(SHA256_CTX *ctx) DECLSPEC_HIDDEN;
-void sha256_update(SHA256_CTX *ctx, const UCHAR *buffer, ULONG len) DECLSPEC_HIDDEN;
-void sha256_finalize(SHA256_CTX *ctx, UCHAR *buffer) DECLSPEC_HIDDEN;
-
-typedef struct
-{
-  ULONG64 len;
-  ULONG64 h[8];
-  UCHAR buf[128];
-} SHA512_CTX;
-
-void sha512_init(SHA512_CTX *ctx) DECLSPEC_HIDDEN;
-void sha512_update(SHA512_CTX *ctx, const UCHAR *buffer, ULONG len) DECLSPEC_HIDDEN;
-void sha512_finalize(SHA512_CTX *ctx, UCHAR *buffer) DECLSPEC_HIDDEN;
-
-void sha384_init(SHA512_CTX *ctx) DECLSPEC_HIDDEN;
-#define sha384_update sha512_update
-void sha384_finalize(SHA512_CTX *ctx, UCHAR *buffer) DECLSPEC_HIDDEN;
-
-typedef struct {
-    unsigned char chksum[16], X[48], buf[16];
-    unsigned long curlen;
-} MD2_CTX;
-
-void md2_init(MD2_CTX *ctx) DECLSPEC_HIDDEN;
-void md2_update(MD2_CTX *ctx, const unsigned char *buf, ULONG len) DECLSPEC_HIDDEN;
-void md2_finalize(MD2_CTX *ctx, unsigned char *hash) DECLSPEC_HIDDEN;
-
-/* Definitions from advapi32 */
-typedef struct tagMD4_CTX {
-    unsigned int buf[4];
-    unsigned int i[2];
-    unsigned char in[64];
-    unsigned char digest[16];
-} MD4_CTX;
-
-VOID WINAPI MD4Init(MD4_CTX *ctx);
-VOID WINAPI MD4Update(MD4_CTX *ctx, const unsigned char *buf, unsigned int len);
-VOID WINAPI MD4Final(MD4_CTX *ctx);
-
-typedef struct
-{
-    unsigned int i[2];
-    unsigned int buf[4];
-    unsigned char in[64];
-    unsigned char digest[16];
-} MD5_CTX;
-
-VOID WINAPI MD5Init(MD5_CTX *ctx);
-VOID WINAPI MD5Update(MD5_CTX *ctx, const unsigned char *buf, unsigned int len);
-VOID WINAPI MD5Final(MD5_CTX *ctx);
-
-typedef struct
-{
-   ULONG Unknown[6];
-   ULONG State[5];
-   ULONG Count[2];
-   UCHAR Buffer[64];
-} SHA_CTX;
-
-VOID WINAPI A_SHAInit(SHA_CTX *ctx);
-VOID WINAPI A_SHAUpdate(SHA_CTX *ctx, const UCHAR *buffer, UINT size);
-VOID WINAPI A_SHAFinal(SHA_CTX *ctx, PULONG result);
-
 #define MAGIC_ALG  (('A' << 24) | ('L' << 16) | ('G' << 8) | '0')
 #define MAGIC_HASH (('H' << 24) | ('A' << 16) | ('S' << 8) | 'H')
 #define MAGIC_KEY  (('K' << 24) | ('E' << 16) | ('Y' << 8) | '0')
@@ -132,6 +61,7 @@ enum alg_id
     ALG_ID_RSA,
 
     /* secret agreement */
+    ALG_ID_DH,
     ALG_ID_ECDH_P256,
     ALG_ID_ECDH_P384,
 
@@ -174,6 +104,7 @@ struct key_symmetric
 };
 
 #define KEY_FLAG_LEGACY_DSA_V2  0x00000001
+#define KEY_FLAG_FINALIZED      0x00000002
 
 struct key_asymmetric
 {
@@ -182,11 +113,12 @@ struct key_asymmetric
     DSSSEED           dss_seed;
 };
 
+#define PRIVATE_DATA_SIZE 3
 struct key
 {
     struct object hdr;
     enum alg_id   alg_id;
-    UINT64        private[2];  /* private data for backend */
+    UINT64        private[PRIVATE_DATA_SIZE];  /* private data for backend */
     union
     {
         struct key_symmetric s;
@@ -197,6 +129,8 @@ struct key
 struct secret
 {
     struct object hdr;
+    struct key *privkey;
+    struct key *pubkey;
 };
 
 struct key_symmetric_set_auth_data_params
@@ -236,25 +170,29 @@ struct key_asymmetric_decrypt_params
     struct key  *key;
     UCHAR       *input;
     unsigned     input_len;
+    void        *padding;
     UCHAR       *output;
     ULONG        output_len;
     ULONG       *ret_len;
+    ULONG        flags;
 };
 
 struct key_asymmetric_encrypt_params
 {
     struct key  *key;
     UCHAR       *input;
-    unsigned    input_len;
+    unsigned     input_len;
+    void        *padding;
     UCHAR       *output;
-    ULONG       output_len;
+    ULONG        output_len;
     ULONG       *ret_len;
+    ULONG        flags;
 };
 
 struct key_asymmetric_duplicate_params
 {
-    struct key  *key_orig;
-    struct key  *key_copy;
+    struct key *key_orig;
+    struct key *key_copy;
 };
 
 struct key_asymmetric_sign_params
@@ -280,8 +218,10 @@ struct key_asymmetric_verify_params
     unsigned    flags;
 };
 
-#define KEY_EXPORT_FLAG_PUBLIC   0x00000001
-#define KEY_EXPORT_FLAG_RSA_FULL 0x00000002
+#define KEY_EXPORT_FLAG_PUBLIC        0x00000001
+#define KEY_EXPORT_FLAG_RSA_FULL      0x00000002
+#define KEY_EXPORT_FLAG_DH_PARAMETERS 0x00000004
+
 struct key_asymmetric_export_params
 {
     struct key  *key;
@@ -291,13 +231,24 @@ struct key_asymmetric_export_params
     ULONG       *ret_len;
 };
 
-#define KEY_IMPORT_FLAG_PUBLIC   0x00000001
+#define KEY_IMPORT_FLAG_PUBLIC        0x00000001
+#define KEY_IMPORT_FLAG_DH_PARAMETERS 0x00000002
+
 struct key_asymmetric_import_params
 {
     struct key  *key;
     ULONG        flags;
     UCHAR       *buf;
     ULONG        len;
+};
+
+struct key_asymmetric_derive_key_params
+{
+    struct key *privkey;
+    struct key *pubkey;
+    UCHAR      *output;
+    ULONG       output_len;
+    ULONG      *ret_len;
 };
 
 enum key_funcs
@@ -319,6 +270,8 @@ enum key_funcs
     unix_key_asymmetric_destroy,
     unix_key_asymmetric_export,
     unix_key_asymmetric_import,
+    unix_key_asymmetric_derive_key,
+    unix_funcs_count,
 };
 
 #endif /* __BCRYPT_INTERNAL_H */

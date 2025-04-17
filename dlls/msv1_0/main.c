@@ -194,7 +194,8 @@ static NTSTATUS NTAPI ntlm_SpAcquireCredentialsHandle( UNICODE_STRING *principal
     TRACE( "%s, %#lx, %p, %p, %p, %p, %p, %p\n", debugstr_us(principal), cred_use, logon_id, auth_data,
            get_key_fn, get_key_arg, cred, expiry );
 
-    switch (cred_use & ~SECPKG_CRED_RESERVED)
+    cred_use &= ~SECPKG_CRED_RESERVED;
+    switch (cred_use)
     {
     case SECPKG_CRED_INBOUND:
         if (!(cred = malloc( sizeof(*cred) ))) return SEC_E_INSUFFICIENT_MEMORY;
@@ -209,10 +210,12 @@ static NTSTATUS NTAPI ntlm_SpAcquireCredentialsHandle( UNICODE_STRING *principal
         status = SEC_E_OK;
         break;
 
+    case SECPKG_CRED_BOTH:
+        /* fall through */
     case SECPKG_CRED_OUTBOUND:
         if (!(cred = malloc( sizeof(*cred) ))) return SEC_E_INSUFFICIENT_MEMORY;
 
-        cred->mode         = MODE_CLIENT;
+        cred->mode         = cred_use == SECPKG_CRED_OUTBOUND ? MODE_CLIENT : MODE_BOTH;
         cred->username_arg = NULL;
         cred->domain_arg   = NULL;
         cred->password     = NULL;
@@ -270,11 +273,6 @@ static NTSTATUS NTAPI ntlm_SpAcquireCredentialsHandle( UNICODE_STRING *principal
 
         *handle = (LSA_SEC_HANDLE)cred;
         status = SEC_E_OK;
-        break;
-
-    case SECPKG_CRED_BOTH:
-        FIXME( "SECPKG_CRED_BOTH not supported\n" );
-        status = SEC_E_UNSUPPORTED_FUNCTION;
         break;
 
     default:
@@ -601,7 +599,7 @@ static NTSTATUS NTAPI ntlm_SpInitLsaModeContext( LSA_SEC_HANDLE cred_handle, LSA
      *
      * The squid cache size is 2010 chars and that's what ntlm_auth uses */
 
-    if (!(buf = malloc( NTLM_MAX_BUF ))) return SEC_E_INSUFFICIENT_MEMORY;
+    if (!(buf = malloc( NTLM_MAX_BUF * 3 + 64 ))) return SEC_E_INSUFFICIENT_MEMORY;
     if (!(bin = malloc( NTLM_MAX_BUF ))) goto done;
 
     if (!ctx_handle && !input)
@@ -610,7 +608,7 @@ static NTSTATUS NTAPI ntlm_SpInitLsaModeContext( LSA_SEC_HANDLE cred_handle, LSA
         int password_len = 0;
         struct ntlm_cred *cred = (struct ntlm_cred *)cred_handle;
 
-        if (!cred || cred->mode != MODE_CLIENT)
+        if (!cred || !(cred->mode & MODE_CLIENT))
         {
             status = SEC_E_INVALID_HANDLE;
             goto done;
@@ -893,7 +891,7 @@ static NTSTATUS NTAPI ntlm_SpAcceptLsaModeContext( LSA_SEC_HANDLE cred_handle, L
            new_ctx_handle, output, ctx_attr, expiry, mapped_ctx, ctx_data );
     if (ctx_req) FIXME( "ignoring flags %#lx\n", ctx_req );
 
-    if (!(buf = malloc( NTLM_MAX_BUF ))) return SEC_E_INSUFFICIENT_MEMORY;
+    if (!(buf = malloc( NTLM_MAX_BUF * 3 + 64 ))) return SEC_E_INSUFFICIENT_MEMORY;
     if (!(bin = malloc( NTLM_MAX_BUF ))) goto done;
 
     if (!ctx_handle)
@@ -901,7 +899,7 @@ static NTSTATUS NTAPI ntlm_SpAcceptLsaModeContext( LSA_SEC_HANDLE cred_handle, L
         struct ntlm_cred *cred = (struct ntlm_cred *)cred_handle;
         char *argv[3];
 
-        if (!cred || cred->mode != MODE_SERVER)
+        if (!cred || !(cred->mode & MODE_SERVER))
         {
             status = SEC_E_INVALID_HANDLE;
             goto done;
@@ -1138,7 +1136,6 @@ static NTSTATUS NTAPI ntlm_SpQueryContextAttributes( LSA_SEC_HANDLE handle, ULON
     X(SECPKG_ATTR_NATIVE_NAMES);
     X(SECPKG_ATTR_PACKAGE_INFO);
     X(SECPKG_ATTR_PASSWORD_EXPIRY);
-    X(SECPKG_ATTR_SESSION_KEY);
     X(SECPKG_ATTR_STREAM_SIZES);
     X(SECPKG_ATTR_TARGET_INFORMATION);
     case SECPKG_ATTR_FLAGS:
@@ -1165,6 +1162,19 @@ static NTSTATUS NTAPI ntlm_SpQueryContextAttributes( LSA_SEC_HANDLE handle, ULON
         SecPkgContext_NegotiationInfoW *info = (SecPkgContext_NegotiationInfoW *)buf;
         if (!(info->PackageInfo = build_package_info( &ntlm_package_info ))) return SEC_E_INSUFFICIENT_MEMORY;
         info->NegotiationState = SECPKG_NEGOTIATION_COMPLETE;
+        return SEC_E_OK;
+    }
+    case SECPKG_ATTR_SESSION_KEY:
+    {
+        struct ntlm_ctx *ctx = (struct ntlm_ctx *)handle;
+        SecPkgContext_SessionKey *key = (SecPkgContext_SessionKey *)buf;
+        unsigned char *session_key;
+
+        if (!(session_key = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(ctx->session_key) )))
+            return SEC_E_INSUFFICIENT_MEMORY;
+        memcpy( session_key, ctx->session_key, sizeof(ctx->session_key) );
+        key->SessionKey = session_key;
+        key->SessionKeyLength = sizeof(ctx->session_key);
         return SEC_E_OK;
     }
     case SECPKG_ATTR_KEY_INFO:

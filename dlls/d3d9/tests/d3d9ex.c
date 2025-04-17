@@ -562,7 +562,7 @@ static void test_get_adapter_displaymode_ex(void)
 
     devmode = startmode;
     devmode.dmFields = DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT;
-    S2(U1(devmode)).dmDisplayOrientation = DMDO_180;
+    devmode.dmDisplayOrientation = DMDO_180;
     retval = ChangeDisplaySettingsExW(NULL, &devmode, NULL, 0, NULL);
     if (retval == DISP_CHANGE_BADMODE)
     {
@@ -573,7 +573,7 @@ static void test_get_adapter_displaymode_ex(void)
     ok(retval == DISP_CHANGE_SUCCESSFUL, "ChangeDisplaySettingsEx failed with %ld.\n", retval);
     /* try retrieve orientation info with EnumDisplaySettingsEx*/
     devmode.dmFields = 0;
-    S2(U1(devmode)).dmDisplayOrientation = 0;
+    devmode.dmDisplayOrientation = 0;
     ok(EnumDisplaySettingsExW(NULL, ENUM_CURRENT_SETTINGS, &devmode, EDS_ROTATEDMODE),
             "EnumDisplaySettingsEx failed.\n");
 
@@ -605,8 +605,8 @@ static void test_get_adapter_displaymode_ex(void)
     ok(mode_ex.ScanLineOrdering != 0, "ScanLineOrdering returned 0\n");
     /* Check that orientation is returned correctly by GetAdapterDisplayModeEx
      * and EnumDisplaySettingsEx(). */
-    ok(S2(U1(devmode)).dmDisplayOrientation == DMDO_180 && rotation == D3DDISPLAYROTATION_180,
-            "rotation is %d instead of %ld\n", rotation, S2(U1(devmode)).dmDisplayOrientation);
+    ok(devmode.dmDisplayOrientation == DMDO_180 && rotation == D3DDISPLAYROTATION_180,
+            "rotation is %d instead of %ld\n", rotation, devmode.dmDisplayOrientation);
 
     trace("GetAdapterDisplayModeEx returned Width = %d, Height = %d, RefreshRate = %d, Format = %x, ScanLineOrdering = %x, rotation = %d\n",
           mode_ex.Width, mode_ex.Height, mode_ex.RefreshRate, mode_ex.Format, mode_ex.ScanLineOrdering, rotation);
@@ -752,7 +752,7 @@ static void test_user_memory(void)
     hr = IDirect3DDevice9_GetDeviceCaps(device, &caps);
     ok(SUCCEEDED(hr), "Failed to get caps, hr %#lx.\n", hr);
 
-    mem = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 128 * 128 * 4);
+    mem = calloc(128 * 128, 4);
     hr = IDirect3DDevice9Ex_CreateTexture(device, 128, 128, 0, 0, D3DFMT_A8R8G8B8,
             D3DPOOL_SYSTEMMEM, &texture, &mem);
     ok(hr == D3DERR_INVALIDCALL, "Got unexpected hr %#lx.\n", hr);
@@ -877,7 +877,7 @@ static void test_user_memory(void)
     ok(SUCCEEDED(hr), "Failed to set texture, hr %#lx.\n", hr);
     IDirect3DTexture9_Release(texture2);
     IDirect3DTexture9_Release(texture);
-    HeapFree(GetProcessHeap(), 0, mem);
+    free(mem);
     refcount = IDirect3DDevice9Ex_Release(device);
     ok(!refcount, "Device has %lu references left.\n", refcount);
 
@@ -942,7 +942,7 @@ static void test_reset(void)
 
     IDirect3D9_GetAdapterDisplayMode(d3d9, D3DADAPTER_DEFAULT, &d3ddm);
     adapter_mode_count = IDirect3D9_GetAdapterModeCount(d3d9, D3DADAPTER_DEFAULT, d3ddm.Format);
-    modes = HeapAlloc(GetProcessHeap(), 0, sizeof(*modes) * adapter_mode_count);
+    modes = malloc(sizeof(*modes) * adapter_mode_count);
     for (i = 0; i < adapter_mode_count; ++i)
     {
         UINT j;
@@ -1410,7 +1410,7 @@ static void test_reset(void)
     d3dpp.AutoDepthStencilFormat = D3DFMT_D24S8;
 
 cleanup:
-    HeapFree(GetProcessHeap(), 0, modes);
+    free(modes);
     IDirect3D9_Release(d3d9);
     refcount = IDirect3DDevice9Ex_Release(device);
     ok(!refcount, "Device has %lu references left.\n", refcount);
@@ -1456,7 +1456,7 @@ static void test_reset_ex(void)
     mode_filter.Size = sizeof(mode_filter);
     mode_filter.Format = mode.Format;
     adapter_mode_count = IDirect3D9Ex_GetAdapterModeCountEx(d3d9, D3DADAPTER_DEFAULT, &mode_filter);
-    modes = HeapAlloc(GetProcessHeap(), 0, sizeof(*modes) * adapter_mode_count);
+    modes = malloc(sizeof(*modes) * adapter_mode_count);
     for (i = 0; i < adapter_mode_count; ++i)
     {
         unsigned int j;
@@ -1833,7 +1833,7 @@ static void test_reset_ex(void)
     IDirect3DSwapChain9_Release(swapchain);
 
 cleanup:
-    HeapFree(GetProcessHeap(), 0, modes);
+    free(modes);
     IDirect3D9Ex_Release(d3d9);
     refcount = IDirect3DDevice9Ex_Release(device);
     ok(!refcount, "Device has %lu references left.\n", refcount);
@@ -1975,7 +1975,7 @@ static void test_user_memory_getdc(void)
         goto done;
     }
 
-    data = HeapAlloc(GetProcessHeap(), 0, sizeof(*data) * 16 * 16);
+    data = malloc(sizeof(*data) * 16 * 16);
     memset(data, 0xaa, sizeof(*data) * 16 * 16);
     hr = IDirect3DDevice9Ex_CreateOffscreenPlainSurface(device, 16, 16,
             D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &surface, (HANDLE *)&data);
@@ -1997,7 +1997,7 @@ static void test_user_memory_getdc(void)
     ok(data[8 * 16] == 0x00000000, "Expected color 0x00000000, got %#x.\n", data[8 * 16]);
 
     IDirect3DSurface9_Release(surface);
-    HeapFree(GetProcessHeap(), 0, data);
+    free(data);
 
     ref = IDirect3DDevice9_Release(device);
     ok(!ref, "Unexpected refcount %lu.\n", ref);
@@ -2508,7 +2508,6 @@ struct wndproc_thread_param
     HWND dummy_window;
     HANDLE window_created;
     HANDLE test_finished;
-    BOOL running_in_foreground;
 };
 
 static LRESULT CALLBACK test_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -2581,10 +2580,9 @@ static DWORD WINAPI wndproc_thread(void *param)
     DWORD res;
     BOOL ret;
 
-    p->dummy_window = CreateWindowA("d3d9_test_wndproc_wc", "d3d9_test",
-            WS_MAXIMIZE | WS_VISIBLE | WS_CAPTION, 0, 0, registry_mode.dmPelsWidth,
-            registry_mode.dmPelsHeight, 0, 0, 0, 0);
-    p->running_in_foreground = SetForegroundWindow(p->dummy_window);
+    p->dummy_window = CreateWindowA("static", "d3d9_test", WS_VISIBLE | WS_CAPTION,
+            100, 100, 200, 200, 0, 0, 0, 0);
+    flush_events();
 
     ret = SetEvent(p->window_created);
     ok(ret, "SetEvent failed, last error %#lx.\n", GetLastError());
@@ -2868,11 +2866,14 @@ static void test_wndproc(void)
                 WS_MAXIMIZE | WS_VISIBLE | WS_CAPTION, 0, 0, user32_width, user32_height, 0, 0, 0, 0);
         device_window = CreateWindowA("d3d9_test_wndproc_wc", "d3d9_test",
                 WS_MAXIMIZE | WS_VISIBLE | WS_CAPTION, 0, 0, user32_width, user32_height, 0, 0, 0, 0);
+        flush_events();
+
         thread = CreateThread(NULL, 0, wndproc_thread, &thread_params, 0, &tid);
         ok(!!thread, "Failed to create thread, last error %#lx.\n", GetLastError());
 
         res = WaitForSingleObject(thread_params.window_created, INFINITE);
         ok(res == WAIT_OBJECT_0, "Wait failed (%#lx), last error %#lx.\n", res, GetLastError());
+        flush_events();
 
         proc = GetWindowLongPtrA(device_window, GWLP_WNDPROC);
         ok(proc == (LONG_PTR)test_proc, "Expected wndproc %#Ix, got %#Ix.\n",
@@ -2885,15 +2886,10 @@ static void test_wndproc(void)
                 device_window, focus_window, thread_params.dummy_window);
 
         tmp = GetFocus();
-        ok(tmp == device_window, "Expected focus %p, got %p.\n", device_window, tmp);
-        if (thread_params.running_in_foreground)
-        {
-            tmp = GetForegroundWindow();
-            ok(tmp == thread_params.dummy_window, "Expected foreground window %p, got %p.\n",
-                    thread_params.dummy_window, tmp);
-        }
-        else
-            skip("Not running in foreground, skip foreground window test\n");
+        ok(tmp == NULL, "Expected focus %p, got %p.\n", NULL, tmp);
+        tmp = GetForegroundWindow();
+        ok(tmp == thread_params.dummy_window, "Expected foreground window %p, got %p.\n",
+                thread_params.dummy_window, tmp);
 
         flush_events();
 
@@ -2913,13 +2909,10 @@ static void test_wndproc(void)
                 expect_messages->message, expect_messages->window, i);
         expect_messages = NULL;
 
-        if (0) /* Disabled until we can make this work in a reliable way on Wine. */
-        {
-            tmp = GetFocus();
-            ok(tmp == focus_window, "Expected focus %p, got %p.\n", focus_window, tmp);
-            tmp = GetForegroundWindow();
-            ok(tmp == focus_window, "Expected foreground window %p, got %p.\n", focus_window, tmp);
-        }
+        tmp = GetFocus();
+        ok(tmp == focus_window, "Expected focus %p, got %p.\n", focus_window, tmp);
+        tmp = GetForegroundWindow();
+        ok(tmp == focus_window, "Expected foreground window %p, got %p.\n", focus_window, tmp);
         SetForegroundWindow(focus_window);
         flush_events();
 
@@ -3014,13 +3007,22 @@ static void test_wndproc(void)
         ok(!expect_messages->message, "Expected message %#x for window %#x, but didn't receive it, i=%u.\n",
                 expect_messages->message, expect_messages->window, i);
         ok(!windowposchanged_received, "Received WM_WINDOWPOSCHANGED but did not expect it, i=%u.\n", i);
+
         expect_messages = NULL;
-        flush_events();
 
         ret = EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &devmode);
         ok(ret, "Failed to get display mode.\n");
         ok(devmode.dmPelsWidth == registry_mode.dmPelsWidth, "Got unexpected width %lu.\n", devmode.dmPelsWidth);
         ok(devmode.dmPelsHeight == registry_mode.dmPelsHeight, "Got unexpected height %lu.\n", devmode.dmPelsHeight);
+
+        flush_events();
+
+        ret = EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &devmode);
+        ok(ret, "Failed to get display mode.\n");
+        ok(devmode.dmPelsWidth == registry_mode.dmPelsWidth,
+                "Got unexpected width %lu.\n", devmode.dmPelsWidth);
+        ok(devmode.dmPelsHeight == registry_mode.dmPelsHeight,
+                "Got unexpected height %lu.\n", devmode.dmPelsHeight);
 
         /* SW_SHOWMINNOACTIVE is needed to make FVWM happy. SW_SHOWNOACTIVATE is needed to make windows
          * send SIZE_RESTORED after ShowWindow(SW_SHOWMINNOACTIVE). */
@@ -3097,8 +3099,8 @@ static void test_wndproc(void)
         flaky_wine
         ok(!expect_messages->message, "Expected message %#x for window %#x, but didn't receive it, i=%u.\n",
                 expect_messages->message, expect_messages->window, i);
-        flaky_if(i == 0 || i == 1)
         ok(!windowposchanged_received, "Received WM_WINDOWPOSCHANGED but did not expect it, i=%u.\n", i);
+
         expect_messages = NULL;
 
         /* The window is iconic even though no message was sent. */
@@ -3143,7 +3145,9 @@ static void test_wndproc(void)
          * immediately restores the device on activation. There are plenty of WM_WINDOWPOSCHANGED
          * messages that are generated by ShowWindow, so testing for their absence is pointless. */
         ShowWindow(focus_window, SW_MINIMIZE);
+        flush_events();
         ShowWindow(focus_window, SW_RESTORE);
+        flush_events();
         SetForegroundWindow(focus_window);
         flush_events();
 
@@ -3280,11 +3284,14 @@ static void test_wndproc_windowed(void)
     device_window = CreateWindowA("d3d9_test_wndproc_wc", "d3d9_test",
             WS_MAXIMIZE | WS_VISIBLE | WS_CAPTION, 0, 0, registry_mode.dmPelsWidth,
             registry_mode.dmPelsHeight, 0, 0, 0, 0);
+    flush_events();
+
     thread = CreateThread(NULL, 0, wndproc_thread, &thread_params, 0, &tid);
     ok(!!thread, "Failed to create thread, last error %#lx.\n", GetLastError());
 
     res = WaitForSingleObject(thread_params.window_created, INFINITE);
     ok(res == WAIT_OBJECT_0, "Wait failed (%#lx), last error %#lx.\n", res, GetLastError());
+    flush_events();
 
     proc = GetWindowLongPtrA(device_window, GWLP_WNDPROC);
     ok(proc == (LONG_PTR)test_proc, "Expected wndproc %#Ix, got %#Ix.\n",
@@ -3297,16 +3304,10 @@ static void test_wndproc_windowed(void)
             device_window, focus_window, thread_params.dummy_window);
 
     tmp = GetFocus();
-    ok(tmp == device_window, "Expected focus %p, got %p.\n", device_window, tmp);
-    if (thread_params.running_in_foreground)
-    {
-        tmp = GetForegroundWindow();
-        flaky
-        ok(tmp == thread_params.dummy_window, "Expected foreground window %p, got %p.\n",
-                thread_params.dummy_window, tmp);
-    }
-    else
-        skip("Not running in foreground, skip foreground window test\n");
+    ok(tmp == NULL, "Expected focus %p, got %p.\n", NULL, tmp);
+    tmp = GetForegroundWindow();
+    ok(tmp == thread_params.dummy_window, "Expected foreground window %p, got %p.\n",
+            thread_params.dummy_window, tmp);
 
     filter_messages = focus_window;
 
@@ -3321,7 +3322,7 @@ static void test_wndproc_windowed(void)
     }
 
     tmp = GetFocus();
-    ok(tmp == device_window, "Expected focus %p, got %p.\n", device_window, tmp);
+    ok(tmp == NULL, "Expected focus %p, got %p.\n", NULL, tmp);
     tmp = GetForegroundWindow();
     ok(tmp == thread_params.dummy_window, "Expected foreground window %p, got %p.\n",
             thread_params.dummy_window, tmp);
@@ -3655,6 +3656,7 @@ static void test_swapchain_parameters(void)
 {
     IDirect3DDevice9Ex *device;
     IDirect3D9Ex *d3d9ex;
+    RECT client_rect;
     HWND window;
     HRESULT hr;
     unsigned int i;
@@ -3805,6 +3807,39 @@ static void test_swapchain_parameters(void)
         }
         IDirect3DDevice9Ex_Release(device);
     }
+
+    memset(&present_parameters, 0, sizeof(present_parameters));
+    present_parameters.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    present_parameters.Windowed = TRUE;
+    present_parameters.BackBufferWidth = 0;
+    present_parameters.BackBufferHeight = 0;
+    present_parameters.BackBufferFormat = D3DFMT_UNKNOWN;
+
+    GetClientRect(window, &client_rect);
+
+    hr = IDirect3D9Ex_CreateDeviceEx(d3d9ex, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
+            window, D3DCREATE_SOFTWARE_VERTEXPROCESSING,
+            &present_parameters, NULL, &device);
+
+    ok(present_parameters.BackBufferWidth == client_rect.right, "Got unexpected BackBufferWidth %u, expected %ld.\n",
+            present_parameters.BackBufferWidth, client_rect.right);
+    ok(present_parameters.BackBufferHeight == client_rect.bottom, "Got unexpected BackBufferHeight %u, expected %ld.\n",
+            present_parameters.BackBufferHeight, client_rect.bottom);
+    ok(present_parameters.BackBufferFormat != D3DFMT_UNKNOWN, "Got unexpected BackBufferFormat %#x.\n",
+            present_parameters.BackBufferFormat);
+    ok(present_parameters.BackBufferCount == 1, "Got unexpected BackBufferCount %u.\n", present_parameters.BackBufferCount);
+    ok(!present_parameters.MultiSampleType, "Got unexpected MultiSampleType %u.\n", present_parameters.MultiSampleType);
+    ok(!present_parameters.MultiSampleQuality, "Got unexpected MultiSampleQuality %lu.\n", present_parameters.MultiSampleQuality);
+    ok(present_parameters.SwapEffect == D3DSWAPEFFECT_DISCARD, "Got unexpected SwapEffect %#x.\n", present_parameters.SwapEffect);
+    ok(!present_parameters.hDeviceWindow, "Got unexpected hDeviceWindow %p.\n", present_parameters.hDeviceWindow);
+    ok(present_parameters.Windowed, "Got unexpected Windowed %#x.\n", present_parameters.Windowed);
+    ok(!present_parameters.EnableAutoDepthStencil, "Got unexpected EnableAutoDepthStencil %#x.\n", present_parameters.EnableAutoDepthStencil);
+    ok(!present_parameters.AutoDepthStencilFormat, "Got unexpected AutoDepthStencilFormat %#x.\n", present_parameters.AutoDepthStencilFormat);
+    ok(!present_parameters.Flags, "Got unexpected Flags %#lx.\n", present_parameters.Flags);
+    ok(!present_parameters.FullScreen_RefreshRateInHz, "Got unexpected FullScreen_RefreshRateInHz %u.\n",
+            present_parameters.FullScreen_RefreshRateInHz);
+    ok(!present_parameters.PresentationInterval, "Got unexpected PresentationInterval %#x.\n", present_parameters.PresentationInterval);
+    IDirect3DDevice9Ex_Release(device);
 
     IDirect3D9Ex_Release(d3d9ex);
     DestroyWindow(window);
@@ -4993,6 +5028,145 @@ static void test_desktop_window(void)
     IDirect3DDevice9Ex_Release(device);
 }
 
+static void test_scene(void)
+{
+    IDirect3DSurface9 *surface1, *surface2, *surface3;
+    IDirect3DSurface9 *backBuffer, *rt, *ds;
+    RECT rect = {0, 0, 128, 128};
+    IDirect3DDevice9Ex *device;
+    IDirect3D9 *d3d;
+    ULONG refcount;
+    D3DCAPS9 caps;
+    HWND window;
+    HRESULT hr;
+
+    window = create_window();
+    if (!(device = create_device(window, NULL)))
+    {
+        skip("Failed to create a D3D device.\n");
+        DestroyWindow(window);
+        return;
+    }
+
+    hr = IDirect3DDevice9Ex_GetDirect3D(device, &d3d);
+    ok(SUCCEEDED(hr), "Failed to get Direct3D9, hr %#lx.\n", hr);
+
+    /* Get the caps, they will be needed to tell if an operation is supposed to be valid */
+    memset(&caps, 0, sizeof(caps));
+    hr = IDirect3DDevice9Ex_GetDeviceCaps(device, &caps);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    /* Test an EndScene without BeginScene. Should return an error */
+    hr = IDirect3DDevice9Ex_EndScene(device);
+    ok(hr == D3DERR_INVALIDCALL, "Got hr %#lx.\n", hr);
+
+    /* Test a normal BeginScene / EndScene pair, this should work */
+    hr = IDirect3DDevice9Ex_BeginScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_EndScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    /* Test another EndScene without having begun a new scene. Should return an error */
+    hr = IDirect3DDevice9Ex_EndScene(device);
+    ok(hr == D3DERR_INVALIDCALL, "Got hr %#lx.\n", hr);
+
+    /* Two nested BeginScene and EndScene calls */
+    hr = IDirect3DDevice9Ex_BeginScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_BeginScene(device);
+    ok(hr == D3DERR_INVALIDCALL, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_EndScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_EndScene(device);
+    ok(hr == D3DERR_INVALIDCALL, "Got hr %#lx.\n", hr);
+
+    /* Calling Reset does not clear scene state, different from d3d9. */
+    hr = IDirect3DDevice9Ex_BeginScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    reset_device(device, NULL);
+    hr = IDirect3DDevice9Ex_EndScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = IDirect3DDevice9Ex_BeginScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_EndScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    /* Create some surfaces to test stretchrect between the scenes */
+    hr = IDirect3DDevice9Ex_CreateOffscreenPlainSurface(device, 128, 128,
+            D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &surface1, NULL);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_CreateOffscreenPlainSurface(device, 128, 128,
+            D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &surface2, NULL);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_CreateDepthStencilSurface(device, 800, 600,
+            D3DFMT_D16, D3DMULTISAMPLE_NONE, 0, FALSE, &surface3, NULL);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_CreateRenderTarget(device, 128, 128,
+            D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &rt, NULL);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = IDirect3DDevice9Ex_GetBackBuffer(device, 0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_GetDepthStencilSurface(device, &ds);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    /* First make sure a simple StretchRect call works */
+    hr = IDirect3DDevice9Ex_StretchRect(device, surface1, NULL, surface2, NULL, 0);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_StretchRect(device, backBuffer, &rect, rt, NULL, 0);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    if (0) /* Disabled for now because it crashes in wine */
+    {
+        HRESULT expected = caps.DevCaps2 & D3DDEVCAPS2_CAN_STRETCHRECT_FROM_TEXTURES ? D3D_OK : D3DERR_INVALIDCALL;
+        hr = IDirect3DDevice9Ex_StretchRect(device, ds, NULL, surface3, NULL, 0);
+        ok(hr == expected, "Got unexpected hr %#lx, expected %#lx.\n", hr, expected);
+    }
+
+    /* Now try it in a BeginScene - EndScene pair. Seems to be allowed in a
+     * BeginScene - Endscene pair with normal surfaces and render targets, but
+     * not depth stencil surfaces. */
+    hr = IDirect3DDevice9Ex_BeginScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = IDirect3DDevice9Ex_StretchRect(device, surface1, NULL, surface2, NULL, 0);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_StretchRect(device, backBuffer, &rect, rt, NULL, 0);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    /* This is supposed to fail inside a BeginScene - EndScene pair. */
+    hr = IDirect3DDevice9Ex_StretchRect(device, ds, NULL, surface3, NULL, 0);
+    ok(hr == D3DERR_INVALIDCALL, "Got hr %#lx.\n", hr);
+
+    hr = IDirect3DDevice9Ex_EndScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    /* Does a SetRenderTarget influence BeginScene / EndScene ?
+     * Set a new render target, then see if it started a new scene. Flip the rt back and see if that maybe
+     * ended the scene. Expected result is that the scene is not affected by SetRenderTarget
+     */
+    hr = IDirect3DDevice9Ex_SetRenderTarget(device, 0, rt);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_BeginScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_SetRenderTarget(device, 0, backBuffer);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9Ex_EndScene(device);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    IDirect3DSurface9_Release(rt);
+    IDirect3DSurface9_Release(ds);
+    IDirect3DSurface9_Release(backBuffer);
+    IDirect3DSurface9_Release(surface1);
+    IDirect3DSurface9_Release(surface2);
+    IDirect3DSurface9_Release(surface3);
+    refcount = IDirect3DDevice9Ex_Release(device);
+    ok(!refcount, "Device has %lu references left.\n", refcount);
+
+    IDirect3D9_Release(d3d);
+    DestroyWindow(window);
+}
+
 START_TEST(d3d9ex)
 {
     DEVMODEW current_mode;
@@ -5053,6 +5227,7 @@ START_TEST(d3d9ex)
     test_sysmem_draw();
     test_pinned_buffers();
     test_desktop_window();
+    test_scene();
 
     UnregisterClassA("d3d9_test_wc", GetModuleHandleA(NULL));
 }

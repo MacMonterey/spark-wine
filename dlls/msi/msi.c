@@ -21,8 +21,6 @@
 #include <stdarg.h>
 
 #define COBJMACROS
-#define NONAMELESSUNION
-
 #include "windef.h"
 #include "winbase.h"
 #include "winreg.h"
@@ -2030,7 +2028,7 @@ UINT WINAPI MsiEnumComponentCostsW( MSIHANDLE handle, const WCHAR *component, DW
     GetWindowsDirectoryW( path, MAX_PATH );
     if (component && component[0])
     {
-        if (msi_is_global_assembly( comp )) *temp = comp->Cost;
+        if (msi_is_global_assembly( comp )) *temp = comp->cost;
         if (!comp->Enabled || !comp->KeyPath)
         {
             *cost = 0;
@@ -2039,14 +2037,14 @@ UINT WINAPI MsiEnumComponentCostsW( MSIHANDLE handle, const WCHAR *component, DW
         }
         else if ((file = msi_get_loaded_file( package, comp->KeyPath )))
         {
-            *cost = max( 8, comp->Cost / 512 );
+            *cost = comp->cost;
             *buflen = set_drive( drive, file->TargetPath[0] );
             r = ERROR_SUCCESS;
         }
     }
     else if (IStorage_Stat( package->db->storage, &stat, STATFLAG_NONAME ) == S_OK)
     {
-        *temp = max( 8, stat.cbSize.QuadPart / 512 );
+        *temp = cost_from_size( stat.cbSize.QuadPart );
         *buflen = set_drive( drive, path[0] );
         r = ERROR_SUCCESS;
     }
@@ -2548,7 +2546,7 @@ HRESULT WINAPI MsiGetFileSignatureInformationW( const WCHAR *path, DWORD flags, 
     data.dwUIChoice          = WTD_UI_NONE;
     data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
     data.dwUnionChoice       = WTD_CHOICE_FILE;
-    data.u.pFile             = &info;
+    data.pFile               = &info;
     data.dwStateAction       = WTD_STATEACTION_VERIFY;
     data.dwUIContext         = WTD_UICONTEXT_INSTALL;
 

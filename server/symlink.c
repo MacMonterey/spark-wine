@@ -155,13 +155,16 @@ struct object *create_symlink( struct object *root, const struct unicode_str *na
         set_error( STATUS_INVALID_PARAMETER );
         return NULL;
     }
-    if (!(symlink = create_named_object( root, &symlink_ops, name, attr, sd ))) return NULL;
-    if (get_error() != STATUS_OBJECT_NAME_EXISTS && !(symlink->target = memdup( target->str, target->len )))
+    if (!(symlink = create_named_object( root, &symlink_ops, name, attr | OBJ_OPENLINK, sd ))) return NULL;
+    if (get_error() != STATUS_OBJECT_NAME_EXISTS)
     {
-        release_object( symlink );
-        return NULL;
+        symlink->len = target->len;
+        if (!(symlink->target = memdup( target->str, target->len )))
+        {
+            release_object( symlink );
+            return NULL;
+        }
     }
-    symlink->len = target->len;
     return &symlink->obj;
 }
 
@@ -207,7 +210,14 @@ DECL_HANDLER(create_symlink)
 
     if ((symlink = create_symlink( root, &name, objattr->attributes, &target, sd )))
     {
-        reply->handle = alloc_handle( current->process, symlink, req->access, objattr->attributes );
+        if (get_error() == STATUS_OBJECT_NAME_EXISTS)
+        {
+            clear_error();
+            reply->handle = alloc_handle( current->process, symlink, req->access, objattr->attributes );
+        }
+        else
+            reply->handle = alloc_handle_no_access_check( current->process, symlink,
+                                                          req->access, objattr->attributes );
         release_object( symlink );
     }
 

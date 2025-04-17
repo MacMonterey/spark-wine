@@ -41,6 +41,7 @@ static const char usage[] =
 "Usage: widl [options...] infile.idl\n"
 "   or: widl [options...] --dlldata-only name1 [name2...]\n"
 "   --acf=file         Use ACF file\n"
+"   --align=n          Set structure packing to 'n'\n"
 "   -app_config        Ignored, present for midl compatibility\n"
 "   -b arch            Set the target architecture\n"
 "   -c                 Generate client stub\n"
@@ -58,9 +59,11 @@ static const char usage[] =
 "   --nostdinc         Do not search the standard include path\n"
 "   --ns_prefix        Prefix namespaces with ABI namespace\n"
 "   --oldnames         Use old naming conventions\n"
+"   --oldtlb           Generate typelib in the old format (SLTG)\n"
 "   -o, --output=NAME  Set the output file name\n"
 "   -Otype             Type of stubs to generate (-Os, -Oi, -Oif)\n"
 "   -p                 Generate proxy\n"
+"   --packing=n        Set structure packing to 'n'\n"
 "   --prefix-all=p     Prefix names of client stubs / server functions with 'p'\n"
 "   --prefix-client=p  Prefix names of client stubs with 'p'\n"
 "   --prefix-server=p  Prefix names of server functions with 'p'\n"
@@ -73,8 +76,6 @@ static const char usage[] =
 "   -V                 Print version and exit\n"
 "   -W                 Enable pedantic warnings\n"
 "   --win32, --win64   Set the target architecture (Win32 or Win64)\n"
-"   --win32-align n    Set win32 structure alignment to 'n'\n"
-"   --win64-align n    Set win64 structure alignment to 'n'\n"
 "   --winrt            Enable Windows Runtime mode\n"
 "Debug level 'n' is a bitmask with following meaning:\n"
 "    * 0x01 Tell which resource is parsed (verbose mode)\n"
@@ -88,7 +89,7 @@ static const char usage[] =
 static const char version_string[] = "Wine IDL Compiler version " PACKAGE_VERSION "\n"
 			"Copyright 2002 Ove Kaaven\n";
 
-static struct target target;
+struct target target = { 0 };
 
 int debuglevel = DEBUGLEVEL_NONE;
 int parser_debug, yy_flex_debug;
@@ -106,15 +107,14 @@ int do_idfile = 0;
 int do_dlldata = 0;
 static int no_preprocess = 0;
 int old_names = 0;
-int win32_packing = 8;
-int win64_packing = 8;
+int old_typelib = 0;
 int winrt_mode = 0;
+int interpreted_mode = 1;
 int use_abi_namespace = 0;
 static int stdinc = 1;
-static enum stub_mode stub_mode = MODE_Os;
 
 char *input_name;
-char *input_idl_name;
+char *idl_name;
 char *acf_name;
 char *header_name;
 char *local_stubs_name;
@@ -134,14 +134,16 @@ struct strarray temp_files = { 0 };
 const char *temp_dir = NULL;
 const char *prefix_client = "";
 const char *prefix_server = "";
+static const char *bindir;
+static const char *libdir;
 static const char *includedir;
-static const char *dlldir;
 static struct strarray dlldirs;
 static char *output_name;
 static const char *sysroot = "";
 
 static FILE *idfile;
 
+unsigned int packing = 8;
 unsigned int pointer_size = 0;
 
 time_t now;
@@ -154,6 +156,8 @@ enum {
     DLLDATA_ONLY_OPTION,
     LOCAL_STUBS_OPTION,
     NOSTDINC_OPTION,
+    OLD_TYPELIB_OPTION,
+    PACKING_OPTION,
     PREFIX_ALL_OPTION,
     PREFIX_CLIENT_OPTION,
     PREFIX_SERVER_OPTION,
@@ -164,14 +168,13 @@ enum {
     SYSROOT_OPTION,
     WIN32_OPTION,
     WIN64_OPTION,
-    WIN32_ALIGN_OPTION,
-    WIN64_ALIGN_OPTION
 };
 
 static const char short_options[] =
     "b:cC:d:D:EhH:I:L:m:No:O:pP:rsS:tT:uU:VW";
 static const struct long_option long_options[] = {
     { "acf", 1, ACF_OPTION },
+    { "align", 1, PACKING_OPTION },
     { "app_config", 0, APP_CONFIG_OPTION },
     { "dlldata", 1, DLLDATA_OPTION },
     { "dlldata-only", 0, DLLDATA_ONLY_OPTION },
@@ -180,7 +183,9 @@ static const struct long_option long_options[] = {
     { "nostdinc", 0, NOSTDINC_OPTION },
     { "ns_prefix", 0, RT_NS_PREFIX },
     { "oldnames", 0, OLDNAMES_OPTION },
+    { "oldtlb", 0, OLD_TYPELIB_OPTION },
     { "output", 0, 'o' },
+    { "packing", 1, PACKING_OPTION },
     { "prefix-all", 1, PREFIX_ALL_OPTION },
     { "prefix-client", 1, PREFIX_CLIENT_OPTION },
     { "prefix-server", 1, PREFIX_SERVER_OPTION },
@@ -190,19 +195,10 @@ static const struct long_option long_options[] = {
     { "winrt", 0, RT_OPTION },
     { "win32", 0, WIN32_OPTION },
     { "win64", 0, WIN64_OPTION },
-    { "win32-align", 1, WIN32_ALIGN_OPTION },
-    { "win64-align", 1, WIN64_ALIGN_OPTION },
     { NULL }
 };
 
 static void rm_tempfile(void);
-
-enum stub_mode get_stub_mode(void)
-{
-    /* old-style interpreted stubs are not supported on 64-bit */
-    if (stub_mode == MODE_Oi && pointer_size == 8) return MODE_Oif;
-    return stub_mode;
-}
 
 static char *make_token(const char *name)
 {
@@ -247,7 +243,7 @@ static void add_widl_version_define(void)
     if (p)
         version += atoi(p + 1);
 
-    sprintf(version_str, "__WIDL__=0x%x", version);
+    snprintf(version_str, sizeof(version_str), "__WIDL__=0x%x", version);
     wpp_add_cmdline_define(version_str);
 }
 
@@ -369,7 +365,7 @@ void write_dlldata(const statement_list_t *stmts)
     fclose(dlldata);
   }
 
-  if (strarray_exists( &filenames, proxy_token ))
+  if (strarray_exists( filenames, proxy_token ))
       /* We're already in the list, no need to regenerate this file.  */
       return;
 
@@ -435,7 +431,7 @@ void write_id_data(const statement_list_t *stmts)
   }
 
   fprintf(idfile, "/*** Autogenerated by WIDL %s ", PACKAGE_VERSION);
-  fprintf(idfile, "from %s - Do not edit ***/\n\n", input_idl_name);
+  fprintf(idfile, "from %s - Do not edit ***/\n\n", idl_name);
   fprintf(idfile, "#include <rpc.h>\n");
   fprintf(idfile, "#include <rpcndr.h>\n\n");
 
@@ -472,15 +468,6 @@ void write_id_data(const statement_list_t *stmts)
   fprintf(idfile, "#undef MIDL_DEFINE_GUID\n" );
 
   fclose(idfile);
-}
-
-static void init_argv0_dir( const char *argv0 )
-{
-    char *dir = get_argv0_dir( argv0 );
-
-    if (!dir) return;
-    includedir = strmake( "%s/%s", dir, BIN_TO_INCLUDEDIR );
-    dlldir = strmake( "%s/%s", dir, BIN_TO_DLLDIR );
 }
 
 static void option_callback( int optc, char *optarg )
@@ -532,15 +519,10 @@ static void option_callback( int optc, char *optarg )
     case WIN64_OPTION:
       pointer_size = 8;
       break;
-    case WIN32_ALIGN_OPTION:
-      win32_packing = strtol(optarg, NULL, 0);
-      if(win32_packing != 2 && win32_packing != 4 && win32_packing != 8)
-          error("Packing must be one of 2, 4 or 8\n");
-      break;
-    case WIN64_ALIGN_OPTION:
-      win64_packing = strtol(optarg, NULL, 0);
-      if(win64_packing != 2 && win64_packing != 4 && win64_packing != 8)
-          error("Packing must be one of 2, 4 or 8\n");
+    case PACKING_OPTION:
+      packing = strtol(optarg, NULL, 0);
+      if(packing != 2 && packing != 4 && packing != 8)
+          error("Structure packing must be one of 2, 4 or 8\n");
       break;
     case ACF_OPTION:
       acf_name = xstrdup(optarg);
@@ -597,11 +579,11 @@ static void option_callback( int optc, char *optarg )
       output_name = xstrdup(optarg);
       break;
     case 'O':
-      if (!strcmp( optarg, "s" )) stub_mode = MODE_Os;
-      else if (!strcmp( optarg, "i" )) stub_mode = MODE_Oi;
-      else if (!strcmp( optarg, "ic" )) stub_mode = MODE_Oif;
-      else if (!strcmp( optarg, "if" )) stub_mode = MODE_Oif;
-      else if (!strcmp( optarg, "icf" )) stub_mode = MODE_Oif;
+      if (!strcmp( optarg, "s" )) interpreted_mode = 0;
+      else if (!strcmp( optarg, "i" )) interpreted_mode = 1;
+      else if (!strcmp( optarg, "ic" )) interpreted_mode = 1;
+      else if (!strcmp( optarg, "if" )) interpreted_mode = 1;
+      else if (!strcmp( optarg, "icf" )) interpreted_mode = 1;
       else error( "Invalid argument '-O%s'\n", optarg );
       break;
     case 'p':
@@ -625,6 +607,9 @@ static void option_callback( int optc, char *optarg )
     case 't':
       do_everything = 0;
       do_typelib = 1;
+      break;
+    case OLD_TYPELIB_OPTION:
+      old_typelib = 1;
       break;
     case 'T':
       typelib_name = xstrdup(optarg);
@@ -650,7 +635,7 @@ static void option_callback( int optc, char *optarg )
 
 int open_typelib( const char *name )
 {
-    static const char *default_dirs[] = { DLLDIR, "/usr/lib/wine", "/usr/local/lib/wine" };
+    static const char *default_dirs[] = { LIBDIR "/wine", "/usr/lib/wine", "/usr/local/lib/wine" };
     struct target win_target = { target.cpu, PLATFORM_WINDOWS };
     const char *pe_dir = get_arch_dir( win_target );
     int fd;
@@ -679,10 +664,10 @@ int open_typelib( const char *name )
 
     if (stdinc)
     {
-        if (dlldir)
+        if (libdir)
         {
-            TRYOPEN( strmake( "%s%s/%s", dlldir, pe_dir, name ));
-            TRYOPEN( strmake( "%s/%s", dlldir, name ));
+            TRYOPEN( strmake( "%s/wine%s/%s", libdir, pe_dir, name ));
+            TRYOPEN( strmake( "%s/wine/%s", libdir, name ));
         }
         for (i = 0; i < ARRAY_SIZE(default_dirs); i++)
         {
@@ -701,7 +686,9 @@ int main(int argc,char *argv[])
   struct strarray files;
 
   init_signals( exit_on_signal );
-  init_argv0_dir( argv[0] );
+  bindir = get_bindir( argv[0] );
+  libdir = get_libdir( bindir );
+  includedir = get_includedir( bindir );
   target = init_argv0_target( argv[0] );
 
   now = time(NULL);
@@ -782,7 +769,10 @@ int main(int argc,char *argv[])
       return 1;
     }
     else
-      input_idl_name = input_name = xstrdup(files.str[0]);
+    {
+      input_name = xstrdup( files.str[0] );
+      idl_name = get_basename( input_name );
+    }
   }
   else {
     fprintf(stderr, "%s", usage);
@@ -839,10 +829,8 @@ int main(int argc,char *argv[])
 
   init_types();
   ret = parser_parse();
-
-  if(ret) {
-    exit(1);
-  }
+  close_all_inputs();
+  if (ret) exit(1);
 
   /* Everything has been done successfully, don't delete any files.  */
   set_everything(FALSE);

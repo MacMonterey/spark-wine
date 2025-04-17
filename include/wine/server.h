@@ -49,9 +49,9 @@ struct __server_request_info
     struct __server_iovec data[__SERVER_MAX_DATA];  /* request variable size data */
 };
 
-extern unsigned int CDECL wine_server_call( void *req_ptr );
-extern NTSTATUS CDECL wine_server_fd_to_handle( int fd, unsigned int access, unsigned int attributes, HANDLE *handle );
-extern NTSTATUS CDECL wine_server_handle_to_fd( HANDLE handle, unsigned int access, int *unix_fd, unsigned int *options );
+NTSYSAPI unsigned int CDECL wine_server_call( void *req_ptr );
+NTSYSAPI NTSTATUS CDECL wine_server_fd_to_handle( int fd, unsigned int access, unsigned int attributes, HANDLE *handle );
+NTSYSAPI NTSTATUS CDECL wine_server_handle_to_fd( HANDLE handle, unsigned int access, int *unix_fd, unsigned int *options );
 
 /* do a server call and set the last error code */
 static inline unsigned int wine_server_call_err( void *req_ptr )
@@ -116,6 +116,32 @@ static inline client_ptr_t wine_server_client_ptr( const void *ptr )
 static inline void *wine_server_get_ptr( client_ptr_t ptr )
 {
     return (void *)(ULONG_PTR)ptr;
+}
+
+/* convert a server struct rectangle to a RECT */
+static inline RECT wine_server_get_rect( struct rectangle rectangle )
+{
+    RECT rect =
+    {
+        .left = rectangle.left,
+        .top = rectangle.top,
+        .right = rectangle.right,
+        .bottom = rectangle.bottom,
+    };
+    return rect;
+}
+
+/* convert a RECT to a server struct rectangle */
+static inline struct rectangle wine_server_rectangle( RECT rect )
+{
+    struct rectangle rectangle =
+    {
+        .left = rect.left,
+        .top = rect.top,
+        .right = rect.right,
+        .bottom = rect.bottom,
+    };
+    return rectangle;
 }
 
 

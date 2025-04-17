@@ -35,6 +35,7 @@
 
 #include "mshtml_private.h"
 #include "htmlevent.h"
+#include "binding.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(mshtml);
 
@@ -448,41 +449,17 @@ static HRESULT WINAPI DocObjOleObject_SetClientSite(IOleObject *iface, IOleClien
     if(pClientSite == This->client)
         return S_OK;
 
-    if(This->client) {
-        IOleClientSite_Release(This->client);
-        This->client = NULL;
+    if(This->client)
         This->nscontainer->usermode = UNKNOWN_USERMODE;
-    }
 
-    if(This->client_cmdtrg) {
-        IOleCommandTarget_Release(This->client_cmdtrg);
-        This->client_cmdtrg = NULL;
-    }
-
-    if(This->hostui && !This->custom_hostui) {
-        IDocHostUIHandler_Release(This->hostui);
-        This->hostui = NULL;
-    }
-
-    if(This->doc_object_service) {
-        IDocObjectService_Release(This->doc_object_service);
-        This->doc_object_service = NULL;
-    }
-
-    if(This->webbrowser) {
-        IUnknown_Release(This->webbrowser);
-        This->webbrowser = NULL;
-    }
-
-    if(This->browser_service) {
-        IUnknown_Release(This->browser_service);
-        This->browser_service = NULL;
-    }
-
-    if(This->travel_log) {
-        ITravelLog_Release(This->travel_log);
-        This->travel_log = NULL;
-    }
+    unlink_ref(&This->client);
+    unlink_ref(&This->client_cmdtrg);
+    if(!This->custom_hostui)
+        unlink_ref(&This->hostui);
+    unlink_ref(&This->doc_object_service);
+    unlink_ref(&This->webbrowser);
+    unlink_ref(&This->browser_service);
+    unlink_ref(&This->travel_log);
 
     memset(&This->hostinfo, 0, sizeof(DOCHOSTUIINFO));
 
@@ -1617,11 +1594,7 @@ static HRESULT WINAPI DocObjOleInPlaceObjectWindowless_InPlaceDeactivate(IOleInP
     if(!This->in_place_active)
         return S_OK;
 
-    if(This->frame) {
-        IOleInPlaceFrame_Release(This->frame);
-        This->frame = NULL;
-    }
-
+    unlink_ref(&This->frame);
     if(This->hwnd) {
         ShowWindow(This->hwnd, SW_HIDE);
         SetWindowPos(This->hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
@@ -2107,8 +2080,10 @@ void HTMLDocumentNode_OleObj_Init(HTMLDocumentNode *This)
     This->IObjectWithSite_iface.lpVtbl = &DocNodeObjectWithSiteVtbl;
     This->IOleContainer_iface.lpVtbl = &DocNodeOleContainerVtbl;
     This->IObjectSafety_iface.lpVtbl = &DocNodeObjectSafetyVtbl;
-    This->doc_obj->extent.cx = 1;
-    This->doc_obj->extent.cy = 1;
+    if(This->doc_obj) {
+        This->doc_obj->extent.cx = 1;
+        This->doc_obj->extent.cy = 1;
+    }
 }
 
 static void HTMLDocumentObj_OleObj_Init(HTMLDocumentObj *This)
@@ -3431,6 +3406,58 @@ static ULONG WINAPI HTMLDocumentObj_AddRef(IUnknown *iface)
     return ref;
 }
 
+static void set_window_uninitialized(HTMLOuterWindow *window)
+{
+    nsChannelBSC *channelbsc;
+    nsWineURI *nsuri;
+    IMoniker *mon;
+    HRESULT hres;
+    IUri *uri;
+
+    window->readystate = READYSTATE_UNINITIALIZED;
+    set_current_uri(window, NULL);
+    if(window->mon) {
+        IMoniker_Release(window->mon);
+        window->mon = NULL;
+    }
+
+    if(!window->base.inner_window)
+        return;
+
+    hres = create_uri(L"about:blank", 0, &uri);
+    if(FAILED(hres))
+        return;
+
+    hres = create_doc_uri(uri, &nsuri);
+    IUri_Release(uri);
+    if(FAILED(hres))
+        return;
+
+    hres = CreateURLMoniker(NULL, L"about:blank", &mon);
+    if(SUCCEEDED(hres)) {
+        hres = create_channelbsc(mon, NULL, NULL, 0, TRUE, &channelbsc);
+        IMoniker_Release(mon);
+
+        if(SUCCEEDED(hres)) {
+            channelbsc->bsc.bindf = 0;  /* synchronous binding */
+
+            abort_window_bindings(window->base.inner_window);
+            window->base.inner_window->doc->unload_sent = TRUE;
+
+            hres = load_nsuri(window, nsuri, NULL, channelbsc, LOAD_FLAGS_BYPASS_CACHE);
+            if(SUCCEEDED(hres))
+                hres = create_pending_window(window, channelbsc);
+            IBindStatusCallback_Release(&channelbsc->bsc.IBindStatusCallback_iface);
+        }
+    }
+    nsISupports_Release((nsISupports*)nsuri);
+    if(FAILED(hres))
+        return;
+
+    window->load_flags |= BINDING_REPLACE;
+    start_binding(window->pending_window, &window->pending_window->bscallback->bsc, NULL);
+}
+
 static ULONG WINAPI HTMLDocumentObj_Release(IUnknown *iface)
 {
     HTMLDocumentObj *This = impl_from_IUnknown(iface);
@@ -3440,8 +3467,15 @@ static ULONG WINAPI HTMLDocumentObj_Release(IUnknown *iface)
 
     if(!ref) {
         if(This->doc_node) {
-            This->doc_node->doc_obj = NULL;
-            IHTMLDOMNode_Release(&This->doc_node->node.IHTMLDOMNode_iface);
+            HTMLDocumentNode *doc_node = This->doc_node;
+
+            if(This->nscontainer)
+                This->nscontainer->doc = NULL;
+            This->doc_node = NULL;
+            doc_node->doc_obj = NULL;
+
+            set_window_uninitialized(This->window);
+            IHTMLDOMNode_Release(&doc_node->node.IHTMLDOMNode_iface);
         }
         if(This->window)
             IHTMLWindow2_Release(&This->window->base.IHTMLWindow2_iface);
@@ -3499,35 +3533,67 @@ static inline HTMLDocumentObj *impl_from_IDispatchEx(IDispatchEx *iface)
 }
 
 HTMLDOCUMENTOBJ_IUNKNOWN_METHODS(DispatchEx)
-HTMLDOCUMENTOBJ_FWD_TO_NODE_1(DispatchEx, GetTypeInfoCount, UINT*)
-HTMLDOCUMENTOBJ_FWD_TO_NODE_3(DispatchEx, GetTypeInfo, UINT,LCID,ITypeInfo**)
-HTMLDOCUMENTOBJ_FWD_TO_NODE_5(DispatchEx, GetIDsOfNames, REFIID,LPOLESTR*,UINT,LCID,DISPID*)
+DISPEX_IDISPATCH_NOUNK_IMPL(DocObjDispatchEx, IDispatchEx,
+                            impl_from_IDispatchEx(iface)->doc_node->node.event_target.dispex)
 
-static HRESULT WINAPI DocObjDispatchEx_Invoke(IDispatchEx *iface, DISPID dispIdMember, REFIID riid, LCID lcid,
-        WORD wFlags, DISPPARAMS *pDispParams, VARIANT *pVarResult, EXCEPINFO *pExcepInfo, UINT *puArgErr)
+static HRESULT WINAPI DocObjDispatchEx_GetDispID(IDispatchEx *iface, BSTR name, DWORD grfdex, DISPID *pid)
 {
     HTMLDocumentObj *This = impl_from_IDispatchEx(iface);
 
-    return IDispatchEx_InvokeEx(&This->doc_node->IDispatchEx_iface, dispIdMember, lcid, wFlags, pDispParams,
-            pVarResult, pExcepInfo, NULL);
+    return IWineJSDispatchHost_GetDispID(&This->doc_node->node.event_target.dispex.IWineJSDispatchHost_iface, name, grfdex, pid);
 }
-
-HTMLDOCUMENTOBJ_FWD_TO_NODE_3(DispatchEx, GetDispID, BSTR,DWORD,DISPID*)
 
 static HRESULT WINAPI DocObjDispatchEx_InvokeEx(IDispatchEx *iface, DISPID id, LCID lcid, WORD wFlags, DISPPARAMS *pdp,
         VARIANT *pvarRes, EXCEPINFO *pei, IServiceProvider *pspCaller)
 {
     HTMLDocumentObj *This = impl_from_IDispatchEx(iface);
 
-    return IDispatchEx_InvokeEx(&This->doc_node->IDispatchEx_iface, id, lcid, wFlags, pdp, pvarRes, pei, pspCaller);
+    return IWineJSDispatchHost_InvokeEx(&This->doc_node->node.event_target.dispex.IWineJSDispatchHost_iface, id, lcid,
+                                    wFlags, pdp, pvarRes, pei, pspCaller);
 }
 
-HTMLDOCUMENTOBJ_FWD_TO_NODE_2(DispatchEx, DeleteMemberByName, BSTR,DWORD)
-HTMLDOCUMENTOBJ_FWD_TO_NODE_1(DispatchEx, DeleteMemberByDispID, DISPID)
-HTMLDOCUMENTOBJ_FWD_TO_NODE_3(DispatchEx, GetMemberProperties, DISPID,DWORD,DWORD*)
-HTMLDOCUMENTOBJ_FWD_TO_NODE_2(DispatchEx, GetMemberName, DISPID,BSTR*)
-HTMLDOCUMENTOBJ_FWD_TO_NODE_3(DispatchEx, GetNextDispID, DWORD,DISPID,DISPID*)
-HTMLDOCUMENTOBJ_FWD_TO_NODE_1(DispatchEx, GetNameSpaceParent, IUnknown**)
+static HRESULT WINAPI DocObjDispatchEx_DeleteMemberByName(IDispatchEx *iface, BSTR bstrName, DWORD grfdex)
+{
+    HTMLDocumentObj *This = impl_from_IDispatchEx(iface);
+
+    return IWineJSDispatchHost_DeleteMemberByName(&This->doc_node->node.event_target.dispex.IWineJSDispatchHost_iface, bstrName, grfdex);
+}
+
+static HRESULT WINAPI DocObjDispatchEx_DeleteMemberByDispID(IDispatchEx *iface, DISPID id)
+{
+    HTMLDocumentObj *This = impl_from_IDispatchEx(iface);
+
+    return IWineJSDispatchHost_DeleteMemberByDispID(&This->doc_node->node.event_target.dispex.IWineJSDispatchHost_iface, id);
+}
+
+static HRESULT WINAPI DocObjDispatchEx_GetMemberProperties(IDispatchEx *iface, DISPID id, DWORD grfdexFetch, DWORD *pgrfdex)
+{
+    HTMLDocumentObj *This = impl_from_IDispatchEx(iface);
+
+    return IWineJSDispatchHost_GetMemberProperties(&This->doc_node->node.event_target.dispex.IWineJSDispatchHost_iface, id, grfdexFetch,
+            pgrfdex);
+}
+
+static HRESULT WINAPI DocObjDispatchEx_GetMemberName(IDispatchEx *iface, DISPID id, BSTR *name)
+{
+    HTMLDocumentObj *This = impl_from_IDispatchEx(iface);
+
+    return IWineJSDispatchHost_GetMemberName(&This->doc_node->node.event_target.dispex.IWineJSDispatchHost_iface, id, name);
+}
+
+static HRESULT WINAPI DocObjDispatchEx_GetNextDispID(IDispatchEx *iface, DWORD grfdex, DISPID id, DISPID *pid)
+{
+    HTMLDocumentObj *This = impl_from_IDispatchEx(iface);
+
+    return IWineJSDispatchHost_GetNextDispID(&This->doc_node->node.event_target.dispex.IWineJSDispatchHost_iface, grfdex, id, pid);
+}
+
+static HRESULT WINAPI DocObjDispatchEx_GetNameSpaceParent(IDispatchEx *iface, IUnknown **ppunk)
+{
+    HTMLDocumentObj *This = impl_from_IDispatchEx(iface);
+
+    return IWineJSDispatchHost_GetNameSpaceParent(&This->doc_node->node.event_target.dispex.IWineJSDispatchHost_iface, ppunk);
+}
 
 static const IDispatchExVtbl DocObjDispatchExVtbl = {
     DocObjDispatchEx_QueryInterface,

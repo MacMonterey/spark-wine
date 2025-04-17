@@ -6254,13 +6254,26 @@ static BOOL CRYPT_AsnDecodeOCSPSignatureInfoCertEncoded(const BYTE *pbEncoded,
  DWORD *pcbDecoded)
 {
     BOOL ret;
-    struct AsnArrayDescriptor arrayDesc = { 0,
+    DWORD data_len, len_bytes;
+    struct AsnArrayDescriptor arrayDesc = { ASN_SEQUENCE,
      offsetof(OCSP_SIGNATURE_INFO, cCertEncoded), offsetof(OCSP_SIGNATURE_INFO, rgCertEncoded),
      FINALMEMBERSIZE(OCSP_SIGNATURE_INFO, cCertEncoded), verify_and_copy_certificate,
      sizeof(CRYPT_DER_BLOB), TRUE, offsetof(CRYPT_DER_BLOB, pbData) };
 
-    ret = CRYPT_AsnDecodeArray(&arrayDesc, pbEncoded, cbEncoded,
+    if (pbEncoded[0] != (ASN_CONTEXT | ASN_CONSTRUCTOR))
+    {
+        WARN("Unexpected tag %#x.\n", pbEncoded[0]);
+        SetLastError(CRYPT_E_ASN1_BADTAG);
+        return FALSE;
+    }
+
+    if (!(ret = CRYPT_GetLen(pbEncoded, cbEncoded, &data_len))) return FALSE;
+    len_bytes = GET_LEN_BYTES(pbEncoded[1]);
+
+    ret = CRYPT_AsnDecodeArray(&arrayDesc, pbEncoded + 1 + len_bytes, cbEncoded - 1 - len_bytes,
      dwFlags, NULL, pvStructInfo, pcbStructInfo, pcbDecoded);
+    if (pcbDecoded)
+        *pcbDecoded = 1 + len_bytes + data_len;
     return ret;
 }
 
@@ -6494,7 +6507,7 @@ static BOOL CRYPT_AsnDecodeOCSPBasicResponseEntry(const BYTE *pbEncoded, DWORD c
      { ASN_CONTEXT | ASN_CONSTRUCTOR, offsetof(OCSP_BASIC_RESPONSE_ENTRY, NextUpdate),
        CRYPT_AsnDecodeOCSPNextUpdate, sizeof(FILETIME), TRUE, FALSE,
        0, 0 },
-     { ASN_CONTEXT | ASN_CONSTRUCTOR /* FIXME */, offsetof(OCSP_BASIC_RESPONSE_ENTRY, cExtension),
+     { ASN_CONTEXT | ASN_CONSTRUCTOR | 1 /* FIXME */, offsetof(OCSP_BASIC_RESPONSE_ENTRY, cExtension),
        CRYPT_AsnDecodeCertExtensions, FINALMEMBERSIZE(OCSP_BASIC_RESPONSE_ENTRY, cExtension),
        TRUE, TRUE, offsetof(OCSP_BASIC_RESPONSE_ENTRY, rgExtension), 0 },
     };
@@ -6709,7 +6722,7 @@ static BOOL WINAPI CRYPT_AsnDecodeOCSPBasicResponse(DWORD dwCertEncodingType,
      { ASN_SEQUENCEOF, offsetof(OCSP_BASIC_RESPONSE_INFO, cResponseEntry),
        CRYPT_AsnDecodeOCSPBasicResponseEntriesArray, MEMBERSIZE(OCSP_BASIC_RESPONSE_INFO, cResponseEntry, cExtension),
        TRUE, TRUE, offsetof(OCSP_BASIC_RESPONSE_INFO, rgResponseEntry) },
-     { ASN_CONTEXT | ASN_CONSTRUCTOR, offsetof(OCSP_BASIC_RESPONSE_INFO, cExtension),
+     { ASN_CONTEXT | ASN_CONSTRUCTOR | 1, offsetof(OCSP_BASIC_RESPONSE_INFO, cExtension),
        CRYPT_AsnDecodeCertExtensions, FINALMEMBERSIZE(OCSP_BASIC_RESPONSE_INFO, cExtension),
        TRUE, TRUE, offsetof(OCSP_BASIC_RESPONSE_INFO, rgExtension), 0 },
      };
@@ -6927,6 +6940,8 @@ static CryptDecodeObjectExFunc CRYPT_GetBuiltinDecoder(DWORD dwCertEncodingType,
         decodeFunc = CRYPT_AsnDecodeCRLDistPoints;
     else if (!strcmp(lpszStructType, szOID_CERT_POLICIES))
         decodeFunc = CRYPT_AsnDecodeCertPolicies;
+    else if (!strcmp(lpszStructType, szOID_APPLICATION_CERT_POLICIES))
+        FIXME("szOID_APPLICATION_CERT_POLICIES\n");
     else if (!strcmp(lpszStructType, szOID_POLICY_MAPPINGS))
         decodeFunc = CRYPT_AsnDecodeCertPolicyMappings;
     else if (!strcmp(lpszStructType, szOID_POLICY_CONSTRAINTS))

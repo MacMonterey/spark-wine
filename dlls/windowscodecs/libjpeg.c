@@ -37,6 +37,13 @@
 WINE_DEFAULT_DEBUG_CHANNEL(wincodecs);
 WINE_DECLARE_DEBUG_CHANNEL(jpeg);
 
+enum jpeg_markers
+{
+    APP1 = 0xffe1,
+    SOS = 0xffda,
+    EOI = 0xffd9,
+};
+
 static void error_exit_fn(j_common_ptr cinfo)
 {
     char message[JMSG_LENGTH_MAX];
@@ -98,7 +105,7 @@ static void CDECL jpeg_decoder_destroy(struct decoder* iface)
 
     if (This->cinfo_initialized) jpeg_destroy_decompress(&This->cinfo);
     free(This->image_data);
-    RtlFreeHeap(GetProcessHeap(), 0, This);
+    free(This);
 }
 
 static void source_mgr_init_source(j_decompress_ptr cinfo)
@@ -248,6 +255,10 @@ static HRESULT CDECL jpeg_decoder_initialize(struct decoder* iface, IStream *str
     This->stride = (This->frame.bpp * This->cinfo.output_width + 7) / 8;
     data_size = This->stride * This->cinfo.output_height;
 
+    if (data_size / This->stride < This->cinfo.output_height)
+        /* overflow in multiplication */
+        return E_OUTOFMEMORY;
+
     This->image_data = malloc(data_size);
     if (!This->image_data)
         return E_OUTOFMEMORY;
@@ -301,6 +312,12 @@ static HRESULT CDECL jpeg_decoder_get_frame_info(struct decoder* iface, UINT fra
     return S_OK;
 }
 
+static HRESULT CDECL jpeg_decoder_get_decoder_palette(struct decoder *iface, UINT frame, WICColor *colors,
+        UINT *num_colors)
+{
+    return WINCODEC_ERR_PALETTEUNAVAILABLE;
+}
+
 static HRESULT CDECL jpeg_decoder_copy_pixels(struct decoder* iface, UINT frame,
     const WICRect *prc, UINT stride, UINT buffersize, BYTE *buffer)
 {
@@ -313,10 +330,92 @@ static HRESULT CDECL jpeg_decoder_copy_pixels(struct decoder* iface, UINT frame,
 static HRESULT CDECL jpeg_decoder_get_metadata_blocks(struct decoder* iface, UINT frame,
     UINT *count, struct decoder_block **blocks)
 {
-    FIXME("stub\n");
+    struct jpeg_decoder *This = impl_from_decoder(iface);
+    struct
+    {
+        struct decoder_block *blocks;
+        size_t capacity, count;
+    } results;
+    struct decoder_block block;
+    USHORT marker, length;
+    ULONGLONG offset;
+    BYTE header[4];
+    bool add_block;
+    HRESULT hr;
+
     *count = 0;
     *blocks = NULL;
-    return S_OK;
+
+    /* Skip SOI marker. */
+    hr = stream_seek(This->stream, 2, STREAM_SEEK_SET, NULL);
+    if (FAILED(hr))
+        return hr;
+
+    /* TODO: support for App0, Xmp, and chrominance/luminance blocks is missing. */
+
+    marker = 0;
+    offset = 2;
+    memset(&results, 0, sizeof(results));
+    for (;;)
+    {
+        if (stream_read(This->stream, header, 4, NULL) != S_OK)
+            break;
+        offset += 4;
+
+        marker = header[0] << 8 | header[1];
+        length = header[2] * 256 + header[3] - 2;
+
+        add_block = false;
+        if (marker == APP1)
+        {
+            /* APP1 marker might appear multiple times, it's reused for different metadata blocks. */
+            if (stream_read(This->stream, header, 4, NULL) != S_OK)
+                break;
+            stream_seek(This->stream, -4, STREAM_SEEK_CUR, NULL);
+
+            if (!memcmp(header, "Exif", 4))
+            {
+                block.offset = offset;
+                block.length = length;
+                block.options = DECODER_BLOCK_READER_CLSID;
+                block.reader_clsid = CLSID_WICApp1MetadataReader;
+
+                add_block = true;
+            }
+        }
+        else if (marker == EOI || marker == SOS)
+        {
+            break;
+        }
+
+        if (add_block)
+        {
+            if (!wincodecs_array_reserve((void **)&results.blocks, &results.capacity,
+                    results.count + 1, sizeof(*results.blocks)))
+            {
+                hr = E_OUTOFMEMORY;
+                break;
+            }
+
+            results.blocks[results.count++] = block;
+        }
+
+        if (FAILED(stream_seek(This->stream, length, STREAM_SEEK_CUR, NULL)))
+            break;
+        offset += length;
+    }
+
+    if (hr == S_OK)
+    {
+        *count = results.count;
+        *blocks = results.blocks;
+    }
+    else
+    {
+        free(results.blocks);
+    }
+
+    return hr;
 }
 
 static HRESULT CDECL jpeg_decoder_get_color_context(struct decoder* This, UINT frame, UINT num,
@@ -330,6 +429,7 @@ static HRESULT CDECL jpeg_decoder_get_color_context(struct decoder* This, UINT f
 static const struct decoder_funcs jpeg_decoder_vtable = {
     jpeg_decoder_initialize,
     jpeg_decoder_get_frame_info,
+    jpeg_decoder_get_decoder_palette,
     jpeg_decoder_copy_pixels,
     jpeg_decoder_get_metadata_blocks,
     jpeg_decoder_get_color_context,
@@ -340,7 +440,7 @@ HRESULT CDECL jpeg_decoder_create(struct decoder_info *info, struct decoder **re
 {
     struct jpeg_decoder *This;
 
-    This = RtlAllocateHeap(GetProcessHeap(), 0, sizeof(struct jpeg_decoder));
+    This = malloc(sizeof(struct jpeg_decoder));
     if (!This) return E_OUTOFMEMORY;
 
     This->decoder.vtable = &jpeg_decoder_vtable;
@@ -618,7 +718,7 @@ static void CDECL jpeg_encoder_destroy(struct encoder* iface)
     struct jpeg_encoder *This = impl_from_encoder(iface);
     if (This->cinfo_initialized)
         jpeg_destroy_compress(&This->cinfo);
-    RtlFreeHeap(GetProcessHeap(), 0, This);
+    free(This);
 };
 
 static const struct encoder_funcs jpeg_encoder_vtable = {
@@ -635,7 +735,7 @@ HRESULT CDECL jpeg_encoder_create(struct encoder_info *info, struct encoder **re
 {
     struct jpeg_encoder *This;
 
-    This = RtlAllocateHeap(GetProcessHeap(), 0, sizeof(struct jpeg_encoder));
+    This = malloc(sizeof(struct jpeg_encoder));
     if (!This) return E_OUTOFMEMORY;
 
     This->encoder.vtable = &jpeg_encoder_vtable;

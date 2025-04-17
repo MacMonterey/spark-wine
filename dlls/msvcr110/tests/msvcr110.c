@@ -54,6 +54,7 @@ static _Context* (__cdecl *p__Context__CurrentContext)(_Context*);
 
 static int (__cdecl *p_strcmp)(const char *, const char *);
 static int (__cdecl *p_strncmp)(const char *, const char *, size_t);
+static intptr_t (__cdecl *p__get_heap_handle)(void);
 
 #define SETNOFAIL(x,y) x = (void*)GetProcAddress(module,y)
 #define SET(x,y) do { SETNOFAIL(x,y); ok(x != NULL, "Export '%s' not found\n", y); } while(0)
@@ -89,6 +90,7 @@ static BOOL init(void)
 
     SET(p_strcmp, "strcmp");
     SET(p_strncmp, "strncmp");
+    SET(p__get_heap_handle, "_get_heap_handle");
 
     return TRUE;
 }
@@ -151,6 +153,84 @@ static void test_setlocale(void)
 
     ret = p_setlocale(LC_ALL, "en-us.1250");
     ok(!ret, "setlocale(en-us.1250) succeeded (%s)\n", ret);
+
+    ret = p_setlocale(LC_ALL, "zh-Hans");
+    ok((ret != NULL
+        || broken(ret == NULL)), /* Vista */
+        "expected success, but got NULL\n");
+    if (ret)
+        ok(!strcmp(ret, "zh-Hans"), "setlocale zh-Hans failed\n");
+
+    ret = p_setlocale(LC_ALL, "zh-Hant");
+    ok((ret != NULL
+        || broken(ret == NULL)), /* Vista */
+        "expected success, but got NULL\n");
+    if (ret)
+        ok(!strcmp(ret, "zh-Hant"), "setlocale zh-Hant failed\n");
+
+    /* used to return Chinese (Simplified)_China.936 */
+    ret = p_setlocale(LC_ALL, "chinese");
+    ok(ret != NULL, "expected success, but got NULL\n");
+    if (ret)
+        ok((!strcmp(ret, "Chinese_China.936")
+            || broken(!strcmp(ret, "Chinese (Simplified)_People's Republic of China.936")) /* Vista */
+            || broken(!strcmp(ret, "Chinese_People's Republic of China.936"))), /* 7 */
+            "setlocale chinese failed, got %s\n", ret);
+
+    /* used to return Chinese (Simplified)_China.936 */
+    ret = p_setlocale(LC_ALL, "Chinese_China.936");
+    ok(ret != NULL, "expected success, but got NULL\n");
+    if (ret)
+        ok((!strcmp(ret, "Chinese_China.936")
+            || broken(!strcmp(ret, "Chinese (Simplified)_People's Republic of China.936")) /* Vista */
+            || broken(!strcmp(ret, "Chinese_People's Republic of China.936"))), /* 7 */
+            "setlocale Chinese_China.936 failed, got %s\n", ret);
+
+    /* used to return Chinese (Simplified)_China.936 */
+    ret = p_setlocale(LC_ALL, "chinese-simplified");
+    ok(ret != NULL, "expected success, but got NULL\n");
+    if (ret)
+        ok((!strcmp(ret, "Chinese_China.936")
+            || broken(!strcmp(ret, "Chinese (Simplified)_People's Republic of China.936"))), /* Vista */
+            "setlocale chinese-simplified failed, got %s\n", ret);
+
+    /* used to return Chinese (Simplified)_China.936 */
+    ret = p_setlocale(LC_ALL, "chs");
+    ok(ret != NULL, "expected success, but got NULL\n");
+    if (ret)
+        ok((!strcmp(ret, "Chinese_China.936")
+            || broken(!strcmp(ret, "Chinese (Simplified)_People's Republic of China.936"))), /* Vista */
+            "setlocale chs failed, got %s\n", ret);
+
+    /* used to return Chinese (Traditional)_Taiwan.950 */
+    ret = p_setlocale(LC_ALL, "cht");
+    ok(ret != NULL, "expected success, but got NULL\n");
+    if (ret)
+        todo_wine ok((!strcmp(ret, "Chinese (Traditional)_Hong Kong SAR.950")
+            || broken(!strcmp(ret, "Chinese (Traditional)_Taiwan.950"))), /* Vista - 7 */
+            "setlocale cht failed, got %s\n", ret);
+
+    /* used to return Chinese (Traditional)_Taiwan.950 */
+    ret = p_setlocale(LC_ALL, "chinese-traditional");
+    ok(ret != NULL, "expected success, but got NULL\n");
+    if (ret)
+        todo_wine ok((!strcmp(ret, "Chinese (Traditional)_Hong Kong SAR.950")
+            || broken(!strcmp(ret, "Chinese (Traditional)_Taiwan.950"))), /* Vista - 7 */
+            "setlocale chinese-traditional failed, got %s\n", ret);
+
+    ret = p_setlocale(LC_ALL, "norwegian-nynorsk");
+    ok(ret != NULL, "expected success, but got NULL\n");
+    if (ret)
+        ok((!strcmp(ret, "Norwegian Nynorsk_Norway.1252")
+            || broken(!strcmp(ret, "Norwegian (Nynorsk)_Norway.1252"))), /* Vista - 7 */
+             "setlocale norwegian-nynorsk failed, got %s\n", ret);
+
+    ret = p_setlocale(LC_ALL, "non");
+    ok(ret != NULL, "expected success, but got NULL\n");
+    if (ret)
+        ok((!strcmp(ret, "Norwegian Nynorsk_Norway.1252")
+            || broken(!strcmp(ret, "Norwegian (Nynorsk)_Norway.1252"))), /* Vista - 7 */
+             "setlocale norwegian-nynorsk failed, got %s\n", ret);
 
     p_setlocale(LC_ALL, "C");
 }
@@ -229,6 +309,11 @@ static void test_strcmp(void)
     ok( ret == 0, "wrong ret %d\n", ret );
 }
 
+static void test__get_heap_handle(void)
+{
+    ok((HANDLE)p__get_heap_handle() == GetProcessHeap(), "Expected _get_heap_handle() to return GetProcessHeap()\n");
+}
+
 START_TEST(msvcr110)
 {
     if (!init()) return;
@@ -237,4 +322,5 @@ START_TEST(msvcr110)
     test___strncnt();
     test_CurrentContext();
     test_strcmp();
+    test__get_heap_handle();
 }

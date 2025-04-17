@@ -448,7 +448,7 @@ static BOOL synth_unit_create_default(AUGraph *graph, AudioUnit *synth)
     sc = NewAUGraph(graph);
     if (sc != noErr)
     {
-        ERR("NewAUGraph return %s\n", wine_dbgstr_fourcc(sc));
+        ERR("NewAUGraph return %s\n", coreaudio_dbgstr_fourcc(sc));
         return FALSE;
     }
 
@@ -463,7 +463,7 @@ static BOOL synth_unit_create_default(AUGraph *graph, AudioUnit *synth)
     sc = AUGraphAddNode(*graph, &desc, &synth_node);
     if (sc != noErr)
     {
-        ERR("AUGraphAddNode cannot create synthNode : %s\n", wine_dbgstr_fourcc(sc));
+        ERR("AUGraphAddNode cannot create synthNode : %s\n", coreaudio_dbgstr_fourcc(sc));
         return FALSE;
     }
 
@@ -474,14 +474,14 @@ static BOOL synth_unit_create_default(AUGraph *graph, AudioUnit *synth)
     sc = AUGraphAddNode(*graph, &desc, &out_node);
     if (sc != noErr)
     {
-        ERR("AUGraphAddNode cannot create outNode %s\n", wine_dbgstr_fourcc(sc));
+        ERR("AUGraphAddNode cannot create outNode %s\n", coreaudio_dbgstr_fourcc(sc));
         return FALSE;
     }
 
     sc = AUGraphOpen(*graph);
     if (sc != noErr)
     {
-        ERR("AUGraphOpen returns %s\n", wine_dbgstr_fourcc(sc));
+        ERR("AUGraphOpen returns %s\n", coreaudio_dbgstr_fourcc(sc));
         return FALSE;
     }
 
@@ -490,7 +490,7 @@ static BOOL synth_unit_create_default(AUGraph *graph, AudioUnit *synth)
     if (sc != noErr)
     {
         ERR("AUGraphConnectNodeInput cannot connect synthNode to outNode : %s\n",
-            wine_dbgstr_fourcc(sc));
+            coreaudio_dbgstr_fourcc(sc));
         return FALSE;
     }
 
@@ -498,7 +498,7 @@ static BOOL synth_unit_create_default(AUGraph *graph, AudioUnit *synth)
     sc = AUGraphNodeInfo(*graph, synth_node, 0, synth);
     if (sc != noErr)
     {
-        ERR("AUGraphNodeInfo return %s\n", wine_dbgstr_fourcc(sc));
+        ERR("AUGraphNodeInfo return %s\n", coreaudio_dbgstr_fourcc(sc));
         return FALSE;
     }
 
@@ -512,14 +512,14 @@ static BOOL synth_unit_init(AudioUnit synth, AUGraph graph)
     sc = AUGraphInitialize(graph);
     if (sc != noErr)
     {
-        ERR("AUGraphInitialize(%p) returns %s\n", graph, wine_dbgstr_fourcc(sc));
+        ERR("AUGraphInitialize(%p) returns %s\n", graph, coreaudio_dbgstr_fourcc(sc));
         return FALSE;
     }
 
     sc = AUGraphStart(graph);
     if (sc != noErr)
     {
-        ERR("AUGraphStart(%p) returns %s\n", graph, wine_dbgstr_fourcc(sc));
+        ERR("AUGraphStart(%p) returns %s\n", graph, coreaudio_dbgstr_fourcc(sc));
         return FALSE;
     }
 
@@ -533,14 +533,14 @@ static BOOL synth_unit_close(AUGraph graph)
     sc = AUGraphStop(graph);
     if (sc != noErr)
     {
-        ERR("AUGraphStop(%p) returns %s\n", graph, wine_dbgstr_fourcc(sc));
+        ERR("AUGraphStop(%p) returns %s\n", graph, coreaudio_dbgstr_fourcc(sc));
         return FALSE;
     }
 
     sc = DisposeAUGraph(graph);
     if (sc != noErr)
     {
-        ERR("DisposeAUGraph(%p) returns %s\n", graph, wine_dbgstr_fourcc(sc));
+        ERR("DisposeAUGraph(%p) returns %s\n", graph, coreaudio_dbgstr_fourcc(sc));
         return FALSE;
     }
 
@@ -648,6 +648,7 @@ static UINT midi_out_data(WORD dev_id, UINT data)
 {
     struct midi_dest *dest;
     UInt8 bytes[3];
+    size_t count = sizeof(bytes);
     OSStatus sc;
 
     TRACE("dev_id = %d data = %08x\n", dev_id, data);
@@ -686,13 +687,29 @@ static UINT midi_out_data(WORD dev_id, UINT data)
         sc = MusicDeviceMIDIEvent(dest->synth, bytes[0], bytes[1], bytes[2], 0);
         if (sc != noErr)
         {
-            ERR("MusicDeviceMIDIEvent returns %s\n", wine_dbgstr_fourcc(sc));
+            ERR("MusicDeviceMIDIEvent returns %s\n", coreaudio_dbgstr_fourcc(sc));
             return MMSYSERR_ERROR;
         }
     }
     else
     {
-        midi_send(midi_out_port, dest->dest, bytes, sizeof(bytes));
+        /* MODM_DATA always includes 3 bytes, but some message types are only
+         * 1 or 2 bytes long. The docs say that "The driver must parse the event
+         * to determine how many bytes to transfer"
+         *
+         * Sending 3 bytes seems to work for most 1/2 byte messages
+         * (Core MIDI must be doing some parsing), but some 2 byte messages
+         * result in duplicates if all 3 bytes are sent.
+         */
+        switch (bytes[0] & 0xF0)
+        {
+            case 0xC0:  /* Program Change */
+            case 0xD0:  /* Channel Pressure (After-touch) */
+                count = 2;
+                break;
+        }
+
+        midi_send(midi_out_port, dest->dest, bytes, count);
     }
 
     return MMSYSERR_NOERROR;
@@ -739,7 +756,7 @@ static UINT midi_out_long_data(WORD dev_id, MIDIHDR *hdr, UINT hdr_size, struct 
         sc = MusicDeviceSysEx(dest->synth, (const UInt8 *)hdr->lpData, hdr->dwBufferLength);
         if (sc != noErr)
         {
-            ERR("MusicDeviceSysEx returns %s\n", wine_dbgstr_fourcc(sc));
+            ERR("MusicDeviceSysEx returns %s\n", coreaudio_dbgstr_fourcc(sc));
             return MMSYSERR_ERROR;
         }
     }
@@ -857,7 +874,8 @@ static UINT midi_out_set_volume(WORD dev_id, UINT volume)
         left  = LOWORD(volume) / 65535.0f;
         right = HIWORD(volume) / 65535.0f;
 
-        AudioUnitSetParameter(dests[dev_id].synth, kHALOutputParam_Volume, kAudioUnitParameterFlag_Output, 0, left, 0);
+        AudioUnitSetParameter(dests[dev_id].synth, kHALOutputParam_Volume, kAudioUnitParameterFlag_Output,
+                              0, fmaxf(left, right), 0);
         return MMSYSERR_NOERROR;
     }
 

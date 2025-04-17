@@ -51,6 +51,7 @@ static const char *g_endedit_overwrite_contents;
 static char *g_endedit_overwrite_ptr;
 static HFONT g_customdraw_font;
 static BOOL g_v6;
+static int g_reject_tvn_itemexpanding = 0;
 
 #define NUM_MSG_SEQUENCES   3
 #define TREEVIEW_SEQ_INDEX  0
@@ -485,14 +486,14 @@ static void fill_tree(HWND hTree)
 
     ins.hParent = TVI_ROOT;
     ins.hInsertAfter = TVI_ROOT;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = root;
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = root;
     hRoot = TreeView_InsertItemA(hTree, &ins);
 
     ins.hParent = hRoot;
     ins.hInsertAfter = TVI_FIRST;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = child;
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = child;
     hChild = TreeView_InsertItemA(hTree, &ins);
 }
 
@@ -544,8 +545,8 @@ static void test_callback(void)
     expect(TRUE, ret);
     ins.hParent = TVI_ROOT;
     ins.hInsertAfter = TVI_ROOT;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = LPSTR_TEXTCALLBACKA;
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = LPSTR_TEXTCALLBACKA;
     hRoot = TreeView_InsertItemA(hTree, &ins);
     ok(hRoot != NULL, "failed to set root\n");
 
@@ -560,8 +561,8 @@ static void test_callback(void)
 
     ins.hParent = hRoot;
     ins.hInsertAfter = TVI_FIRST;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = test_string;
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = test_string;
     hItem1 = TreeView_InsertItemA(hTree, &ins);
     ok(hItem1 != NULL, "failed to set Item1\n");
 
@@ -581,7 +582,7 @@ static void test_callback(void)
     ok(strcmp(tvi.pszText, TEST_CALLBACK_TEXT) == 0, "Item text mismatch %s vs %s\n",
         tvi.pszText, TEST_CALLBACK_TEXT);
 
-    U(ins).item.pszText = NULL;
+    ins.item.pszText = NULL;
     hItem2 = TreeView_InsertItemA(hTree, &ins);
     ok(hItem2 != NULL, "failed to set Item2\n");
     tvi.hItem = hItem2;
@@ -741,9 +742,9 @@ static void test_getitemtext(void)
     /* add an item without TVIF_TEXT mask and pszText == NULL */
     ins.hParent = hRoot;
     ins.hInsertAfter = TVI_ROOT;
-    U(ins).item.mask = 0;
-    U(ins).item.pszText = NULL;
-    U(ins).item.cchTextMax = 0;
+    ins.item.mask = 0;
+    ins.item.pszText = NULL;
+    ins.item.cchTextMax = 0;
     hChild = TreeView_InsertItemA(hTree, &ins);
     ok(hChild != NULL, "failed to set hChild\n");
 
@@ -782,13 +783,13 @@ static void test_focus(void)
      */
     ins.hParent = hRoot;
     ins.hInsertAfter = hChild;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = child1;
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = child1;
     hChild1 = TreeView_InsertItemA(hTree, &ins);
     ok(hChild1 != NULL, "failed to set hChild1\n");
     ins.hInsertAfter = hChild1;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = child2;
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = child2;
     hChild2 = TreeView_InsertItemA(hTree, &ins);
     ok(hChild2 != NULL, "failed to set hChild2\n");
 
@@ -1361,7 +1362,14 @@ static LRESULT CALLBACK parent_wnd_proc(HWND hWnd, UINT message, WPARAM wParam, 
               }
             case TVN_ITEMEXPANDINGA:
               {
-                UINT newmask = pTreeView->itemNew.mask & ~TVIF_CHILDREN;
+                UINT newmask;
+
+                if (g_reject_tvn_itemexpanding)
+                {
+                    g_reject_tvn_itemexpanding = 0;
+                    return TRUE;
+                }
+                newmask = pTreeView->itemNew.mask & ~TVIF_CHILDREN;
                 ok(newmask ==
                    (TVIF_HANDLE | TVIF_SELECTEDIMAGE | TVIF_IMAGE | TVIF_PARAM | TVIF_STATE),
                    "got wrong mask %x\n", pTreeView->itemNew.mask);
@@ -1510,28 +1518,28 @@ static void test_expandinvisible(void)
     ok(ret == TRUE, "ret\n");
     ins.hParent = TVI_ROOT;
     ins.hInsertAfter = TVI_ROOT;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = nodeText[0];
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = nodeText[0];
     node[0] = TreeView_InsertItemA(hTree, &ins);
     ok(node[0] != NULL, "failed to set node[0]\n");
 
     ins.hInsertAfter = TVI_LAST;
-    U(ins).item.mask = TVIF_TEXT;
+    ins.item.mask = TVIF_TEXT;
     ins.hParent = node[0];
 
-    U(ins).item.pszText = nodeText[1];
+    ins.item.pszText = nodeText[1];
     node[1] = TreeView_InsertItemA(hTree, &ins);
     ok(node[1] != NULL, "failed to set node[1]\n");
-    U(ins).item.pszText = nodeText[4];
+    ins.item.pszText = nodeText[4];
     node[4] = TreeView_InsertItemA(hTree, &ins);
     ok(node[4] != NULL, "failed to set node[4]\n");
 
     ins.hParent = node[1];
 
-    U(ins).item.pszText = nodeText[2];
+    ins.item.pszText = nodeText[2];
     node[2] = TreeView_InsertItemA(hTree, &ins);
     ok(node[2] != NULL, "failed to set node[2]\n");
-    U(ins).item.pszText = nodeText[3];
+    ins.item.pszText = nodeText[3];
     node[3] = TreeView_InsertItemA(hTree, &ins);
     ok(node[3] != NULL, "failed to set node[3]\n");
 
@@ -1579,7 +1587,7 @@ static void test_expand(void)
 
     ins.hParent = TVI_ROOT;
     ins.hInsertAfter = TVI_LAST;
-    U(ins).item.mask = 0;
+    ins.item.mask = 0;
     first = TreeView_InsertItemA(tv, &ins);
     ok(first != NULL, "failed to insert first node\n");
     second = TreeView_InsertItemA(tv, &ins);
@@ -1837,6 +1845,7 @@ static void test_expandnotify(void)
     HWND hTree;
     BOOL ret;
     TVITEMA item;
+    RECT rc;
 
     hTree = create_treeview_control(0);
     fill_tree(hTree);
@@ -1895,6 +1904,88 @@ static void test_expandnotify(void)
     ret = SendMessageA(hTree, TVM_EXPAND, TVE_TOGGLE, (LPARAM)hChild);
     expect(FALSE, ret);
     ok_sequence(sequences, PARENT_SEQ_INDEX, empty_seq, "toggle node without children", FALSE);
+
+    DestroyWindow(hTree);
+
+    /* check that expansion can be denied by parent */
+    hTree = create_treeview_control(0);
+    fill_tree(hTree);
+
+    memset(&item, 0, sizeof(item));
+    item.mask = TVIF_STATE;
+    item.hItem = hRoot;
+    item.state = TVIS_EXPANDED;
+
+    g_reject_tvn_itemexpanding = 1;
+    SendMessageA(hTree, TVM_EXPAND, TVE_EXPAND, (LPARAM)item.hItem);
+
+    /* check if it's expanded */
+    ret = SendMessageA(hTree, TVM_GETITEMA, 0, (LPARAM)&item);
+    expect(TRUE, ret);
+    ok(!(item.state & TVIS_EXPANDED), "expected no expansion\n");
+
+    DestroyWindow(hTree);
+
+    /* check that no itemexpanding message is sent when collapsing with TVM_EXPAND */
+    hTree = create_treeview_control(0);
+    fill_tree(hTree);
+
+    memset(&item, 0, sizeof(item));
+    item.hItem = hRoot;
+    item.mask = TVIF_STATE;
+    item.state = TVIS_EXPANDED;
+
+    SendMessageA(hTree, TVM_EXPAND, TVE_EXPAND, (LPARAM)item.hItem);
+
+    ret = SendMessageA(hTree, TVM_GETITEMA, 0, (LPARAM)&item);
+    expect(TRUE, ret);
+    ok(item.state & TVIS_EXPANDED, "expected expansion\n");
+
+    memset(&item, 0, sizeof(item));
+    item.hItem = hRoot;
+    item.mask = TVIF_STATE;
+    item.state = TVIS_EXPANDED;
+
+    g_reject_tvn_itemexpanding = 1;
+    SendMessageA(hTree, TVM_EXPAND, TVE_COLLAPSE | TVE_COLLAPSERESET, (LPARAM)item.hItem);
+    expect(TRUE, g_reject_tvn_itemexpanding); /* check if the message went through */
+
+    ret = SendMessageA(hTree, TVM_GETITEMA, 0, (LPARAM)&item);
+    expect(TRUE, ret);
+    ok(!(item.state & TVIS_EXPANDED), "expected no expansion\n");
+
+    DestroyWindow(hTree);
+
+    /* check that collapse can be denied by parent when clicking */
+    hTree = create_treeview_control(0);
+    fill_tree(hTree);
+
+    memset(&item, 0, sizeof(item));
+    item.hItem = hRoot;
+    item.mask = TVIF_STATE;
+    item.state = TVIS_EXPANDED;
+
+    g_reject_tvn_itemexpanding = 0;
+    SendMessageA(hTree, TVM_EXPAND, TVE_EXPAND, (LPARAM)item.hItem);
+
+    ret = SendMessageA(hTree, TVM_GETITEMA, 0, (LPARAM)&item);
+    expect(TRUE, ret);
+    ok(item.state & TVIS_EXPANDED, "expected expansion\n");
+
+    memset(&item, 0, sizeof(item));
+    item.hItem = hRoot;
+    item.mask = TVIF_STATE;
+    item.state = TVIS_EXPANDED;
+    *((HTREEITEM *)&rc) = item.hItem;
+
+    g_reject_tvn_itemexpanding = 1;
+    SendMessageA(hTree, TVM_GETITEMRECT, TRUE, (LPARAM)&rc);
+    SendMessageA(hTree, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(rc.left + ((rc.right - rc.left) / 2), rc.top + ((rc.bottom - rc.top) / 2)));
+    expect(FALSE, g_reject_tvn_itemexpanding);
+
+    ret = SendMessageA(hTree, TVM_GETITEMA, 0, (LPARAM)&item);
+    expect(TRUE, ret);
+    ok(item.state & TVIS_EXPANDED, "expected expansion\n");
 
     DestroyWindow(hTree);
 
@@ -2111,8 +2202,8 @@ static void test_TVS_SINGLEEXPAND(void)
     {
         ins.hParent = items[i].parent ? *items[i].parent : TVI_ROOT;
         ins.hInsertAfter = TVI_FIRST;
-        U(ins).item.mask = TVIF_TEXT;
-        U(ins).item.pszText = foo;
+        ins.item.mask = TVIF_TEXT;
+        ins.item.pszText = foo;
         *items[i].handle = TreeView_InsertItemA(hTree, &ins);
     }
 
@@ -2282,15 +2373,15 @@ static void test_delete_items(void)
 
     ins.hParent = TVI_ROOT;
     ins.hInsertAfter = TVI_ROOT;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = item1;
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = item1;
     hItem1 = TreeView_InsertItemA(hTree, &ins);
     ok(hItem1 != NULL, "InsertItem failed\n");
 
     ins.hParent = TVI_ROOT;
     ins.hInsertAfter = hItem1;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = item2;
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = item2;
     hItem2 = TreeView_InsertItemA(hTree, &ins);
     ok(hItem2 != NULL, "InsertItem failed\n");
 
@@ -2429,14 +2520,14 @@ static void test_htreeitem_layout(BOOL is_version_6)
 
     ins.hParent = hChild;
     ins.hInsertAfter = TVI_FIRST;
-    U(ins).item.mask = 0;
+    ins.item.mask = 0;
     item1 = TreeView_InsertItemA(hTree, &ins);
 
     CHECK_ITEM(hTree, item1);
 
     ins.hParent = hRoot;
     ins.hInsertAfter = TVI_FIRST;
-    U(ins).item.mask = 0;
+    ins.item.mask = 0;
     item2 = TreeView_InsertItemA(hTree, &ins);
 
     CHECK_ITEM(hTree, item2);
@@ -2760,8 +2851,8 @@ static void test_WM_KEYDOWN(void)
 
     ins.hParent = TVI_ROOT;
     ins.hInsertAfter = TVI_ROOT;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = (char*)rootA;
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = (char*)rootA;
     hRoot = TreeView_InsertItemA(hwnd, &ins);
     ok(hRoot != NULL, "got %p\n", hRoot);
 
@@ -2841,31 +2932,31 @@ static void fill_treeview_sort_test(HWND hwnd)
     /* root, two children, with two children each */
     ins.hParent = TVI_ROOT;
     ins.hInsertAfter = TVI_ROOT;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = (char *)itemnames[i++];
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = (char *)itemnames[i++];
     root = (HTREEITEM)SendMessageA(hwnd, TVM_INSERTITEMA, 0, (LPARAM)&ins);
 
     ins.hParent = root;
     ins.hInsertAfter = TVI_LAST;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = (char *)itemnames[i++];
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = (char *)itemnames[i++];
     children[0] = (HTREEITEM)SendMessageA(hwnd, TVM_INSERTITEMA, 0, (LPARAM)&ins);
 
-    U(ins).item.pszText = (char *)itemnames[i++];
+    ins.item.pszText = (char *)itemnames[i++];
     children[1] = (HTREEITEM)SendMessageA(hwnd, TVM_INSERTITEMA, 0, (LPARAM)&ins);
 
     ins.hParent = children[0];
-    U(ins).item.pszText = (char *)itemnames[i++];
+    ins.item.pszText = (char *)itemnames[i++];
     SendMessageA(hwnd, TVM_INSERTITEMA, 0, (LPARAM)&ins);
 
-    U(ins).item.pszText = (char *)itemnames[i++];
+    ins.item.pszText = (char *)itemnames[i++];
     SendMessageA(hwnd, TVM_INSERTITEMA, 0, (LPARAM)&ins);
 
     ins.hParent = children[1];
-    U(ins).item.pszText = (char *)itemnames[i++];
+    ins.item.pszText = (char *)itemnames[i++];
     SendMessageA(hwnd, TVM_INSERTITEMA, 0, (LPARAM)&ins);
 
-    U(ins).item.pszText = (char *)itemnames[i++];
+    ins.item.pszText = (char *)itemnames[i++];
     SendMessageA(hwnd, TVM_INSERTITEMA, 0, (LPARAM)&ins);
 }
 
@@ -2891,8 +2982,8 @@ static void test_TVM_SORTCHILDREN(void)
     /* add only root, sort from it */
     ins.hParent = TVI_ROOT;
     ins.hInsertAfter = TVI_ROOT;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = (char *)"root";
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = (char *)"root";
     root = (HTREEITEM)SendMessageA(hwnd, TVM_INSERTITEMA, 0, (LPARAM)&ins);
     ok(root != NULL, "Expected root node\n");
 
@@ -2962,19 +3053,19 @@ static void test_TVM_SORTCHILDREN(void)
 
     ins.hParent = TVI_ROOT;
     ins.hInsertAfter = TVI_ROOT;
-    U(ins).item.mask = TVIF_TEXT;
-    U(ins).item.pszText = (char *)"root";
+    ins.item.mask = TVIF_TEXT;
+    ins.item.pszText = (char *)"root";
     root = (HTREEITEM)SendMessageA(hwnd, TVM_INSERTITEMA, 0, (LPARAM)&ins);
     ok(root != NULL, "Expected root node\n");
 
     ins.hParent = root;
     ins.hInsertAfter = TVI_LAST;
-    U(ins).item.pszText = (char *)"I1";
+    ins.item.pszText = (char *)"I1";
     SendMessageA(hwnd, TVM_INSERTITEMA, 0, (LPARAM)&ins);
 
     ins.hParent = root;
     ins.hInsertAfter = TVI_LAST;
-    U(ins).item.pszText = (char *)"i1";
+    ins.item.pszText = (char *)"i1";
     SendMessageA(hwnd, TVM_INSERTITEMA, 0, (LPARAM)&ins);
 
     ret = SendMessageA(hwnd, TVM_SORTCHILDREN, TRUE, (LPARAM)root);

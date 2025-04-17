@@ -1,14 +1,14 @@
-EXTRADEFS = -DWINGDIAPI= -DWINUSERAPI=
+EXTRADEFS = -D_WIN32U_
 MODULE    = win32u.dll
 UNIXLIB   = win32u.so
 IMPORTLIB = win32u
-IMPORTS   = ntdll winecrt0
+IMPORTS   = ntdll
 UNIX_CFLAGS  = $(FREETYPE_CFLAGS) $(FONTCONFIG_CFLAGS)
 UNIX_LIBS    = $(CARBON_LIBS) $(APPKIT_LIBS) $(PTHREAD_LIBS) -lm
 
-EXTRADLLFLAGS = -nodefaultlibs -Wb,--syscall-table,1
+EXTRADLLFLAGS = -nodefaultlibs
 
-C_SRCS = \
+SOURCES = \
 	bitblt.c \
 	bitmap.c \
 	brush.c \
@@ -16,6 +16,7 @@ C_SRCS = \
 	clipboard.c \
 	clipping.c \
 	cursoricon.c \
+	d3dkmt.c \
 	dc.c \
 	dce.c \
 	defwnd.c \
@@ -24,7 +25,6 @@ C_SRCS = \
 	dibdrv/dc.c \
 	dibdrv/graphics.c \
 	dibdrv/objects.c \
-	dibdrv/opengl.c \
 	dibdrv/primitives.c \
 	driver.c \
 	emfdrv.c \
@@ -38,6 +38,7 @@ C_SRCS = \
 	mapping.c \
 	menu.c \
 	message.c \
+	opengl.c \
 	opentype.c \
 	painting.c \
 	palette.c \
@@ -50,9 +51,8 @@ C_SRCS = \
 	spy.c \
 	syscall.c \
 	sysparams.c \
+	systray.c \
 	vertical.c \
 	vulkan.c \
 	window.c \
 	winstation.c
-
-font_EXTRADEFS = -DWINE_FONT_DIR=\"`${MAKEDEP} -R ${datadir}/wine ${fontdir}`\"
