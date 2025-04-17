@@ -387,7 +387,7 @@ static void ddraw_destroy_swapchain(struct ddraw *ddraw)
     {
         wined3d_vertex_declaration_decref(ddraw->decls[i].decl);
     }
-    heap_free(ddraw->decls);
+    free(ddraw->decls);
     ddraw->numConvertedDecls = 0;
 
     wined3d_swapchain_decref(ddraw->wined3d_swapchain);
@@ -420,6 +420,7 @@ static void ddraw_destroy_swapchain(struct ddraw *ddraw)
  *****************************************************************************/
 static void ddraw_destroy(struct ddraw *This)
 {
+    struct d3d_device *device;
     IDirectDraw7_SetCooperativeLevel(&This->IDirectDraw7_iface, NULL, DDSCL_NORMAL);
     IDirectDraw7_RestoreDisplayMode(&This->IDirectDraw7_iface);
 
@@ -437,15 +438,16 @@ static void ddraw_destroy(struct ddraw *This)
 
     if (This->wined3d_swapchain)
         ddraw_destroy_swapchain(This);
-    wined3d_stateblock_decref(This->state);
     wined3d_device_decref(This->wined3d_device);
     wined3d_decref(This->wined3d);
 
-    if (This->d3ddevice)
-        This->d3ddevice->ddraw = NULL;
+    LIST_FOR_EACH_ENTRY(device, &This->d3ddevice_list, struct d3d_device, ddraw_entry)
+    {
+        device->ddraw = NULL;
+    }
 
     /* Now free the object */
-    heap_free(This);
+    free(This);
 }
 
 /*****************************************************************************
@@ -587,7 +589,7 @@ static HRESULT ddraw_attach_d3d_device(struct ddraw *ddraw, HWND window,
     swapchain_desc.swap_effect = WINED3D_SWAP_EFFECT_DISCARD;
     swapchain_desc.device_window = window;
     swapchain_desc.windowed = !(cooplevel & DDSCL_FULLSCREEN);
-    swapchain_desc.flags = WINED3D_SWAPCHAIN_ALLOW_MODE_SWITCH | WINED3D_SWAPCHAIN_IMPLICIT;
+    swapchain_desc.flags = DDRAW_WINED3D_SWAPCHAIN_FLAGS;
 
     if ((cooplevel & DDSCL_NOWINDOWCHANGES) || window != GetForegroundWindow())
         swapchain_desc.flags |= WINED3D_SWAPCHAIN_NO_WINDOW_CHANGES;
@@ -631,7 +633,7 @@ static HRESULT ddraw_attach_d3d_device(struct ddraw *ddraw, HWND window,
     }
 
     ddraw->declArraySize = 2;
-    if (!(ddraw->decls = heap_alloc_zero(ddraw->declArraySize * sizeof(*ddraw->decls))))
+    if (!(ddraw->decls = calloc(ddraw->declArraySize, sizeof(*ddraw->decls))))
     {
         ERR("Error allocating an array for the converted vertex decls.\n");
         ddraw->declArraySize = 0;
@@ -794,9 +796,8 @@ static HRESULT WINAPI ddraw1_RestoreDisplayMode(IDirectDraw *iface)
 static HRESULT ddraw_set_cooperative_level(struct ddraw *ddraw, HWND window,
         DWORD cooplevel, BOOL restore_mode_on_normal)
 {
-    struct wined3d_rendertarget_view *rtv = NULL, *dsv = NULL;
-    struct wined3d_stateblock *stateblock;
     BOOL restore_state = FALSE;
+    struct d3d_device *device;
     RECT clip_rect;
     HRESULT hr;
 
@@ -930,22 +931,24 @@ static HRESULT ddraw_set_cooperative_level(struct ddraw *ddraw, HWND window,
         {
             restore_state = TRUE;
 
-            if (FAILED(hr = wined3d_stateblock_create(ddraw->wined3d_device,
-                    ddraw->state, WINED3D_SBT_ALL, &stateblock)))
+            LIST_FOR_EACH_ENTRY(device, &ddraw->d3ddevice_list, struct d3d_device, ddraw_entry)
             {
-                ERR("Failed to create stateblock, hr %#lx.\n", hr);
-                goto done;
+                if (FAILED(hr = wined3d_stateblock_create(ddraw->wined3d_device,
+                        device->state, WINED3D_SBT_ALL, &device->saved_state)))
+                {
+                    struct list *entry;
+
+                    ERR("Failed to create stateblock, hr %#lx.\n", hr);
+                    entry = &device->ddraw_entry;
+                    while ((entry = list_prev(&ddraw->d3ddevice_list, entry)))
+                    {
+                        device = LIST_ENTRY(entry, struct d3d_device, ddraw_entry);
+                        wined3d_stateblock_decref(device->saved_state);
+                        device->saved_state = NULL;
+                    }
+                    goto done;
+                }
             }
-
-            rtv = wined3d_device_context_get_rendertarget_view(ddraw->immediate_context, 0);
-            /* Rendering to the wined3d frontbuffer. */
-            if (rtv && !wined3d_rendertarget_view_get_sub_resource_parent(rtv))
-                rtv = NULL;
-            else if (rtv)
-                wined3d_rendertarget_view_incref(rtv);
-
-            if ((dsv = wined3d_device_context_get_depth_stencil_view(ddraw->immediate_context)))
-                wined3d_rendertarget_view_incref(dsv);
         }
 
         ddraw_destroy_swapchain(ddraw);
@@ -956,20 +959,12 @@ static HRESULT ddraw_set_cooperative_level(struct ddraw *ddraw, HWND window,
 
     if (restore_state)
     {
-        if (dsv)
+        LIST_FOR_EACH_ENTRY(device, &ddraw->d3ddevice_list, struct d3d_device, ddraw_entry)
         {
-            wined3d_device_context_set_depth_stencil_view(ddraw->immediate_context, dsv);
-            wined3d_rendertarget_view_decref(dsv);
+            wined3d_stateblock_apply(device->saved_state, device->state);
+            wined3d_stateblock_decref(device->saved_state);
+            device->saved_state = NULL;
         }
-
-        if (rtv)
-        {
-            wined3d_device_context_set_rendertarget_views(ddraw->immediate_context, 0, 1, &rtv, FALSE);
-            wined3d_rendertarget_view_decref(rtv);
-        }
-
-        wined3d_stateblock_apply(stateblock, ddraw->state);
-        wined3d_stateblock_decref(stateblock);
     }
 
     if (!(cooplevel & DDSCL_EXCLUSIVE) && (ddraw->cooperative_level & DDSCL_EXCLUSIVE))
@@ -1156,7 +1151,7 @@ static HRESULT WINAPI ddraw7_SetDisplayMode(IDirectDraw7 *iface, DWORD width, DW
                     surface_desc->dwWidth, surface_desc->dwHeight, mode.format_id, WINED3D_MULTISAMPLE_NONE, 0)))
                 ERR("Failed to resize buffers, hr %#lx.\n", hr);
             else
-                ddrawformat_from_wined3dformat(&ddraw->primary->surface_desc.u4.ddpfPixelFormat, mode.format_id);
+                ddrawformat_from_wined3dformat(&ddraw->primary->surface_desc.ddpfPixelFormat, mode.format_id);
         }
         ddraw->flags |= DDRAW_RESTORE_MODE;
 
@@ -1236,8 +1231,36 @@ void ddraw_d3dcaps1_from_7(D3DDEVICEDESC *caps1, D3DDEVICEDESC7 *caps7)
     caps1->dpcTriCaps = caps7->dpcTriCaps;
     caps1->dwDeviceRenderBitDepth = caps7->dwDeviceRenderBitDepth;
     caps1->dwDeviceZBufferBitDepth = caps7->dwDeviceZBufferBitDepth;
+
+    /* This value is zero on all Windows drivers we have seen so far. */
     caps1->dwMaxBufferSize = 0;
-    caps1->dwMaxVertexCount = 65536;
+
+    /* AMD GPUs on Windows XP and newer report 1024 for HAL devices.
+     * Nvidia GPUs report 65534. On Windows 9x we have seen 2048 on
+     * AMD cards and 32768 on Nvidia. The API defined limit is 65536
+     * because ddraw only supports 16 bit indices.
+     *
+     * Some games, for example Prince of Persia 3D (bug 44863), create a
+     * vertex buffer to hold as many vertices as we report here. The
+     * game requests a video memory buffer, maps it, writes a handful
+     * of vertices and draws. Because IDirect3DVertexBuffer::Lock does
+     * not allow passing a range, and prior to d3d7 doesn't support
+     * NOOVERWRITE/DISCARD, the upload becomes slow if the buffer is too
+     * large. So we don't want to report a value that's too high here.
+     *
+     * Why 2048? Windows 9x was the contemporaneous system when d3d 1-4
+     * titles were written.
+     *
+     * Regardless of this value, we put ddraw4 vertex buffers into
+     * system memory because games are using them poorly. This mitigates
+     * negative effects of a large vertex count.
+     *
+     * Windows doesn't enforce this limit. A larger vertex buffer can
+     * be created and used in draws. More vertices than dwMaxVertexCount
+     * can be rendered in one draw call. SetExecuteData with a vertex
+     * count exceeding dwMaxVertexCount succeeds too. */
+    caps1->dwMaxVertexCount = 2048;
+
     caps1->dwMinTextureWidth  = caps7->dwMinTextureWidth;
     caps1->dwMinTextureHeight = caps7->dwMinTextureHeight;
     caps1->dwMaxTextureWidth  = caps7->dwMaxTextureWidth;
@@ -1675,10 +1698,10 @@ static HRESULT WINAPI ddraw7_GetDisplayMode(IDirectDraw7 *iface, DDSURFACEDESC2 
     DDSD->dwFlags = DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_PITCH | DDSD_REFRESHRATE;
     DDSD->dwWidth = mode.width;
     DDSD->dwHeight = mode.height;
-    DDSD->u2.dwRefreshRate = mode.refresh_rate;
-    DDSD->u4.ddpfPixelFormat.dwSize = sizeof(DDSD->u4.ddpfPixelFormat);
-    ddrawformat_from_wined3dformat(&DDSD->u4.ddpfPixelFormat, mode.format_id);
-    DDSD->u1.lPitch = mode.width * DDSD->u4.ddpfPixelFormat.u1.dwRGBBitCount / 8;
+    DDSD->dwRefreshRate = mode.refresh_rate;
+    DDSD->ddpfPixelFormat.dwSize = sizeof(DDSD->ddpfPixelFormat);
+    ddrawformat_from_wined3dformat(&DDSD->ddpfPixelFormat, mode.format_id);
+    DDSD->lPitch = mode.width * DDSD->ddpfPixelFormat.dwRGBBitCount / 8;
 
     if(TRACE_ON(ddraw))
     {
@@ -2441,7 +2464,7 @@ static HRESULT WINAPI ddraw7_EnumDisplayModes(IDirectDraw7 *iface, DWORD Flags,
     if (!cb)
         return DDERR_INVALIDPARAMS;
 
-    if (!(enum_modes = heap_alloc(enum_mode_array_size * sizeof(*enum_modes))))
+    if (!(enum_modes = malloc(enum_mode_array_size * sizeof(*enum_modes))))
         return DDERR_OUTOFMEMORY;
 
     wined3d_mutex_lock();
@@ -2463,10 +2486,10 @@ static HRESULT WINAPI ddraw7_EnumDisplayModes(IDirectDraw7 *iface, DWORD Flags,
                     continue;
                 if (DDSD->dwFlags & DDSD_HEIGHT && mode.height != DDSD->dwHeight)
                     continue;
-                if (DDSD->dwFlags & DDSD_REFRESHRATE && mode.refresh_rate != DDSD->u2.dwRefreshRate)
+                if (DDSD->dwFlags & DDSD_REFRESHRATE && mode.refresh_rate != DDSD->dwRefreshRate)
                     continue;
                 if (DDSD->dwFlags & DDSD_PIXELFORMAT
-                        && pixelformat.u1.dwRGBBitCount != DDSD->u4.ddpfPixelFormat.u1.dwRGBBitCount)
+                        && pixelformat.dwRGBBitCount != DDSD->ddpfPixelFormat.dwRGBBitCount)
                     continue;
             }
 
@@ -2485,28 +2508,28 @@ static HRESULT WINAPI ddraw7_EnumDisplayModes(IDirectDraw7 *iface, DWORD Flags,
 
             memset(&callback_sd, 0, sizeof(callback_sd));
             callback_sd.dwSize = sizeof(callback_sd);
-            callback_sd.u4.ddpfPixelFormat.dwSize = sizeof(DDPIXELFORMAT);
+            callback_sd.ddpfPixelFormat.dwSize = sizeof(DDPIXELFORMAT);
 
             callback_sd.dwFlags = DDSD_HEIGHT|DDSD_WIDTH|DDSD_PIXELFORMAT|DDSD_PITCH|DDSD_REFRESHRATE;
             if (Flags & DDEDM_REFRESHRATES)
-                callback_sd.u2.dwRefreshRate = mode.refresh_rate;
+                callback_sd.dwRefreshRate = mode.refresh_rate;
 
             callback_sd.dwWidth = mode.width;
             callback_sd.dwHeight = mode.height;
 
-            callback_sd.u4.ddpfPixelFormat=pixelformat;
+            callback_sd.ddpfPixelFormat=pixelformat;
 
             /* Calc pitch and DWORD align like MSDN says */
-            callback_sd.u1.lPitch = (callback_sd.u4.ddpfPixelFormat.u1.dwRGBBitCount / 8) * mode.width;
-            callback_sd.u1.lPitch = (callback_sd.u1.lPitch + 3) & ~3;
+            callback_sd.lPitch = (callback_sd.ddpfPixelFormat.dwRGBBitCount / 8) * mode.width;
+            callback_sd.lPitch = (callback_sd.lPitch + 3) & ~3;
 
-            TRACE("Enumerating %lux%lux%lu @%lu\n", callback_sd.dwWidth, callback_sd.dwHeight, callback_sd.u4.ddpfPixelFormat.u1.dwRGBBitCount,
-              callback_sd.u2.dwRefreshRate);
+            TRACE("Enumerating %lux%lux%lu @%lu\n", callback_sd.dwWidth, callback_sd.dwHeight, callback_sd.ddpfPixelFormat.dwRGBBitCount,
+              callback_sd.dwRefreshRate);
 
             if(cb(&callback_sd, Context) == DDENUMRET_CANCEL)
             {
                 TRACE("Application asked to terminate the enumeration\n");
-                heap_free(enum_modes);
+                free(enum_modes);
                 wined3d_mutex_unlock();
                 return DD_OK;
             }
@@ -2516,9 +2539,9 @@ static HRESULT WINAPI ddraw7_EnumDisplayModes(IDirectDraw7 *iface, DWORD Flags,
                 struct wined3d_display_mode *new_enum_modes;
 
                 enum_mode_array_size *= 2;
-                if (!(new_enum_modes = heap_realloc(enum_modes, enum_mode_array_size * sizeof(*new_enum_modes))))
+                if (!(new_enum_modes = realloc(enum_modes, enum_mode_array_size * sizeof(*new_enum_modes))))
                 {
-                    heap_free(enum_modes);
+                    free(enum_modes);
                     wined3d_mutex_unlock();
                     return DDERR_OUTOFMEMORY;
                 }
@@ -2530,7 +2553,7 @@ static HRESULT WINAPI ddraw7_EnumDisplayModes(IDirectDraw7 *iface, DWORD Flags,
     }
 
     TRACE("End of enumeration\n");
-    heap_free(enum_modes);
+    free(enum_modes);
     wined3d_mutex_unlock();
 
     return DD_OK;
@@ -3096,26 +3119,26 @@ Main_DirectDraw_DDPIXELFORMAT_Match(const DDPIXELFORMAT *requested,
 
     if (requested->dwFlags & (DDPF_RGB|DDPF_YUV|DDPF_ZBUFFER|DDPF_ALPHA
                               |DDPF_LUMINANCE|DDPF_BUMPDUDV))
-        if (requested->u1.dwRGBBitCount != provided->u1.dwRGBBitCount)
+        if (requested->dwRGBBitCount != provided->dwRGBBitCount)
             return FALSE;
 
     if (requested->dwFlags & (DDPF_RGB|DDPF_YUV|DDPF_STENCILBUFFER
                               |DDPF_LUMINANCE|DDPF_BUMPDUDV))
-        if (requested->u2.dwRBitMask != provided->u2.dwRBitMask)
+        if (requested->dwRBitMask != provided->dwRBitMask)
             return FALSE;
 
     if (requested->dwFlags & (DDPF_RGB|DDPF_YUV|DDPF_ZBUFFER|DDPF_BUMPDUDV))
-        if (requested->u3.dwGBitMask != provided->u3.dwGBitMask)
+        if (requested->dwGBitMask != provided->dwGBitMask)
             return FALSE;
 
     /* I could be wrong about the bumpmapping. MSDN docs are vague. */
     if (requested->dwFlags & (DDPF_RGB|DDPF_YUV|DDPF_STENCILBUFFER
                               |DDPF_BUMPDUDV))
-        if (requested->u4.dwBBitMask != provided->u4.dwBBitMask)
+        if (requested->dwBBitMask != provided->dwBBitMask)
             return FALSE;
 
     if (requested->dwFlags & (DDPF_ALPHAPIXELS|DDPF_ZPIXELS))
-        if (requested->u5.dwRGBAlphaBitMask != provided->u5.dwRGBAlphaBitMask)
+        if (requested->dwRGBAlphaBitMask != provided->dwRGBAlphaBitMask)
             return FALSE;
 
     return TRUE;
@@ -3137,19 +3160,19 @@ static BOOL ddraw_match_surface_desc(const DDSURFACEDESC2 *requested, const DDSU
     static const struct compare_info compare[] =
     {
         CMP(ALPHABITDEPTH, dwAlphaBitDepth),
-        CMP(BACKBUFFERCOUNT, u5.dwBackBufferCount),
+        CMP(BACKBUFFERCOUNT, dwBackBufferCount),
         CMP(CAPS, ddsCaps),
         CMP(CKDESTBLT, ddckCKDestBlt),
-        CMP(CKDESTOVERLAY, u3 /* ddckCKDestOverlay */),
+        CMP(CKDESTOVERLAY, ddckCKDestOverlay),
         CMP(CKSRCBLT, ddckCKSrcBlt),
         CMP(CKSRCOVERLAY, ddckCKSrcOverlay),
         CMP(HEIGHT, dwHeight),
-        CMP(LINEARSIZE, u1 /* dwLinearSize */),
+        CMP(LINEARSIZE, dwLinearSize),
         CMP(LPSURFACE, lpSurface),
-        CMP(MIPMAPCOUNT, u2 /* dwMipMapCount */),
-        CMP(PITCH, u1 /* lPitch */),
+        CMP(MIPMAPCOUNT, dwMipMapCount),
+        CMP(PITCH, lPitch),
         /* PIXELFORMAT: manual */
-        CMP(REFRESHRATE, u2 /* dwRefreshRate */),
+        CMP(REFRESHRATE, dwRefreshRate),
         CMP(TEXTURESTAGE, dwTextureStage),
         CMP(WIDTH, dwWidth),
         /* ZBUFFERBITDEPTH: "obsolete" */
@@ -3173,8 +3196,8 @@ static BOOL ddraw_match_surface_desc(const DDSURFACEDESC2 *requested, const DDSU
 
     if (requested->dwFlags & DDSD_PIXELFORMAT)
     {
-        if (!Main_DirectDraw_DDPIXELFORMAT_Match(&requested->u4.ddpfPixelFormat,
-                                                &provided->u4.ddpfPixelFormat))
+        if (!Main_DirectDraw_DDPIXELFORMAT_Match(&requested->ddpfPixelFormat,
+                                                &provided->ddpfPixelFormat))
             return FALSE;
     }
 
@@ -3242,8 +3265,8 @@ static HRESULT CALLBACK enum_surface_mode_callback(DDSURFACEDESC2 *surface_desc,
     desc.dwFlags |= DDSD_WIDTH | DDSD_HEIGHT | DDSD_PITCH | DDSD_PIXELFORMAT;
     desc.dwWidth = surface_desc->dwWidth;
     desc.dwHeight = surface_desc->dwHeight;
-    desc.u1.lPitch = surface_desc->u1.lPitch;
-    desc.u4.ddpfPixelFormat = surface_desc->u4.ddpfPixelFormat;
+    desc.lPitch = surface_desc->lPitch;
+    desc.ddpfPixelFormat = surface_desc->ddpfPixelFormat;
 
     if (SUCCEEDED(ddraw7_CreateSurface(params->ddraw, &desc, &surface, NULL)))
     {
@@ -3308,7 +3331,7 @@ static HRESULT WINAPI ddraw7_EnumSurfaces(IDirectDraw7 *iface, DWORD flags,
             {
                 .dwSize = sizeof(desc),
                 .dwFlags = DDSD_PIXELFORMAT,
-                .u4.ddpfPixelFormat.dwSize = sizeof(DDPIXELFORMAT),
+                .ddpfPixelFormat.dwSize = sizeof(DDPIXELFORMAT),
             };
             struct enum_surface_mode_params params =
             {
@@ -3326,7 +3349,7 @@ static HRESULT WINAPI ddraw7_EnumSurfaces(IDirectDraw7 *iface, DWORD flags,
                 return hr_ddraw_from_wined3d(hr);
             }
 
-            ddrawformat_from_wined3dformat(&desc.u4.ddpfPixelFormat, mode.format_id);
+            ddrawformat_from_wined3dformat(&desc.ddpfPixelFormat, mode.format_id);
             hr = ddraw7_EnumDisplayModes(iface, 0, &desc, &params, enum_surface_mode_callback);
         }
 
@@ -3450,7 +3473,7 @@ HRESULT WINAPI DirectDrawCreateClipper(DWORD flags, IDirectDrawClipper **clipper
 
     wined3d_mutex_lock();
 
-    if (!(object = heap_alloc_zero(sizeof(*object))))
+    if (!(object = calloc(1, sizeof(*object))))
     {
         wined3d_mutex_unlock();
         return E_OUTOFMEMORY;
@@ -3460,7 +3483,7 @@ HRESULT WINAPI DirectDrawCreateClipper(DWORD flags, IDirectDrawClipper **clipper
     if (FAILED(hr))
     {
         WARN("Failed to initialize clipper, hr %#lx.\n", hr);
-        heap_free(object);
+        free(object);
         wined3d_mutex_unlock();
         return hr;
     }
@@ -3560,7 +3583,7 @@ static HRESULT WINAPI ddraw7_CreatePalette(IDirectDraw7 *iface, DWORD Flags,
         return DDERR_NOCOOPERATIVELEVELSET;
     }
 
-    if (!(object = heap_alloc(sizeof(*object))))
+    if (!(object = malloc(sizeof(*object))))
     {
         ERR("Out of memory when allocating memory for a palette implementation\n");
         wined3d_mutex_unlock();
@@ -3571,7 +3594,7 @@ static HRESULT WINAPI ddraw7_CreatePalette(IDirectDraw7 *iface, DWORD Flags,
     if (FAILED(hr))
     {
         WARN("Failed to initialize palette, hr %#lx.\n", hr);
-        heap_free(object);
+        free(object);
         wined3d_mutex_unlock();
         return hr;
     }
@@ -3868,7 +3891,10 @@ static HRESULT WINAPI d3d3_EnumDevices(IDirect3D3 *iface, LPD3DENUMDEVICESCALLBA
      * never have POW2 unset in d3d7 on windows. */
     if (ddraw->d3dversion != 1)
     {
-        static CHAR reference_description[] = "RGB Direct3D emulation";
+        /* Tomb Raider 3 overwrites the reference device description buffer
+         * with its own custom string. Reserve some extra space in the array
+         * to avoid a buffer overrun. */
+        static CHAR reference_description[64] = "RGB Direct3D emulation";
 
         TRACE("Enumerating WineD3D D3DDevice interface.\n");
         hal_desc = device_desc1;
@@ -3978,7 +4004,7 @@ static HRESULT WINAPI d3d3_CreateLight(IDirect3D3 *iface, IDirect3DLight **light
     if (outer_unknown)
         return CLASS_E_NOAGGREGATION;
 
-    if (!(object = heap_alloc_zero(sizeof(*object))))
+    if (!(object = calloc(1, sizeof(*object))))
     {
         ERR("Failed to allocate light memory.\n");
         return DDERR_OUTOFMEMORY;
@@ -4125,7 +4151,7 @@ static HRESULT WINAPI d3d3_CreateViewport(IDirect3D3 *iface, IDirect3DViewport3 
 
     if (outer_unknown) return CLASS_E_NOAGGREGATION;
 
-    if (!(object = heap_alloc_zero(sizeof(*object))))
+    if (!(object = calloc(1, sizeof(*object))))
     {
         ERR("Failed to allocate viewport memory.\n");
         return DDERR_OUTOFMEMORY;
@@ -4921,7 +4947,7 @@ struct wined3d_vertex_declaration *ddraw_find_decl(struct ddraw *This, DWORD fvf
     {
         unsigned int grow = max(This->declArraySize / 2, 8);
 
-        if (!(convertedDecls = heap_realloc(convertedDecls,
+        if (!(convertedDecls = realloc(convertedDecls,
                 (This->numConvertedDecls + grow) * sizeof(*convertedDecls))))
         {
             wined3d_vertex_declaration_decref(pDecl);
@@ -5124,15 +5150,6 @@ HRESULT ddraw_init(struct ddraw *ddraw, DWORD flags, enum wined3d_device_type de
     ddraw->immediate_context = wined3d_device_get_immediate_context(ddraw->wined3d_device);
 
     list_init(&ddraw->surface_list);
-
-    if (FAILED(hr = wined3d_stateblock_create(ddraw->wined3d_device, NULL, WINED3D_SBT_PRIMARY, &ddraw->state)))
-    {
-        ERR("Failed to create the primary stateblock, hr %#lx.\n", hr);
-        wined3d_device_decref(ddraw->wined3d_device);
-        wined3d_decref(ddraw->wined3d);
-        return hr;
-    }
-    ddraw->stateblock_state = wined3d_stateblock_get_state(ddraw->state);
-
+    list_init(&ddraw->d3ddevice_list);
     return DD_OK;
 }

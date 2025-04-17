@@ -47,10 +47,21 @@ static const char inf_data1[] =
     "[Version]\n"
     "Signature=\"$Chicago$\"\n"
     "AdvancedINF=2.5\n"
+    "[copy_section]\n"
+    "one.txt,,2\n"
+    "two.txt\n"
+    "four.txt,five.txt\n"
+    "six.txt,seven.txt\n"
     "[SourceDisksNames]\n"
     "2 = %SrcDiskName%, LANCOM\\LANtools\\lanconf.cab\n"
+    "4=,,,here\n"
+    "8=name\n"
     "[SourceDisksFiles]\n"
-    "lanconf.exe = 2\n"
+    "one.txt=2\n"
+    "two.txt=4,there\n"
+    "three.txt=6\n"
+    "five.txt=8\n"
+    "six.txt=10\n"
     "[DestinationDirs]\n"
     "DefaultDestDir = 24, %DefaultDest%\n"
     "[Strings]\n"
@@ -120,7 +131,7 @@ static BOOL check_info_filename(PSP_INF_INFORMATION info, LPSTR test)
     if (!SetupQueryInfFileInformationA(info, 0, NULL, 0, &size))
         return FALSE;
 
-    filename = HeapAlloc(GetProcessHeap(), 0, size);
+    filename = malloc(size);
     if (!filename)
         return FALSE;
 
@@ -129,7 +140,7 @@ static BOOL check_info_filename(PSP_INF_INFORMATION info, LPSTR test)
     if (!lstrcmpiA(test, filename))
         ret = TRUE;
 
-    HeapFree(GetProcessHeap(), 0, filename);
+    free(filename);
     return ret;
 }
 
@@ -142,7 +153,7 @@ static PSP_INF_INFORMATION alloc_inf_info(LPCSTR filename, DWORD search, PDWORD 
     if (!ret)
         return NULL;
 
-    info = HeapAlloc(GetProcessHeap(), 0, *size);
+    info = malloc(*size);
     return info;
 }
 
@@ -234,7 +245,7 @@ static void test_SetupGetInfInformation(void)
     ret = SetupGetInfInformationA(inf_filename, INFINFO_INF_NAME_IS_ABSOLUTE, NULL, size, NULL);
     ok(ret == FALSE, "Expected SetupGetInfInformation to fail\n");
 
-    info = HeapAlloc(GetProcessHeap(), 0, size);
+    info = malloc(size);
 
     /* try valid ReturnBuffer but too small size */
     SetLastError(0xbeefcafe);
@@ -248,7 +259,7 @@ static void test_SetupGetInfInformation(void)
     ok(ret == TRUE, "Expected SetupGetInfInformation to succeed\n");
     ok(check_info_filename(info, inf_filename), "Expected returned filename to be equal\n");
 
-    HeapFree(GetProcessHeap(), 0, info);
+    free(info);
 
     /* try the INFINFO_INF_SPEC_IS_HINF search flag */
     hinf = SetupOpenInfFileA(inf_filename, NULL, INF_STYLE_WIN4, NULL);
@@ -269,7 +280,7 @@ static void test_SetupGetInfInformation(void)
     }
     ok(ret, "can't create inf file %lu\n", GetLastError());
 
-    HeapFree(GetProcessHeap(), 0, info);
+    free(info);
     info = alloc_inf_info("test.inf", INFINFO_DEFAULT_SEARCH, &size);
 
     /* check if system32 is searched for inf */
@@ -284,7 +295,7 @@ static void test_SetupGetInfInformation(void)
     lstrcatA(inf_one, "test.inf");
     create_inf_file(inf_one, inf_data1, sizeof(inf_data1) - 1);
 
-    HeapFree(GetProcessHeap(), 0, info);
+    free(info);
     info = alloc_inf_info("test.inf", INFINFO_DEFAULT_SEARCH, &size);
 
     /* test the INFINFO_DEFAULT_SEARCH search flag */
@@ -292,7 +303,7 @@ static void test_SetupGetInfInformation(void)
     ok(ret == TRUE, "Expected SetupGetInfInformation to succeed: %ld\n", GetLastError());
     ok(check_info_filename(info, inf_one), "Expected returned filename to be equal\n");
 
-    HeapFree(GetProcessHeap(), 0, info);
+    free(info);
     info = alloc_inf_info("test.inf", INFINFO_REVERSE_DEFAULT_SEARCH, &size);
 
     /* test the INFINFO_REVERSE_DEFAULT_SEARCH search flag */
@@ -301,7 +312,7 @@ static void test_SetupGetInfInformation(void)
     ok(check_info_filename(info, revfile), "Expected returned filename to be equal\n");
 
 done:
-    HeapFree(GetProcessHeap(), 0, info);
+    free(info);
     DeleteFileA(inf_filename);
     DeleteFileA(inf_one);
     DeleteFileA(inf_two);
@@ -312,6 +323,7 @@ static void test_SetupGetSourceFileLocation(void)
     char buffer[MAX_PATH] = "not empty", inf_filename[MAX_PATH];
     UINT source_id;
     DWORD required, error;
+    INFCONTEXT ctx;
     HINF hinf;
     BOOL ret;
 
@@ -327,12 +339,66 @@ static void test_SetupGetSourceFileLocation(void)
     required = 0;
     source_id = 0;
 
-    ret = SetupGetSourceFileLocationA(hinf, NULL, "lanconf.exe", &source_id, buffer, sizeof(buffer), &required);
+    ret = SetupGetSourceFileLocationA(hinf, NULL, "one.txt", &source_id, buffer, sizeof(buffer), &required);
     ok(ret, "SetupGetSourceFileLocation failed\n");
 
     ok(required == 1, "unexpected required size: %ld\n", required);
     ok(source_id == 2, "unexpected source id: %d\n", source_id);
     ok(!lstrcmpA("", buffer), "unexpected result string: %s\n", buffer);
+
+    ret = SetupGetSourceFileLocationA(hinf, NULL, "two.txt", &source_id, buffer, sizeof(buffer), NULL);
+    ok(ret, "Got error %lu.\n", GetLastError());
+    ok(source_id == 4, "Got source id %u.\n", source_id);
+    ok(!strcmp(buffer, "there"), "Got relative path %s.\n", debugstr_a(buffer));
+
+    ret = SetupFindFirstLineA(hinf, "copy_section", NULL, &ctx);
+    ok(ret, "Got error %lu.\n", GetLastError());
+
+    ret = SetupGetSourceFileLocationA(hinf, &ctx, "two.txt", &source_id, buffer, sizeof(buffer), NULL);
+    ok(ret, "Got error %lu.\n", GetLastError());
+    ok(source_id == 2, "Got source id %u.\n", source_id);
+    ok(!strcmp(buffer, ""), "Got relative path %s.\n", debugstr_a(buffer));
+
+    /* ctx should not be changed. */
+    ret = SetupGetLineTextA(&ctx, NULL, NULL, NULL, buffer, sizeof(buffer), NULL);
+    ok(!strcmp(buffer, "one.txt,,2"), "Got line %s.\n", debugstr_a(buffer));
+
+    /* Test when the source name differs from the destination name.
+     * It seems SetupGetSourceFileLocation() is buggy and doesn't take that
+     * into account; it always uses the destination name. */
+
+    ret = SetupFindNextLine(&ctx, &ctx);
+    ok(ret, "Got error %lu.\n", GetLastError());
+    ret = SetupFindNextLine(&ctx, &ctx);
+    ok(ret, "Got error %lu.\n", GetLastError());
+
+    SetLastError(0xdeadbeef);
+    ret = SetupGetSourceFileLocationA(hinf, &ctx, "two.txt", &source_id, buffer, sizeof(buffer), NULL);
+    ok(!ret, "Expected failure.\n");
+    ok(GetLastError() == ERROR_LINE_NOT_FOUND, "Got error %lu.\n", GetLastError());
+
+    ret = SetupFindNextLine(&ctx, &ctx);
+    ok(ret, "Got error %lu.\n", GetLastError());
+
+    ret = SetupGetSourceFileLocationA(hinf, &ctx, "two.txt", &source_id, buffer, sizeof(buffer), NULL);
+    ok(ret, "Got error %lu.\n", GetLastError());
+    ok(source_id == 10, "Got source id %u.\n", source_id);
+    ok(!strcmp(buffer, ""), "Got relative path %s.\n", debugstr_a(buffer));
+
+    ret = SetupGetSourceFileLocationA(hinf, NULL, "three.txt", &source_id, buffer, sizeof(buffer), NULL);
+    ok(ret, "Got error %lu.\n", GetLastError());
+    ok(source_id == 6, "Got source id %u.\n", source_id);
+    ok(!strcmp(buffer, ""), "Got relative path %s.\n", debugstr_a(buffer));
+
+    SetLastError(0xdeadbeef);
+    ret = SetupGetSourceFileLocationA(hinf, NULL, "four.txt", &source_id, buffer, sizeof(buffer), NULL);
+    ok(!ret, "Expected failure.\n");
+    ok(GetLastError() == ERROR_LINE_NOT_FOUND, "Got error %lu.\n", GetLastError());
+
+    ret = SetupGetSourceFileLocationA(hinf, NULL, "five.txt", &source_id, buffer, sizeof(buffer), NULL);
+    ok(ret, "Got error %lu.\n", GetLastError());
+    ok(source_id == 8, "Got source id %u.\n", source_id);
+    ok(!strcmp(buffer, ""), "Got relative path %s.\n", debugstr_a(buffer));
 
     SetupCloseInfFile(hinf);
     DeleteFileA(inf_filename);
@@ -348,8 +414,10 @@ static void test_SetupGetSourceFileLocation(void)
     hinf = SetupOpenInfFileA(inf_filename, NULL, INF_STYLE_OLDNT, NULL);
     ok(hinf != INVALID_HANDLE_VALUE, "could not open inf file\n");
 
+    SetLastError(0xdeadbeef);
     ret = SetupGetSourceFileLocationA(hinf, NULL, "", &source_id, buffer, sizeof(buffer), &required);
     ok(!ret, "SetupGetSourceFileLocation succeeded\n");
+    ok(GetLastError() == ERROR_LINE_NOT_FOUND, "Got error %lu.\n", GetLastError());
 
     SetupCloseInfFile(hinf);
     DeleteFileA(inf_filename);

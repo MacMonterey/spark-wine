@@ -122,12 +122,11 @@ static int FormatInt(LONGLONG qdwValue, LPWSTR pszBuf, int cchBuf)
  */
 static int FormatDouble(double value, int decimals, LPWSTR pszBuf, int cchBuf)
 {
-  static const WCHAR flfmt[] = {'%','f',0};
   WCHAR buf[64];
   NUMBERFMTW fmt;
   WCHAR decimal[8], thousand[8];
-  
-  swprintf(buf, 64, flfmt, value);
+
+  swprintf(buf, 64, L"%f", value);
 
   FillNumberFmt(&fmt, decimal, ARRAY_SIZE(decimal), thousand, ARRAY_SIZE(thousand));
   fmt.NumDigits = decimals;
@@ -231,8 +230,8 @@ HRESULT WINAPI StrRetToBufA (LPSTRRET src, const ITEMIDLIST *pidl, LPSTR dest, U
 	    break;
 
 	  default:
-	    FIXME("unknown type!\n");
-	    return E_NOTIMPL;
+	    WARN("unknown type!\n");
+	    return E_FAIL;
 	}
 	return S_OK;
 }
@@ -290,8 +289,8 @@ HRESULT WINAPI StrRetToBufW (LPSTRRET src, const ITEMIDLIST *pidl, LPWSTR dest, 
         break;
 
     default:
-        FIXME("unknown type!\n");
-        return E_NOTIMPL;
+        WARN("unknown type!\n");
+        return E_FAIL;
     }
 
     return S_OK;
@@ -376,13 +375,13 @@ static HRESULT _SHStrDupAToBSTR(LPCSTR src, BSTR *pBstrOut)
     if (src)
     {
         INT len = MultiByteToWideChar(CP_ACP, 0, src, -1, NULL, 0);
-        WCHAR* szTemp = HeapAlloc(GetProcessHeap(), 0, len * sizeof(WCHAR));
+        WCHAR *szTemp = malloc(len * sizeof(WCHAR));
 
         if (szTemp)
         {
             MultiByteToWideChar(CP_ACP, 0, src, -1, szTemp, len);
             *pBstrOut = SysAllocString(szTemp);
-            HeapFree(GetProcessHeap(), 0, szTemp);
+            free(szTemp);
 
             if (*pBstrOut)
                 return S_OK;
@@ -464,7 +463,6 @@ LPSTR WINAPI StrFormatKBSizeA(LONGLONG llBytes, LPSTR lpszDest, UINT cchMax)
  */
 LPWSTR WINAPI StrFormatKBSizeW(LONGLONG llBytes, LPWSTR lpszDest, UINT cchMax)
 {
-  static const WCHAR kb[] = {' ','K','B',0};
   LONGLONG llKB = (llBytes + 1023) >> 10;
   int len;
 
@@ -476,7 +474,7 @@ LPWSTR WINAPI StrFormatKBSizeW(LONGLONG llBytes, LPWSTR lpszDest, UINT cchMax)
   len = lstrlenW(lpszDest);
   if (cchMax - len < 4)
       return NULL;
-  lstrcatW(lpszDest, kb);
+  lstrcatW(lpszDest, L" KB");
   return lpszDest;
 }
 
@@ -888,7 +886,7 @@ HRESULT WINAPI StrFormatByteSizeEx(LONGLONG llBytes, SFBS_FLAGS flags, LPWSTR lp
     { 1000*PB, 1073741824.0, 1.00, 0, 'P' }, /* 1000 PB */
     { 0, 10995116277.76, 100.00, 2, 'E' } /* EB's, catch all */
   };
-  WCHAR wszAdd[] = {' ','?','B',0};
+  WCHAR wszAdd[] = L" ?B";
   double dBytes;
   UINT i = 0;
 
@@ -1155,7 +1153,7 @@ DWORD WINAPI SHUnicodeToAnsiCP(UINT CodePage, LPCWSTR lpSrcStr, LPSTR lpDstStr, 
       lenW = len;
       hr = ConvertINetUnicodeToMultiByte(&dwMode, CodePage, lpSrcStr, &lenW, NULL, &needed);
       needed++;
-      mem = HeapAlloc(GetProcessHeap(), 0, needed);
+      mem = malloc(needed);
       if (!mem)
         return 0;
 
@@ -1165,7 +1163,7 @@ DWORD WINAPI SHUnicodeToAnsiCP(UINT CodePage, LPCWSTR lpSrcStr, LPSTR lpDstStr, 
           reqLen = SHTruncateString(mem, dstlen);
           if (reqLen > 0) memcpy(lpDstStr, mem, reqLen-1);
       }
-      HeapFree(GetProcessHeap(), 0, mem);
+      free(mem);
       return 0;
     }
   default:
@@ -1180,7 +1178,7 @@ DWORD WINAPI SHUnicodeToAnsiCP(UINT CodePage, LPCWSTR lpSrcStr, LPSTR lpDstStr, 
     reqLen = WideCharToMultiByte(CodePage, 0, lpSrcStr, len, NULL, 0, NULL, NULL);
     if (reqLen)
     {
-      mem = HeapAlloc(GetProcessHeap(), 0, reqLen);
+      mem = malloc(reqLen);
       if (mem)
       {
         WideCharToMultiByte(CodePage, 0, lpSrcStr, len, mem, reqLen, NULL, NULL);
@@ -1189,7 +1187,7 @@ DWORD WINAPI SHUnicodeToAnsiCP(UINT CodePage, LPCWSTR lpSrcStr, LPSTR lpDstStr, 
         reqLen++;
 
         lstrcpynA(lpDstStr, mem, reqLen);
-        HeapFree(GetProcessHeap(), 0, mem);
+        free(mem);
         lpDstStr[reqLen-1] = '\0';
       }
     }

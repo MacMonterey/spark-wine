@@ -29,9 +29,10 @@ enum sign_direction
 
 enum mode
 {
-    MODE_INVALID = -1,
-    MODE_CLIENT,
-    MODE_SERVER,
+    MODE_INVALID = 0,
+    MODE_CLIENT  = 0x0001,
+    MODE_SERVER  = 0x0002,
+    MODE_BOTH    = 0x0003
 };
 
 struct ntlm_cred
@@ -111,4 +112,5 @@ enum ntlm_funcs
     unix_cleanup,
     unix_fork,
     unix_check_version,
+    unix_funcs_count,
 };

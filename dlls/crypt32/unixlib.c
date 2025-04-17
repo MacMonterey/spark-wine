@@ -130,7 +130,9 @@ static NTSTATUS process_attach( void *args )
 
     if (TRACE_ON( crypt ))
     {
-        pgnutls_global_set_log_level( 4 );
+        char *env = getenv("GNUTLS_DEBUG_LEVEL");
+        int level = env ? atoi(env) : 4;
+        pgnutls_global_set_log_level(level);
         pgnutls_global_set_log_function( gnutls_log );
     }
 
@@ -695,6 +697,8 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     enum_root_certs,
 };
 
+C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
+
 #ifdef _WIN64
 
 typedef ULONG PTR32;
@@ -795,5 +799,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     close_cert_store,
     wow64_enum_root_certs,
 };
+
+C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count );
 
 #endif  /* _WIN64 */

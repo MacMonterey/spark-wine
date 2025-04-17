@@ -2,7 +2,8 @@ EXTRADEFS = -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI=
 MODULE    = ntdll.dll
 UNIXLIB   = ntdll.so
 IMPORTLIB = ntdll
-IMPORTS   = $(MUSL_PE_LIBS) winecrt0
+IMPORTS   = $(TOMCRYPT_PE_LIBS) $(MUSL_PE_LIBS)
+EXTRAINCL = $(TOMCRYPT_PE_CFLAGS)
 UNIX_CFLAGS  = $(UNWIND_CFLAGS)
 UNIX_LIBS    = $(IOKIT_LIBS) $(COREFOUNDATION_LIBS) $(CORESERVICES_LIBS) $(RT_LIBS) $(PTHREAD_LIBS) $(UNWIND_LIBS) $(I386_LIBS) $(PROCSTAT_LIBS)
 
@@ -10,7 +11,7 @@ EXTRADLLFLAGS = -nodefaultlibs
 i386_EXTRADLLFLAGS = -Wl,--image-base,0x7bc00000
 x86_64_EXTRADLLFLAGS = -Wl,--image-base,0x170000000
 
-C_SRCS = \
+SOURCES = \
 	actctx.c \
 	atom.c \
 	crypt.c \
@@ -37,6 +38,7 @@ C_SRCS = \
 	sec.c \
 	signal_arm.c \
 	signal_arm64.c \
+	signal_arm64ec.c \
 	signal_i386.c \
 	signal_x86_64.c \
 	string.c \
@@ -65,15 +67,15 @@ C_SRCS = \
 	unix/tape.c \
 	unix/thread.c \
 	unix/virtual.c \
+	unwind.c \
 	version.c \
+	version.rc \
 	wcstring.c
-
-RC_SRCS = version.rc
 
 EXTRA_OBJS = unix/version.o
 
 unix_loader_EXTRADEFS = \
 	-DBINDIR=\"${bindir}\" \
-	-DSYSTEMDLLPATH=\"${system_dllpath}\" \
-	-DDLL_TO_BINDIR=\"`${MAKEDEP} -R ${dlldir} ${bindir}`\" \
-	-DBIN_TO_DATADIR=\"`${MAKEDEP} -R ${bindir} ${datadir}/wine`\"
+	-DLIBDIR=\"${libdir}\" \
+	-DDATADIR=\"${datadir}\" \
+	-DSYSTEMDLLPATH=\"${system_dllpath}\"

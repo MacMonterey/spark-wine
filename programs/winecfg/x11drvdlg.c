@@ -25,7 +25,6 @@
 
 #include <stdarg.h>
 #include <stdlib.h>
-#include <stdio.h>
 
 #include <windows.h>
 #include <wine/debug.h>
@@ -318,7 +317,6 @@ static void update_font_preview(HWND hDlg)
 
     if (dpi >= MINDPI && dpi <= MAXDPI)
     {
-        static const WCHAR tahomaW[] = {'T','a','h','o','m','a',0};
         LOGFONTW lf;
         HFONT hfont;
 
@@ -326,8 +324,8 @@ static void update_font_preview(HWND hDlg)
 
         GetObjectW(hfont, sizeof(lf), &lf);
 
-        if (wcscmp(lf.lfFaceName, tahomaW) != 0)
-            lstrcpyW(lf.lfFaceName, tahomaW);
+        if (wcscmp(lf.lfFaceName, L"Tahoma") != 0)
+            wcscpy(lf.lfFaceName, L"Tahoma");
         else
             DeleteObject(hfont);
         lf.lfHeight = MulDiv(-10, dpi, 72);

@@ -16,8 +16,6 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#define NONAMELESSUNION
-
 #include "objbase.h"
 
 #include "dinput_private.h"
@@ -138,7 +136,7 @@ static void lv_set_action(HWND dialog, int item, int action, LPDIACTIONFORMATW l
     if (item < 0) return;
 
     if (action != -1)
-        action_text = lpdiaf->rgoAction[action].u.lptszActionName;
+        action_text = lpdiaf->rgoAction[action].lptszActionName;
 
     /* Keep the action and text in the listview item */
     lvItem.iItem = item;
@@ -280,7 +278,7 @@ static void show_suitable_actions(HWND dialog)
         /* Add action string and index in the action format to the list entry */
         if (DIDFT_GETINSTANCE(lpdiaf->rgoAction[i].dwSemantic) & DIDFT_GETTYPE(device->ddo[obj].dwType))
         {
-            SendDlgItemMessageW(dialog, IDC_ACTIONLIST, LB_ADDSTRING, 0, (LPARAM)lpdiaf->rgoAction[i].u.lptszActionName);
+            SendDlgItemMessageW(dialog, IDC_ACTIONLIST, LB_ADDSTRING, 0, (LPARAM)lpdiaf->rgoAction[i].lptszActionName);
             SendDlgItemMessageW(dialog, IDC_ACTIONLIST, LB_SETITEMDATA, added, (LPARAM) i);
             added++;
         }
@@ -309,6 +307,7 @@ static void assign_action(HWND dialog)
         lpdiaf->rgoAction[old_action].dwObjID = 0;
         lpdiaf->rgoAction[old_action].guidInstance = GUID_NULL;
         lpdiaf->rgoAction[old_action].dwHow = DIAH_UNMAPPED;
+        lpdiaf->rgoAction[old_action].dwFlags = 0;
     }
 
     /* Find if action text is already set for other object and unset it */
@@ -323,6 +322,7 @@ static void assign_action(HWND dialog)
     lpdiaf->rgoAction[action].dwObjID = type;
     lpdiaf->rgoAction[action].guidInstance = device->ddi.guidInstance;
     lpdiaf->rgoAction[action].dwHow = DIAH_USERCONFIG;
+    lpdiaf->rgoAction[action].dwFlags |= DIA_APPMAPPED;
 
     /* Set new action in the list */
     lv_set_action(dialog, obj, action, lpdiaf);
@@ -336,7 +336,8 @@ static void copy_actions(LPDIACTIONFORMATW to, LPDIACTIONFORMATW from)
         to->rgoAction[i].guidInstance = from->rgoAction[i].guidInstance;
         to->rgoAction[i].dwObjID = from->rgoAction[i].dwObjID;
         to->rgoAction[i].dwHow = from->rgoAction[i].dwHow;
-        to->rgoAction[i].u.lptszActionName = from->rgoAction[i].u.lptszActionName;
+        to->rgoAction[i].dwFlags = from->rgoAction[i].dwFlags;
+        to->rgoAction[i].lptszActionName = from->rgoAction[i].lptszActionName;
     }
 }
 

@@ -142,7 +142,7 @@ static BOOL fix_selector( CONTEXT *context )
 static DWORD call16_handler( EXCEPTION_RECORD *record, EXCEPTION_REGISTRATION_RECORD *frame,
                              CONTEXT *context, EXCEPTION_REGISTRATION_RECORD **pdispatcher )
 {
-    if (record->ExceptionFlags & (EH_UNWINDING | EH_EXIT_UNWIND))
+    if (record->ExceptionFlags & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND))
     {
         /* unwinding: restore the stack pointer in the TEB, and leave the Win16 mutex */
         STACK32FRAME *frame32 = CONTAINING_RECORD(frame, STACK32FRAME, frame);
@@ -460,9 +460,9 @@ BOOL WINAPI K32WOWCallback16Ex( DWORD vpfn16, DWORD dwFlags,
         *((SEGPTR *)stack) = call16_ret_addr;
         cbArgs += sizeof(SEGPTR);
 
-        _EnterWin16Lock();
+        if (!(dwFlags & WCB16_INTERRUPT)) _EnterWin16Lock();
         wine_call_to_16_regs( context, cbArgs, call16_handler );
-        _LeaveWin16Lock();
+        if (!(dwFlags & WCB16_INTERRUPT)) _LeaveWin16Lock();
 
         if (TRACE_ON(relay))
         {
@@ -500,10 +500,10 @@ BOOL WINAPI K32WOWCallback16Ex( DWORD vpfn16, DWORD dwFlags,
          * the callee to do so; after the routine has returned, the 16-bit
          * stack pointer is always reset to the position it had before.
          */
-        _EnterWin16Lock();
+        if (!(dwFlags & WCB16_INTERRUPT)) _EnterWin16Lock();
         ret = wine_call_to_16( (FARPROC16)vpfn16, cbArgs, call16_handler );
         if (pdwRetCode) *pdwRetCode = ret;
-        _LeaveWin16Lock();
+        if (!(dwFlags & WCB16_INTERRUPT)) _LeaveWin16Lock();
 
         if (TRACE_ON(relay))
         {

@@ -143,32 +143,50 @@ static TW_UINT16 msg_get_range(pTW_CAPABILITY pCapability, TW_UINT16 type,
     return TWCC_SUCCESS;
 }
 
-static TW_UINT16 TWAIN_GetSupportedCaps(pTW_CAPABILITY pCapability)
+static TW_UINT16 msg_get_array(pTW_CAPABILITY pCapability, TW_UINT16 type, const int *values, int value_count)
 {
     TW_ARRAY *a;
-    static const UINT16 supported_caps[] = { CAP_SUPPORTEDCAPS, CAP_XFERCOUNT, CAP_UICONTROLLABLE,
-                    CAP_AUTOFEED, CAP_FEEDERENABLED,
-                    ICAP_XFERMECH, ICAP_PIXELTYPE, ICAP_UNITS, ICAP_BITDEPTH, ICAP_COMPRESSION, ICAP_PIXELFLAVOR,
-                    ICAP_XRESOLUTION, ICAP_YRESOLUTION, ICAP_PHYSICALHEIGHT, ICAP_PHYSICALWIDTH, ICAP_SUPPORTEDSIZES };
+    TW_UINT32 *p32;
+    TW_UINT16 *p16;
 
-    pCapability->hContainer = GlobalAlloc (0, FIELD_OFFSET( TW_ARRAY, ItemList[sizeof(supported_caps)] ));
+    pCapability->hContainer = 0;
     pCapability->ConType = TWON_ARRAY;
+
+    if (type == TWTY_INT16 || type == TWTY_UINT16)
+        pCapability->hContainer = GlobalAlloc (0, FIELD_OFFSET( TW_ARRAY, ItemList[value_count * sizeof(TW_UINT16)]));
+    else if (type == TWTY_INT32 || type == TWTY_UINT32)
+        pCapability->hContainer = GlobalAlloc (0, FIELD_OFFSET( TW_ARRAY, ItemList[value_count * sizeof(TW_UINT32)]));
 
     if (pCapability->hContainer)
     {
-        UINT16 *u;
         TW_UINT32 i;
         a = GlobalLock (pCapability->hContainer);
-        a->ItemType = TWTY_UINT16;
-        a->NumItems = ARRAY_SIZE(supported_caps);
-        u = (UINT16 *) a->ItemList;
+        a->ItemType = type;
+        a->NumItems = value_count;
+        p16 = (TW_UINT16 *) a->ItemList;
+        p32 = (TW_UINT32 *) a->ItemList;
         for (i = 0; i < a->NumItems; i++)
-            u[i] = supported_caps[i];
+        {
+            if (type == TWTY_INT16 || type == TWTY_UINT16)
+                p16[i] = values[i];
+            else if (type == TWTY_INT32 || type == TWTY_UINT32)
+                p32[i] = values[i];
+        }
         GlobalUnlock (pCapability->hContainer);
         return TWCC_SUCCESS;
     }
     else
         return TWCC_LOWMEMORY;
+}
+
+static TW_UINT16 TWAIN_GetSupportedCaps(pTW_CAPABILITY pCapability)
+{
+    static const int supported_caps[] = { CAP_SUPPORTEDCAPS, CAP_XFERCOUNT, CAP_UICONTROLLABLE,
+                    CAP_AUTOFEED, CAP_FEEDERENABLED,
+                    ICAP_XFERMECH, ICAP_PIXELTYPE, ICAP_UNITS, ICAP_BITDEPTH, ICAP_COMPRESSION, ICAP_PIXELFLAVOR,
+                    ICAP_XRESOLUTION, ICAP_YRESOLUTION, ICAP_PHYSICALHEIGHT, ICAP_PHYSICALWIDTH, ICAP_SUPPORTEDSIZES };
+
+    return msg_get_array(pCapability, TWTY_UINT16, supported_caps, ARRAY_SIZE(supported_caps));
 }
 
 
@@ -259,27 +277,30 @@ static TW_UINT16 SANE_CAPXferCount (pTW_CAPABILITY pCapability, TW_UINT16 action
     return twCC;
 }
 
-static BOOL pixeltype_to_sane_mode(TW_UINT16 pixeltype, char *mode, int len)
+static TW_UINT16 set_option_value(const char* option_name, char* option_value)
 {
-    const char *m = NULL;
-    switch (pixeltype)
+    TW_UINT16 twCC = TWCC_BADVALUE;
+    BOOL reload = FALSE;
+    if (*option_value)
     {
-        case TWPT_GRAY:
-            m = "Gray";
-            break;
-        case TWPT_RGB:
-            m = "Color";
-            break;
-        case TWPT_BW:
-            m = "Lineart";
-            break;
+        twCC = sane_option_set_str(option_name, option_value, &reload);
+        if (twCC == TWCC_SUCCESS) {
+            if (reload) get_sane_params(&activeDS.frame_params);
+        }
     }
-    if (! m)
-        return FALSE;
-    if (strlen(m) >= len)
-        return FALSE;
-    strcpy(mode, m);
-    return TRUE;
+    return twCC;
+}
+
+static TW_UINT16 find_value_pos(const char* value, const char* values, TW_UINT16 buf_len, TW_UINT16 buf_count)
+{
+    TW_UINT16 index;
+    for (index=0; index<buf_count; ++index)
+    {
+        if (!strncmp(value, values, buf_len))
+            return index;
+        values += buf_len;
+    }
+    return buf_count;
 }
 
 /* ICAP_PIXELTYPE */
@@ -289,19 +310,40 @@ static TW_UINT16 SANE_ICAPPixelType (pTW_CAPABILITY pCapability, TW_UINT16 actio
     TW_UINT32 possible_values[3];
     int possible_value_count;
     TW_UINT32 val;
-    BOOL reload = FALSE;
     TW_UINT16 current_pixeltype = TWPT_BW;
-    char mode[64];
+    enum { buf_len = 64, buf_count = 3 };
+    char color_modes[buf_len * buf_count] = {'\0'}, current_mode[buf_len] = {'\0'}, *output = 0;
+    /* most of the values are taken from https://gitlab.gnome.org/GNOME/simple-scan/-/blob/master/src/scanner.vala */
+    static const WCHAR* bw[] = {L"Lineart", L"LineArt", L"Black & White", L"Binary", L"Thresholded",
+        L"1-bit Black & White", L"Black and White - Line Art", L"Black and White - Halftone", L"Monochrome", L"bw", 0};
+    static const WCHAR* gray[] = {L"Gray", L"Grayscale", L"True Gray", L"8-bit Grayscale", L"Grayscale - 256 Levels",
+        L"gray", 0};
+    static const WCHAR* rgb[] = {L"Color", L"24bit Color[Fast]", L"24bit Color", L"24 bit Color",
+        L"Color - 16 Million Colors", L"color", 0};
+    static const WCHAR* const* filter[] = {bw, gray, rgb, 0};
 
     TRACE("ICAP_PIXELTYPE\n");
-
-    twCC = sane_option_probe_mode(&current_pixeltype, possible_values, &possible_value_count);
+    twCC = sane_option_probe_str("mode", filter, color_modes, buf_len);
     if (twCC != TWCC_SUCCESS)
     {
-        ERR("Unable to retrieve mode from sane, ICAP_PIXELTYPE unsupported\n");
+        ERR("Unable to retrieve modes from sane, ICAP_PIXELTYPE unsupported\n");
         return twCC;
     }
 
+    twCC = sane_option_get_str("mode", current_mode, buf_len);
+    if (twCC != TWCC_SUCCESS)
+    {
+        ERR("Unable to retrieve current mode from sane, ICAP_PIXELTYPE unsupported\n");
+        return twCC;
+    }
+
+    current_pixeltype = find_value_pos(current_mode, color_modes, buf_len, buf_count);
+    if (current_pixeltype == buf_count)
+    {
+        ERR("Wrong current mode value, ICAP_PIXELTYPE unsupported\n");
+        twCC = TWCC_BADVALUE;
+        return twCC;
+    }
     /* Sane does not support a concept of a default mode, so we simply cache
      *   the first mode we find */
     if (! activeDS.PixelTypeSet)
@@ -318,27 +360,28 @@ static TW_UINT16 SANE_ICAPPixelType (pTW_CAPABILITY pCapability, TW_UINT16 actio
             break;
 
         case MSG_GET:
+            possible_value_count = 0;
+            for (val=TWPT_BW; val<=TWPT_RGB; ++val)
+            {
+                if (*(color_modes + val * buf_len))
+                    possible_values[possible_value_count++] = val;
+            }
             twCC = msg_get_enum(pCapability, possible_values, possible_value_count,
                     TWTY_UINT16, current_pixeltype, activeDS.defaultPixelType);
             break;
 
         case MSG_SET:
             twCC = msg_set(pCapability, &val);
-            if (twCC == TWCC_SUCCESS)
+            if ((twCC == TWCC_SUCCESS) && (val < buf_count))
             {
-                TRACE("Setting pixeltype to %ld\n", val);
-                if (! pixeltype_to_sane_mode(val, mode, sizeof(mode)))
-                    return TWCC_BADVALUE;
-
-                twCC = sane_option_set_str("mode", mode, &reload);
-                /* Some SANE devices use 'Grayscale' instead of the standard 'Gray' */
-                if (twCC != TWCC_SUCCESS && strcmp(mode, "Gray") == 0)
-                {
-                    strcpy(mode, "Grayscale");
-                    twCC = sane_option_set_str("mode", mode, &reload);
-                }
-                if (reload) get_sane_params( &activeDS.frame_params );
+                output = color_modes + val * buf_len;
+                TRACE("Setting pixeltype to %lu: %s\n", val, output);
+                twCC = set_option_value("mode", output);
+                if (twCC != TWCC_SUCCESS)
+                    ERR("Unable to set pixeltype to %lu: %s\n", val, output);
             }
+            else
+                twCC = TWCC_BADVALUE;
             break;
 
         case MSG_GETDEFAULT:
@@ -346,19 +389,11 @@ static TW_UINT16 SANE_ICAPPixelType (pTW_CAPABILITY pCapability, TW_UINT16 actio
             break;
 
         case MSG_RESET:
-            current_pixeltype = activeDS.defaultPixelType;
-            if (! pixeltype_to_sane_mode(current_pixeltype, mode, sizeof(mode)))
-                return TWCC_BADVALUE;
-
-            twCC = sane_option_set_str("mode", mode, &reload);
-            /* Some SANE devices use 'Grayscale' instead of the standard 'Gray' */
-            if (twCC != TWCC_SUCCESS && strcmp(mode, "Gray") == 0)
-            {
-                strcpy(mode, "Grayscale");
-                twCC = sane_option_set_str("mode", mode, &reload);
-            }
-            if (twCC != TWCC_SUCCESS) break;
-            if (reload) get_sane_params( &activeDS.frame_params );
+            twCC = set_option_value("mode", color_modes + activeDS.defaultPixelType * buf_len);
+            if (twCC == TWCC_SUCCESS)
+                current_pixeltype = activeDS.defaultPixelType;
+            else
+                ERR("Unable to reset color mode\n");
 
             /* .. fall through intentional .. */
 
@@ -518,7 +553,7 @@ static TW_UINT16 SANE_ICAPResolution (pTW_CAPABILITY pCapability, TW_UINT16 acti
     int current_resolution;
     TW_FIX32 *default_res;
     const char *best_option_name;
-    int minval, maxval, quantval;
+    struct option_descriptor opt;
 
     TRACE("ICAP_%cRESOLUTION\n", cap == ICAP_XRESOLUTION ? 'X' : 'Y');
 
@@ -565,10 +600,20 @@ static TW_UINT16 SANE_ICAPResolution (pTW_CAPABILITY pCapability, TW_UINT16 acti
             break;
 
         case MSG_GET:
-            twCC = sane_option_probe_resolution(best_option_name, &minval, &maxval, &quantval);
+            twCC = sane_option_probe_resolution(best_option_name, &opt);
             if (twCC == TWCC_SUCCESS)
-                twCC = msg_get_range(pCapability, TWTY_FIX32,
-                                minval, maxval, quantval == 0 ? 1 : quantval, default_res->Whole, current_resolution);
+            {
+                if (opt.constraint_type == CONSTRAINT_RANGE)
+                    twCC = msg_get_range(pCapability, TWTY_FIX32,
+                            opt.constraint.range.min, opt.constraint.range.max,
+                            opt.constraint.range.quant == 0 ? 1 : opt.constraint.range.quant,
+                            default_res->Whole, current_resolution);
+                else if (opt.constraint_type == CONSTRAINT_WORD_LIST)
+                    twCC = msg_get_array(pCapability, TWTY_UINT32, &(opt.constraint.word_list[1]),
+                            opt.constraint.word_list[0]);
+                else
+                    twCC = TWCC_CAPUNSUPPORTED;
+            }
             break;
 
         case MSG_SET:
@@ -795,6 +840,7 @@ static TW_UINT16 SANE_ICAPSupportedSizes (pTW_CAPABILITY pCapability, TW_UINT16 
     static TW_UINT32 possible_values[ARRAY_SIZE(supported_sizes)];
     unsigned int i;
     TW_UINT32 val;
+    double max_width, max_height;
     TW_UINT16 default_size = get_default_paper_size(supported_sizes, ARRAY_SIZE(supported_sizes));
     TW_UINT16 current_size = get_current_paper_size(supported_sizes, ARRAY_SIZE(supported_sizes));
 
@@ -821,7 +867,10 @@ static TW_UINT16 SANE_ICAPSupportedSizes (pTW_CAPABILITY pCapability, TW_UINT16 
                 for (i = 1; i < ARRAY_SIZE(supported_sizes); i++)
                     if (supported_sizes[i].size == val)
                         return set_width_height(supported_sizes[i].x, supported_sizes[i].y);
-
+            /* TWAIN: For devices that support physical dimensions TWSS_NONE indicates that the maximum
+               image size supported by the device is to be used. */
+            if (val == TWSS_NONE && get_width_height(&max_width, &max_height, TRUE) == TWCC_SUCCESS)
+                return set_width_height(max_width, max_height);
             ERR("Unsupported size %ld\n", val);
             twCC = TWCC_BADCAP;
             break;
@@ -903,17 +952,39 @@ static TW_UINT16 SANE_CAPFeederEnabled (pTW_CAPABILITY pCapability, TW_UINT16 ac
     TW_UINT16 twCC = TWCC_BADCAP;
     TW_UINT32 val;
     TW_BOOL enabled;
-    char source[64];
+    enum { buf_len = 64, buf_count = 2 };
+    char paper_sources[buf_len * buf_count] = {'\0'}, current_source[buf_len] = {'\0'}, *output = 0;
+    /* most of the values are taken from https://gitlab.gnome.org/GNOME/simple-scan/-/blob/master/src/scanner.vala */
+    static const WCHAR* flatbed[] = {L"Flatbed", L"FlatBed", L"Platen", L"Normal", L"Document Table", 0};
+    static const WCHAR* autofeeder[] = {L"Auto", L"ADF", L"ADF Front", L"ADF Back", L"adf",
+        L"Automatic Document Feeder", L"Automatic Document Feeder(centrally aligned)",
+        L"Automatic Document Feeder(center aligned)", L"Automatic Document Feeder(left aligned)",
+        L"ADF Simplex" L"DP", 0};
+    static const WCHAR* const* filter[] = {flatbed, autofeeder, 0};
 
     TRACE("CAP_FEEDERENABLED\n");
+    twCC = sane_option_probe_str("source", filter, paper_sources, buf_len);
+    if (twCC != TWCC_SUCCESS)
+    {
+        ERR("Unable to retrieve paper sources from sane, CAP_FEEDERENABLED unsupported\n");
+        return twCC;
+    }
 
-    if (sane_option_get_str("source", source, sizeof(source)) != TWCC_SUCCESS)
-        return TWCC_BADCAP;
+    twCC = sane_option_get_str("source", current_source, buf_len);
+    if (twCC != TWCC_SUCCESS)
+    {
+        ERR("Unable to retrieve current paper source from sane, CAP_FEEDERENABLED unsupported\n");
+        return twCC;
+    }
 
-    if (strcmp(source, "Auto") == 0 || strcmp(source, "ADF") == 0)
-        enabled = TRUE;
-    else
-        enabled = FALSE;
+    val = find_value_pos(current_source, paper_sources, buf_len, buf_count);
+    if (val == buf_count)
+    {
+        ERR("Wrong current paper source value, CAP_FEEDERENABLED unsupported\n");
+        twCC = TWCC_BADVALUE;
+        return twCC;
+    }
+    enabled = val > 0;
 
     switch (action)
     {
@@ -928,16 +999,16 @@ static TW_UINT16 SANE_CAPFeederEnabled (pTW_CAPABILITY pCapability, TW_UINT16 ac
 
         case MSG_SET:
             twCC = msg_set(pCapability, &val);
-            if (twCC == TWCC_SUCCESS)
+            if ((twCC == TWCC_SUCCESS) && (val < buf_count))
             {
-                strcpy(source, "ADF");
-                twCC = sane_option_set_str("source", source, NULL);
+                output = paper_sources + val * buf_len;
+                TRACE("Setting paper source to %lu: %s\n", val, output);
+                twCC = set_option_value("source", output);
                 if (twCC != TWCC_SUCCESS)
-                {
-                    strcpy(source, "Auto");
-                    twCC = sane_option_set_str("source", source, NULL);
-                }
+                    ERR("Unable to set paper source to %lu: %s\n", val, output);
             }
+            else
+                twCC = TWCC_BADVALUE;
             break;
 
         case MSG_GETDEFAULT:
@@ -945,9 +1016,14 @@ static TW_UINT16 SANE_CAPFeederEnabled (pTW_CAPABILITY pCapability, TW_UINT16 ac
             break;
 
         case MSG_RESET:
-            strcpy(source, "Auto");
-            if (sane_option_set_str("source", source, NULL) == TWCC_SUCCESS)
-                enabled = TRUE;
+            val = *(paper_sources + buf_len) ? 1 : 0; // set to Auto/ADF if it's supported
+            output = paper_sources + val * buf_len;
+            TRACE("Resetting paper source to %lu: %s\n", val, output);
+            twCC = set_option_value("source", output);
+            if (twCC != TWCC_SUCCESS)
+                ERR("Unable to reset paper source to %lu: %s\n", val, output);
+            else
+                enabled = val > 0;
             /* .. fall through intentional .. */
 
         case MSG_GETCURRENT:

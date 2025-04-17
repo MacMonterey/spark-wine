@@ -66,6 +66,45 @@ static void test_DnsQuery(void)
     DNS_RECORDW *rec, *ptr;
     DNS_STATUS status;
 
+    /* IP in name. */
+    status = DnsQuery_W(L" 192.168.111.11", DNS_TYPE_A, 0, NULL, &rec, NULL);
+    ok(status != ERROR_SUCCESS, "got %lu.\n", status);
+    status = DnsQuery_W(L"192.168.111.11 ", DNS_TYPE_A, 0, NULL, &rec, NULL);
+    ok(status != ERROR_SUCCESS, "got %lu.\n", status);
+
+    status = DnsQuery_W(L"192.168.111.11", DNS_TYPE_A, 0, NULL, &rec, NULL);
+    ok(!status, "got %lu.\n", status);
+    ok(rec->wType == DNS_TYPE_A, "got %#x.\n", rec->wType);
+    ok(rec->wDataLength == sizeof(rec->Data.A), "got %u.\n", rec->wDataLength);
+    ok(rec->Data.A.IpAddress == 0x0b6fa8c0, "got %#lx.\n", rec->Data.A.IpAddress);
+    ok(!rec->pNext, "got %p.\n", rec->pNext);
+    ok(rec->dwTtl == 604800, "got %lu.\n", rec->dwTtl);
+    ok(!wcscmp(rec->pName, L"192.168.111.11"), "got %s.\n", debugstr_w(rec->pName));
+    ok(!rec->Flags.S.Section, "got %u.\n", rec->Flags.S.Section);
+    ok(!rec->Flags.S.Delete, "got %u.\n", rec->Flags.S.Delete);
+    ok(rec->Flags.S.CharSet == DnsCharSetUnicode, "got %u.\n", rec->Flags.S.CharSet);
+    ok(!rec->Flags.S.Unused, "got %u.\n", rec->Flags.S.Unused);
+    ok(rec->Flags.S.Reserved == 0x20, "got %u.\n", rec->Flags.S.Reserved);
+    DnsRecordListFree(rec, DnsFreeRecordList);
+
+    status = DnsQuery_W(L"2001:db8:3333:4444:5555:6666:7777:8888", DNS_TYPE_AAAA, 0, NULL, &rec, NULL);
+    ok(!status, "got %lu.\n", status);
+    ok(rec->wType == DNS_TYPE_AAAA, "got %#x.\n", rec->wType);
+    ok(rec->wDataLength == sizeof(rec->Data.AAAA), "got %u.\n", rec->wDataLength);
+    ok(rec->Data.AAAA.Ip6Address.IP6Dword[0] == 0xb80d0120, "got %#lx.\n", rec->Data.AAAA.Ip6Address.IP6Dword[0]);
+    ok(rec->Data.AAAA.Ip6Address.IP6Dword[1] == 0x44443333, "got %#lx.\n", rec->Data.AAAA.Ip6Address.IP6Dword[1]);
+    ok(rec->Data.AAAA.Ip6Address.IP6Dword[2] == 0x66665555, "got %#lx.\n", rec->Data.AAAA.Ip6Address.IP6Dword[2]);
+    ok(rec->Data.AAAA.Ip6Address.IP6Dword[3] == 0x88887777, "got %#lx.\n", rec->Data.AAAA.Ip6Address.IP6Dword[3]);
+    ok(!rec->pNext, "got %p.\n", rec->pNext);
+    ok(rec->dwTtl == 604800, "got %lu.\n", rec->dwTtl);
+    ok(!wcscmp(rec->pName, L"2001:db8:3333:4444:5555:6666:7777:8888"), "got %s.\n", debugstr_w(rec->pName));
+    ok(!rec->Flags.S.Section, "got %u.\n", rec->Flags.S.Section);
+    ok(!rec->Flags.S.Delete, "got %u.\n", rec->Flags.S.Delete);
+    ok(rec->Flags.S.CharSet == DnsCharSetUnicode, "got %u.\n", rec->Flags.S.CharSet);
+    ok(!rec->Flags.S.Unused, "got %u.\n", rec->Flags.S.Unused);
+    ok(rec->Flags.S.Reserved == 0x20, "got %u.\n", rec->Flags.S.Reserved);
+    DnsRecordListFree(rec, DnsFreeRecordList);
+
     rec = NULL;
     status = DnsQuery_W(L"winehq.org", DNS_TYPE_A, DNS_QUERY_STANDARD, NULL, &rec, NULL);
     if (status == ERROR_TIMEOUT)
@@ -78,7 +117,7 @@ static void test_DnsQuery(void)
 
     /* Show that DNS_TYPE_A returns CNAMEs too */
     rec = NULL;
-    wcscpy(domain, L"test.winehq.org"); /* should be a CNAME */
+    wcscpy(domain, L"test-cname.winehq.org"); /* should be a CNAME */
     status = DnsQuery_W(domain, DNS_TYPE_A, DNS_QUERY_STANDARD, NULL, &rec, NULL);
     if (status == ERROR_TIMEOUT)
     {
@@ -95,7 +134,7 @@ static void test_DnsQuery(void)
     ptr = rec; /* CNAMEs come first */
     ok(!wcscmp(domain, ptr->pName), "expected record name %s, got %s\n", wine_dbgstr_w(domain), wine_dbgstr_w(ptr->pName));
     ok(DNS_TYPE_CNAME == ptr->wType, "expected record type %d, got %d\n", DNS_TYPE_CNAME, ptr->wType);
-    wcscpy(domain, L"winehq.org");
+    wcscpy(domain, L"test.winehq.org");
     if (ptr->wType == DNS_TYPE_CNAME)
         ok(!wcscmp(domain, ptr->Data.CNAME.pNameHost), "expected CNAME target %s, got %s\n", wine_dbgstr_w(domain), wine_dbgstr_w(ptr->Data.CNAME.pNameHost));
     ptr = ptr->pNext;
@@ -121,11 +160,16 @@ static void test_DnsQuery(void)
      * return other related records!
      */
     rec = NULL;
-    wcscpy(domain, L"test.winehq.org");
-    status = DnsQuery_W(L"test.winehq.org", DNS_TYPE_CNAME, DNS_QUERY_STANDARD, NULL, &rec, NULL);
+    wcscpy(domain, L"test-cname.winehq.org");
+    status = DnsQuery_W(L"test-cname.winehq.org", DNS_TYPE_CNAME, DNS_QUERY_STANDARD, NULL, &rec, NULL);
     if (status == ERROR_TIMEOUT)
     {
         skip("query timed out\n");
+        return;
+    }
+    if (status == DNS_INFO_NO_RECORDS)
+    {
+        skip("no CNAME records\n");
         return;
     }
     ok(status == ERROR_SUCCESS, "got %ld\n", status);
@@ -138,22 +182,9 @@ static void test_DnsQuery(void)
     ptr = rec;
     ok(!wcscmp(domain, ptr->pName), "expected record name %s, got %s\n", wine_dbgstr_w(domain), wine_dbgstr_w(ptr->pName));
     ok(DNS_TYPE_CNAME == ptr->wType, "expected record type %d, got %d\n", DNS_TYPE_CNAME, ptr->wType);
-    wcscpy(domain, L"winehq.org");
+    wcscpy(domain, L"test.winehq.org");
     if (ptr->wType == DNS_TYPE_CNAME)
         ok(!wcscmp(domain, ptr->Data.CNAME.pNameHost), "expected CNAME target %s, got %s\n", wine_dbgstr_w(domain), wine_dbgstr_w(ptr->Data.CNAME.pNameHost));
-    ptr = ptr->pNext;
-
-    while (ptr)
-    {
-        if (ptr->wType != DNS_TYPE_OPT)
-        {
-            ok(wcscmp(domain, ptr->pName), "did not expect a record for %s\n",
-               wine_dbgstr_w(ptr->pName));
-            ok(ptr->wType == DNS_TYPE_A || ptr->wType == DNS_TYPE_AAAA,
-               "unexpected record type %d\n", ptr->wType);
-        }
-        ptr = ptr->pNext;
-    }
     DnsRecordListFree(rec, DnsFreeRecordList);
 
     status = DnsQuery_W(L"", DNS_TYPE_SRV, DNS_QUERY_STANDARD, NULL, &rec, NULL);

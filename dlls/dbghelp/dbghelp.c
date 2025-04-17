@@ -67,6 +67,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(dbghelp);
 
 unsigned   dbghelp_options = SYMOPT_UNDNAME;
 BOOL       dbghelp_opt_native = FALSE;
+BOOL       dbghelp_opt_extension_api = FALSE;
 BOOL       dbghelp_opt_real_path = FALSE;
 BOOL       dbghelp_opt_source_actual_path = FALSE;
 SYSTEM_INFO sysinfo;
@@ -299,20 +300,6 @@ BOOL WINAPI SymGetSearchPath(HANDLE hProcess, PSTR szSearchPath,
     return ret;
 }
 
-/******************************************************************
- *		invade_process
- *
- * SymInitialize helper: loads in dbghelp all known (and loaded modules)
- * this assumes that hProcess is a handle on a valid process
- */
-static BOOL WINAPI process_invade_cb(PCWSTR name, ULONG64 base, ULONG size, PVOID user)
-{
-    HANDLE      hProcess = user;
-
-    SymLoadModuleExW(hProcess, 0, name, NULL, base, size, NULL, 0);
-    return TRUE;
-}
-
 const WCHAR *process_getenv(const struct process *process, const WCHAR *name)
 {
     size_t name_len;
@@ -378,7 +365,7 @@ static BOOL check_live_target(struct process* pcs, BOOL wow64, BOOL child_wow64)
             peb_addr += 0x1000;
         if (!ReadProcessMemory(pcs->handle, peb_addr, &peb32, sizeof(peb32), NULL)) return FALSE;
         base = *(const DWORD*)((const char*)&peb32 + 0x460 /* CloudFileFlags */);
-        pcs->is_system_64bit = FALSE;
+        pcs->is_host_64bit = FALSE;
         if (read_process_memory(pcs, peb32.ProcessParameters + 0x48, &env32, sizeof(env32))) env = env32;
     }
     if (pcs->is_64bit || base == 0)
@@ -388,7 +375,7 @@ static BOOL check_live_target(struct process* pcs, BOOL wow64, BOOL child_wow64)
         if (!pcs->is_64bit) peb_addr -= 0x1000; /* PEB32 => PEB64 */
         if (!ReadProcessMemory(pcs->handle, peb_addr, &peb, sizeof(peb), NULL)) return FALSE;
         base = *(const DWORD64*)&peb.CloudFileFlags;
-        pcs->is_system_64bit = TRUE;
+        pcs->is_host_64bit = TRUE;
         if (pcs->is_64bit)
             ReadProcessMemory(pcs->handle,
                               (char *)(ULONG_PTR)peb.ProcessParameters + FIELD_OFFSET(RTL_USER_PROCESS_PARAMETERS, Environment),
@@ -400,17 +387,13 @@ static BOOL check_live_target(struct process* pcs, BOOL wow64, BOOL child_wow64)
     {
         size_t buf_size = 0, i, last_null = -1;
         WCHAR *buf = NULL;
+        WCHAR *new_buf;
 
         do
         {
-            size_t read_size = sysinfo.dwAllocationGranularity - (env & (sysinfo.dwAllocationGranularity - 1));
-            if (buf)
-            {
-                WCHAR *new_buf;
-                if (!(new_buf = realloc(buf, buf_size + read_size))) break;
-                buf = new_buf;
-            }
-            else if(!(buf = malloc(read_size))) break;
+            size_t read_size = sysinfo.dwPageSize - (env & (sysinfo.dwPageSize - 1));
+            if (!(new_buf = realloc(buf, buf_size + read_size))) break;
+            buf = new_buf;
 
             if (!read_process_memory(pcs, env, (char*)buf + buf_size, read_size)) break;
             for (i = buf_size / sizeof(WCHAR); i < (buf_size + read_size) / sizeof(WCHAR); i++)
@@ -435,7 +418,10 @@ static BOOL check_live_target(struct process* pcs, BOOL wow64, BOOL child_wow64)
 
     TRACE("got debug info address %#I64x from PEB %p\n", base, pbi.PebBaseAddress);
     if (!elf_read_wine_loader_dbg_info(pcs, base) && !macho_read_wine_loader_dbg_info(pcs, base))
+    {
         WARN("couldn't load process debug info at %#I64x\n", base);
+        pcs->loader = &empty_loader_ops;
+    }
     return TRUE;
 }
 
@@ -513,8 +499,9 @@ BOOL WINAPI SymInitializeW(HANDLE hProcess, PCWSTR UserSearchPath, BOOL fInvadeP
     if (check_live_target(pcs, wow64, child_wow64))
     {
         if (fInvadeProcess)
-            EnumerateLoadedModulesW64(hProcess, process_invade_cb, hProcess);
-        if (pcs->loader) pcs->loader->synchronize_module_list(pcs);
+            module_refresh_list(pcs);
+        else
+            pcs->loader->synchronize_module_list(pcs);
     }
     else if (fInvadeProcess)
     {
@@ -558,6 +545,8 @@ BOOL WINAPI SymCleanup(HANDLE hProcess)
 {
     struct process**    ppcs;
     struct process*     next;
+
+    TRACE("(%p)\n", hProcess);
 
     for (ppcs = &process_first; *ppcs; ppcs = &(*ppcs)->next)
     {
@@ -616,6 +605,10 @@ BOOL WINAPI SymSetExtendedOption(IMAGEHLP_EXTENDED_OPTIONS option, BOOL value)
             old = dbghelp_opt_native;
             dbghelp_opt_native = value;
             break;
+        case SYMOPT_EX_WINE_EXTENSION_API:
+            old = dbghelp_opt_extension_api;
+            dbghelp_opt_extension_api = value;
+            break;
         case SYMOPT_EX_WINE_MODULE_REAL_PATH:
             old = dbghelp_opt_real_path;
             dbghelp_opt_real_path = value;
@@ -641,6 +634,8 @@ BOOL WINAPI SymGetExtendedOption(IMAGEHLP_EXTENDED_OPTIONS option)
     {
         case SYMOPT_EX_WINE_NATIVE_MODULES:
             return dbghelp_opt_native;
+        case SYMOPT_EX_WINE_EXTENSION_API:
+            return dbghelp_opt_extension_api;
         case SYMOPT_EX_WINE_MODULE_REAL_PATH:
             return dbghelp_opt_real_path;
         case SYMOPT_EX_WINE_SOURCE_ACTUAL_PATH:

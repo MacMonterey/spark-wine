@@ -458,7 +458,7 @@ static void ShellView_InitList(IShellViewImpl *This)
 
         lvColumn.fmt = sd.fmt;
         lvColumn.cx = MulDiv(sd.cxChar, tm.tmAveCharWidth * 3, 2); /* chars->pixel */
-        StrRetToStrNW(nameW, ARRAY_SIZE(nameW), &sd.str, NULL);
+        StrRetToBufW(&sd.str, NULL, nameW, ARRAY_SIZE(nameW));
         SendMessageW(This->hWndList, LVM_INSERTCOLUMNW, This->columns, (LPARAM)&lvColumn);
     }
 
@@ -1039,9 +1039,6 @@ static void ShellView_DoContextMenu(IShellViewImpl * This, WORD x, WORD y, BOOL 
 	      /* let the ContextMenu merge its items in */
 	      if (SUCCEEDED(IContextMenu_QueryContextMenu( pContextMenu, hMenu, 0, FCIDM_SHVIEWFIRST, FCIDM_SHVIEWLAST, wFlags )))
 	      {
-	        if (This->FolderSettings.fFlags & FWF_DESKTOP)
-		  SetMenuDefaultItem(hMenu, FCIDM_SHVIEW_OPEN, MF_BYCOMMAND);
-
 		if( bDefault )
 		{
 		  TRACE("-- get menu default command\n");
@@ -1055,24 +1052,11 @@ static void ShellView_DoContextMenu(IShellViewImpl * This, WORD x, WORD y, BOOL 
 
 		if(uCommand > 0)
 		{
-		  TRACE("-- uCommand=%u\n", uCommand);
-		  if (uCommand==FCIDM_SHVIEW_OPEN && IsInCommDlg(This))
-		  {
-		    TRACE("-- dlg: OnDefaultCommand\n");
-		    if (OnDefaultCommand(This) != S_OK)
-		    {
-		      ShellView_OpenSelectedItems(This);
-		    }
-		  }
-		  else
-		  {
-		    TRACE("-- explore -- invoke command\n");
 		    ZeroMemory(&cmi, sizeof(cmi));
 		    cmi.cbSize = sizeof(cmi);
 		    cmi.hwnd = This->hWndParent; /* this window has to answer CWM_GETISHELLBROWSER */
                     cmi.lpVerb = MAKEINTRESOURCEA(uCommand);
 		    IContextMenu_InvokeCommand(pContextMenu, &cmi);
-		  }
 		}
 		DestroyMenu(hMenu);
 	      }
@@ -1440,14 +1424,14 @@ static LRESULT ShellView_OnNotify(IShellViewImpl * This, UINT CtlID, LPNMHDR lpn
 
               if (lpnmh->code == LVN_GETDISPINFOW)
               {
-                  StrRetToStrNW( lpdi->item.pszText, lpdi->item.cchTextMax, &sd.str, NULL);
+                  StrRetToBufW(&sd.str, NULL, lpdi->item.pszText, lpdi->item.cchTextMax);
                   TRACE("-- text=%s\n", debugstr_w(lpdi->item.pszText));
               }
               else
               {
                   /* LVN_GETDISPINFOA - shouldn't happen */
                   NMLVDISPINFOA *lpdiA = (NMLVDISPINFOA *)lpnmh;
-                  StrRetToStrNA( lpdiA->item.pszText, lpdiA->item.cchTextMax, &sd.str, NULL);
+                  StrRetToBufA(&sd.str, NULL, lpdiA->item.pszText, lpdiA->item.cchTextMax);
                   TRACE("-- text=%s\n", lpdiA->item.pszText);
               }
 	    }
@@ -1577,7 +1561,7 @@ static LRESULT ShellView_OnNotify(IShellViewImpl * This, UINT CtlID, LPNMHDR lpn
 		  }
 
 		  /* allocate memory for the pidl array */
-		  pItems = heap_alloc(sizeof(LPITEMIDLIST) * count);
+		  pItems = malloc(sizeof(ITEMIDLIST*) * count);
 
 		  /* retrieve all selected items */
 		  i = 0;
@@ -1603,7 +1587,7 @@ static LRESULT ShellView_OnNotify(IShellViewImpl * This, UINT CtlID, LPNMHDR lpn
 		  ISFHelper_Release(psfhlp);
 
 		  /* free pidl array memory */
-		  heap_free(pItems);
+		  free(pItems);
                 }
 		break;
 
@@ -1825,7 +1809,7 @@ static ULONG WINAPI IShellView_fnRelease(IShellView3 *iface)
 	  if(This->pAdvSink)
 	    IAdviseSink_Release(This->pAdvSink);
 
-	  heap_free(This);
+	  free(This);
 	}
 	return refCount;
 }
@@ -2774,8 +2758,49 @@ static HRESULT WINAPI FolderView_ItemCount(IFolderView2 *iface, UINT flags, int 
 static HRESULT WINAPI FolderView_Items(IFolderView2 *iface, UINT flags, REFIID riid, void **ppv)
 {
     IShellViewImpl *This = impl_from_IFolderView2(iface);
-    FIXME("(%p)->(%u %s %p), stub\n", This, flags, debugstr_guid(riid), ppv);
-    return E_NOTIMPL;
+    int count, i;
+    ITEMIDLIST **pidl;
+    LVITEMW item;
+    HRESULT hr;
+
+    if (!IsEqualIID(riid, &IID_IShellItemArray))
+    {
+        FIXME("%s is not supported\n", debugstr_guid(riid));
+        return E_NOINTERFACE;
+    }
+
+    if (flags != SVGIO_ALLVIEW)
+        FIXME("some flags unsupported, %x\n", flags & ~SVGIO_ALLVIEW);
+
+    count = SendMessageW(This->hWndList, LVM_GETITEMCOUNT, 0, 0);
+    if (!count)
+    {
+        FIXME("Folder is empty\n");
+        return E_FAIL;
+    }
+
+    pidl = HeapAlloc(GetProcessHeap(), 0, count * sizeof(*pidl));
+    if (!pidl) return E_OUTOFMEMORY;
+
+    for (i = 0; i < count; i++)
+    {
+        item.mask = LVIF_PARAM;
+        item.iItem = i;
+        if (!SendMessageW(This->hWndList, LVM_GETITEMW, 0, (LPARAM)&item))
+        {
+            FIXME("LVM_GETITEMW(%d) failed\n" ,i);
+            HeapFree(GetProcessHeap(), 0, pidl);
+            return E_FAIL;
+        }
+
+        pidl[i] = (ITEMIDLIST *)item.lParam;
+    }
+
+    hr = SHCreateShellItemArray(NULL, This->pSFParent, count, (LPCITEMIDLIST *)pidl, (IShellItemArray **)ppv);
+
+    HeapFree(GetProcessHeap(), 0, pidl);
+
+    return hr;
 }
 
 static HRESULT WINAPI FolderView_GetSelectionMarkedItem(IFolderView2 *iface, int *item)
@@ -3031,15 +3056,20 @@ static HRESULT WINAPI FolderView2_SetViewModeAndIconSize(IFolderView2 *iface, FO
 {
     IShellViewImpl *This = impl_from_IFolderView2(iface);
     FIXME("(%p)->(%d %d), stub\n", This, mode, size);
-    return E_NOTIMPL;
+    return S_OK;
 }
 
 static HRESULT WINAPI FolderView2_GetViewModeAndIconSize(IFolderView2 *iface, FOLDERVIEWMODE *mode,
     int *size)
 {
     IShellViewImpl *This = impl_from_IFolderView2(iface);
+
     FIXME("(%p)->(%p %p), stub\n", This, mode, size);
-    return E_NOTIMPL;
+
+    *size = 16; /* FIXME */
+    *mode = This->FolderSettings.ViewMode;
+
+    return S_OK;
 }
 
 static HRESULT WINAPI FolderView2_SetGroupSubsetCount(IFolderView2 *iface, UINT visible_rows)
@@ -3756,7 +3786,7 @@ IShellView *IShellView_Constructor(IShellFolder *folder)
 {
     IShellViewImpl *sv;
 
-    sv = heap_alloc_zero(sizeof(*sv));
+    sv = calloc(1, sizeof(*sv));
     if (!sv)
         return NULL;
 

@@ -64,6 +64,8 @@ struct pcap
 {
     UINT64 handle;
     struct pcap_pkthdr_win32 hdr;
+    unsigned char *buf;
+    UINT32 bufsize;
     char errbuf[PCAP_ERRBUF_SIZE];
 };
 
@@ -133,12 +135,14 @@ int CDECL pcap_can_set_rfmon( struct pcap *pcap )
 void CDECL pcap_close( struct pcap *pcap )
 {
     struct close_params params;
+    SIZE_T size = 0;
 
     TRACE( "%p\n", pcap );
 
     if (!pcap) return;
     params.handle = pcap->handle;
     PCAP_CALL( close, &params );
+    if (pcap->buf) NtFreeVirtualMemory( GetCurrentProcess(), (void **)&pcap->buf, &size, MEM_RELEASE );
     free( pcap );
 }
 
@@ -289,17 +293,23 @@ const char * CDECL pcap_datalink_val_to_name( int link )
     return (datalinks[link].name = params.buf);
 }
 
-void CDECL pcap_dump( unsigned char *user, const struct pcap_pkthdr_win32 *hdr, const unsigned char *packet )
-{
-    struct dump_params params = { user, hdr, packet };
-    TRACE( "%p, %p, %p\n", user, hdr, packet );
-    PCAP_CALL( dump, &params );
-}
-
 struct dumper
 {
     UINT64 handle;
 };
+
+void CDECL pcap_dump( unsigned char *user, const struct pcap_pkthdr_win32 *hdr, const unsigned char *packet )
+{
+    struct dump_params params;
+    struct dumper *dumper = (struct dumper *)user;
+
+    TRACE( "%p, %p, %p\n", user, hdr, packet );
+
+    params.handle = dumper->handle;
+    params.hdr = hdr;
+    params.packet = packet;
+    PCAP_CALL( dump, &params );
+}
 
 void CDECL pcap_dump_close( struct dumper *dumper )
 {
@@ -309,7 +319,7 @@ void CDECL pcap_dump_close( struct dumper *dumper )
 
     if (!dumper) return;
     params.handle = dumper->handle;
-    PCAP_CALL( dump, &params );
+    PCAP_CALL( dump_close, &params );
     free( dumper );
 }
 
@@ -344,8 +354,6 @@ struct dumper * CDECL pcap_dump_open( struct pcap *pcap, const char *filename )
         HeapFree( GetProcessHeap(), 0, params.name );
         return NULL;
     }
-
-    TRACE( "unix_path %s\n", debugstr_a(params.name) );
 
     params.handle     = pcap->handle;
     params.ret_handle = &dumper->handle;
@@ -391,18 +399,21 @@ static void free_devices( struct pcap_interface *devs )
 
 static IP_ADAPTER_ADDRESSES *get_adapters( void )
 {
-    DWORD size = 0;
-    IP_ADAPTER_ADDRESSES *ret;
+    ULONG err, size = 4096;
+    IP_ADAPTER_ADDRESSES *tmp, *ret;
     ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
 
-    if (GetAdaptersAddresses( AF_UNSPEC, flags, NULL, NULL, &size ) != ERROR_BUFFER_OVERFLOW) return NULL;
     if (!(ret = malloc( size ))) return NULL;
-    if (GetAdaptersAddresses( AF_UNSPEC, flags, NULL, ret, &size ))
+    err = GetAdaptersAddresses( AF_UNSPEC, flags, NULL, ret, &size );
+    while (err == ERROR_BUFFER_OVERFLOW)
     {
-        free( ret );
-        return NULL;
+        if (!(tmp = realloc( ret, size ))) break;
+        ret = tmp;
+        err = GetAdaptersAddresses( AF_UNSPEC, flags, NULL, ret, &size );
     }
-    return ret;
+    if (err == ERROR_SUCCESS) return ret;
+    free( ret );
+    return NULL;
 }
 
 static IP_ADAPTER_ADDRESSES *find_adapter( IP_ADAPTER_ADDRESSES *list, const char *name )
@@ -516,7 +527,7 @@ static struct sockaddr *get_broadcast( const IP_ADAPTER_UNICAST_ADDRESS *addr )
         struct sockaddr_in *broadcast_addr_in, *addr_in = (struct sockaddr_in *)addr->Address.lpSockaddr;
         ULONG netmask;
 
-        if (!(broadcast_addr_in = calloc( 1, sizeof(*broadcast_addr_in) ))) return FALSE;
+        if (!(broadcast_addr_in = calloc( 1, sizeof(*broadcast_addr_in) ))) return NULL;
         broadcast_addr_in->sin_family = AF_INET;
         ConvertLengthToIpv4Mask( addr->OnLinkPrefixLength, &netmask );
         broadcast_addr_in->sin_addr.S_un.S_addr = addr_in->sin_addr.S_un.S_addr | ~netmask;
@@ -856,7 +867,7 @@ char * CDECL pcap_lookupdev( char *errbuf )
     if (!ret)
     {
         if (pcap_findalldevs( &devs, errbuf ) == PCAP_ERROR || !devs) return NULL;
-        if ((ret = malloc( strlen(devs->name) + 1 ))) strcpy( ret, devs->name );
+        ret = strdup( devs->name );
         pcap_freealldevs( devs );
     }
     return ret;
@@ -939,10 +950,17 @@ int CDECL pcap_next_ex( struct pcap *pcap, struct pcap_pkthdr_win32 **hdr, const
     TRACE( "%p, %p, %p\n", pcap, hdr, data );
 
     if (!pcap) return PCAP_ERROR;
-    params.handle = pcap->handle;
-    params.hdr    = &pcap->hdr;
-    params.data   = data;
-    if ((ret = PCAP_CALL( next_ex, &params )) == 1) *hdr = &pcap->hdr;
+    params.handle  = pcap->handle;
+    params.hdr     = &pcap->hdr;
+    params.buf     = pcap->buf;
+    params.bufsize = pcap->bufsize;
+    if ((ret = PCAP_CALL( next_ex, &params )) == 1)
+    {
+        *hdr = &pcap->hdr;
+        *data = params.data;
+        pcap->buf = params.buf;
+        pcap->bufsize = params.bufsize;
+    }
     return ret;
 }
 
@@ -960,14 +978,14 @@ const unsigned char * CDECL pcap_next( struct pcap *pcap, struct pcap_pkthdr_win
 }
 
 int CDECL pcap_dispatch( struct pcap *pcap, int count,
-                         void (CALLBACK *callback)(unsigned char *, const struct pcap_pkthdr_win32 *, const unsigned char *),
+                         void (CDECL *callback)(unsigned char *, const struct pcap_pkthdr_win32 *, const unsigned char *),
                          unsigned char *user )
 {
     int processed = 0;
 
     TRACE( "%p, %d, %p, %p\n", pcap, count, callback, user );
 
-    while (processed < count)
+    while (count <= 0 || processed < count)
     {
         struct pcap_pkthdr_win32 *hdr = NULL;
         const unsigned char *data = NULL;
@@ -993,14 +1011,14 @@ int CDECL pcap_dispatch( struct pcap *pcap, int count,
 }
 
 int CDECL pcap_loop( struct pcap *pcap, int count,
-                     void (CALLBACK *callback)(unsigned char *, const struct pcap_pkthdr_win32 *, const unsigned char *),
+                     void (CDECL *callback)(unsigned char *, const struct pcap_pkthdr_win32 *, const unsigned char *),
                      unsigned char *user)
 {
     int processed = 0;
 
     TRACE( "%p, %d, %p, %p\n", pcap, count, callback, user );
 
-    while (processed < count)
+    while (count <= 0 || processed < count)
     {
         struct pcap_pkthdr_win32 *hdr = NULL;
         const unsigned char *data = NULL;
@@ -1158,6 +1176,18 @@ int CDECL pcap_set_datalink( struct pcap *pcap, int link )
     params.handle = pcap->handle;
     params.link   = link;
     return PCAP_CALL( set_datalink, &params );
+}
+
+int CDECL pcap_set_immediate_mode( struct pcap *pcap, int mode )
+{
+    struct set_immediate_mode_params params;
+
+    TRACE( "%p, %d\n", pcap, mode );
+
+    if (!pcap) return PCAP_ERROR;
+    params.handle = pcap->handle;
+    params.mode = mode;
+    return PCAP_CALL( set_immediate_mode, &params );
 }
 
 int CDECL pcap_set_promisc( struct pcap *pcap, int enable )
@@ -1447,7 +1477,7 @@ BOOL WINAPI DllMain( HINSTANCE hinst, DWORD reason, void *reserved )
     {
         DisableThreadLibraryCalls( hinst );
         if (__wine_init_unix_call()) ERR( "No pcap support, expect problems\n" );
-        else
+        else if (!PCAP_CALL( process_attach, NULL ))
         {
             char errbuf[PCAP_ERRBUF_SIZE];
             struct init_params params = { PCAP_CHAR_ENC_UTF_8, errbuf };

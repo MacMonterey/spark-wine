@@ -113,8 +113,6 @@ typedef struct
 	RECT format_rect;
 	INT text_width;			/* width of the widest line in pixels for multi line controls
 					   and just line width for single line controls	*/
-	INT region_posx;		/* Position of cursor relative to region: */
-	INT region_posy;		/* -1: to left, 0: within, 1: to right */
 	EDITWORDBREAKPROCW word_break_proc;
 	INT line_count;			/* number of lines */
 	INT y_offset;			/* scroll offset in number of lines */
@@ -2221,12 +2219,14 @@ static void EDIT_AdjustFormatRect(EDITSTATE *es)
 	    EDIT_UpdateScrollInfo(es);
 	}
 	else
-	/* Windows doesn't care to fix text placement for SL controls */
-		es->format_rect.bottom = es->format_rect.top + es->line_height;
+        {
+            /* Windows doesn't care to fix text placement for SL controls */
+            es->format_rect.bottom = es->format_rect.top + es->line_height;
 
-	/* Always stay within the client area */
-	GetClientRect(es->hwndSelf, &ClientRect);
-	es->format_rect.bottom = min(es->format_rect.bottom, ClientRect.bottom);
+            /* Always stay within the client area */
+            GetClientRect(es->hwndSelf, &ClientRect);
+            es->format_rect.bottom = min(es->format_rect.bottom, ClientRect.bottom);
+        }
 
 	if ((es->style & ES_MULTILINE) && !(es->style & ES_AUTOHSCROLL))
 		EDIT_BuildLineDefs_ML(es, 0, get_text_length(es), 0, NULL);
@@ -2234,6 +2234,14 @@ static void EDIT_AdjustFormatRect(EDITSTATE *es)
 	EDIT_SetCaretPos(es, es->selection_end, es->flags & EF_AFTER_WRAP);
 }
 
+static int EDIT_is_valid_format_rect(const EDITSTATE *es, const RECT *rc)
+{
+    if (IsRectEmpty(rc))
+        return 0;
+    if (es->text_width > (rc->right - rc->left) || (es->line_height * es->line_count) > (rc->bottom - rc->top))
+        return 0;
+    return 1;
+}
 
 /*********************************************************************
  *
@@ -2247,11 +2255,23 @@ static void EDIT_SetRectNP(EDITSTATE *es, const RECT *rc)
 {
 	LONG_PTR ExStyle;
 	INT bw, bh;
+        BOOL too_large = FALSE;
+        RECT edit_rect;
+
 	ExStyle = GetWindowLongPtrW(es->hwndSelf, GWL_EXSTYLE);
 
-	CopyRect(&es->format_rect, rc);
+        if (EDIT_is_valid_format_rect(es, rc))
+        {
+            CopyRect(&es->format_rect, rc);
+            GetClientRect(es->hwndSelf, &edit_rect);
+            too_large = (rc->bottom - rc->top) > (edit_rect.bottom - edit_rect.top);
+        }
+        else
+        {
+            GetClientRect(es->hwndSelf, &es->format_rect);
+        }
 
-	if (ExStyle & WS_EX_CLIENTEDGE) {
+        if (ExStyle & WS_EX_CLIENTEDGE && !too_large) {
 		es->format_rect.left++;
 		es->format_rect.right--;
 
@@ -2619,6 +2639,8 @@ static void EDIT_EM_ReplaceSel(EDITSTATE *es, BOOL can_undo, const WCHAR *lpsz_r
 	    if (!notify_parent(es, EN_CHANGE)) return;
 	}
 	EDIT_InvalidateUniscribeData(es);
+
+	NotifyWinEvent(EVENT_OBJECT_VALUECHANGE, es->hwndSelf, OBJID_CLIENT, 0);
 }
 
 
@@ -2888,6 +2910,7 @@ static BOOL EDIT_EM_Undo(EDITSTATE *es)
 	EDIT_EM_ScrollCaret(es);
 	Free(utext);
 
+	NotifyWinEvent(EVENT_OBJECT_VALUECHANGE, es->hwndSelf, OBJID_CLIENT, 0);
 	TRACE("after UNDO:insertion length = %d, deletion buffer = %s\n",
 			es->undo_insert_count, debugstr_w(es->undo_text));
 	return TRUE;
@@ -3007,6 +3030,9 @@ static inline void EDIT_WM_Cut(EDITSTATE *es)
 static LRESULT EDIT_WM_Char(EDITSTATE *es, WCHAR c)
 {
         BOOL control;
+
+	if (es->bCaptureState)
+		return 1;
 
 	control = GetKeyState(VK_CONTROL) & 0x8000;
 
@@ -3264,6 +3290,9 @@ static LRESULT EDIT_WM_KeyDown(EDITSTATE *es, INT key)
 	BOOL shift;
 	BOOL control;
 
+	if (es->bCaptureState)
+		return 1;
+
 	if (GetKeyState(VK_MENU) & 0x8000)
 		return 0;
 
@@ -3380,6 +3409,7 @@ static LRESULT EDIT_WM_KeyDown(EDITSTATE *es, INT key)
                 {
                     if (!notify_parent(es, EN_UPDATE)) break;
                     notify_parent(es, EN_CHANGE);
+                    EDIT_EM_ScrollCaret(es);
                 }
             }
             break;
@@ -3438,8 +3468,6 @@ static LRESULT EDIT_WM_LButtonDblClk(EDITSTATE *es)
 	e = li + EDIT_CallWordBreakProc(es, li, e - li, ll, WB_RIGHT);
 	EDIT_EM_SetSel(es, s, e, FALSE);
 	EDIT_EM_ScrollCaret(es);
-	es->region_posx = es->region_posy = 0;
-	SetTimer(es->hwndSelf, 0, 100, NULL);
 	return 0;
 }
 
@@ -3460,8 +3488,6 @@ static LRESULT EDIT_WM_LButtonDown(EDITSTATE *es, DWORD keys, INT x, INT y)
 	e = EDIT_CharFromPos(es, x, y, &after_wrap);
 	EDIT_EM_SetSel(es, (keys & MK_SHIFT) ? es->selection_start : e, e, after_wrap);
 	EDIT_EM_ScrollCaret(es);
-	es->region_posx = es->region_posy = 0;
-	SetTimer(es->hwndSelf, 0, 100, NULL);
 
 	if (!(es->flags & EF_FOCUSED))
             SetFocus(es->hwndSelf);
@@ -3478,7 +3504,6 @@ static LRESULT EDIT_WM_LButtonDown(EDITSTATE *es, DWORD keys, INT x, INT y)
 static LRESULT EDIT_WM_LButtonUp(EDITSTATE *es)
 {
 	if (es->bCaptureState) {
-		KillTimer(es->hwndSelf, 0);
 		if (GetCapture() == es->hwndSelf) ReleaseCapture();
 	}
 	es->bCaptureState = FALSE;
@@ -3507,7 +3532,6 @@ static LRESULT EDIT_WM_MouseMove(EDITSTATE *es, INT x, INT y)
 {
 	INT e;
 	BOOL after_wrap;
-	INT prex, prey;
 
         /* If the mouse has been captured by process other than the edit control itself,
          * the windows edit controls will not select the strings with mouse move.
@@ -3515,17 +3539,10 @@ static LRESULT EDIT_WM_MouseMove(EDITSTATE *es, INT x, INT y)
         if (!es->bCaptureState || GetCapture() != es->hwndSelf)
 		return 0;
 
-	/*
-	 *	FIXME: gotta do some scrolling if outside client
-	 *		area.  Maybe reset the timer ?
-	 */
-	prex = x; prey = y;
-	EDIT_ConfinePoint(es, &x, &y);
-	es->region_posx = (prex < x) ? -1 : ((prex > x) ? 1 : 0);
-	es->region_posy = (prey < y) ? -1 : ((prey > y) ? 1 : 0);
 	e = EDIT_CharFromPos(es, x, y, &after_wrap);
 	EDIT_EM_SetSel(es, es->selection_start, e, after_wrap);
 	EDIT_SetCaretPos(es,es->selection_end,es->flags & EF_AFTER_WRAP);
+	EDIT_EM_ScrollCaret(es);
 	return 0;
 }
 
@@ -3830,6 +3847,7 @@ static void EDIT_WM_SetText(EDITSTATE *es, LPCWSTR text)
     EDIT_EM_ScrollCaret(es);
     EDIT_UpdateScrollInfo(es);
     EDIT_InvalidateUniscribeData(es);
+    NotifyWinEvent(EVENT_OBJECT_VALUECHANGE, es->hwndSelf, OBJID_CLIENT, 0);
 }
 
 
@@ -3922,25 +3940,6 @@ static LRESULT EDIT_WM_SysKeyDown(EDITSTATE *es, INT key, DWORD key_data)
 			return 0;
 	}
 	return DefWindowProcW(es->hwndSelf, WM_SYSKEYDOWN, key, key_data);
-}
-
-
-/*********************************************************************
- *
- *	WM_TIMER
- *
- */
-static void EDIT_WM_Timer(EDITSTATE *es)
-{
-	if (es->region_posx < 0) {
-		EDIT_MoveBackward(es, TRUE);
-	} else if (es->region_posx > 0) {
-		EDIT_MoveForward(es, TRUE);
-	}
-/*
- *	FIXME: gotta do some vertical scrolling here, like
- *		EDIT_EM_LineScroll(hwnd, 0, 1);
- */
 }
 
 /*********************************************************************
@@ -4913,10 +4912,6 @@ static LRESULT CALLBACK EDIT_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
     case WM_SYSKEYDOWN:
         result = EDIT_WM_SysKeyDown(es, (INT)wParam, (DWORD)lParam);
-        break;
-
-    case WM_TIMER:
-        EDIT_WM_Timer(es);
         break;
 
     case WM_VSCROLL:

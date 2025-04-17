@@ -20,10 +20,10 @@
 #include <stdlib.h>
 #include "windef.h"
 #include "winternl.h"
-#include "cxx.h"
+#include "cppexcept.h"
 
-void* __cdecl operator_new(size_t);
 void __cdecl operator_delete(void*);
+void* __cdecl operator_new(size_t) __WINE_ALLOC_SIZE(1) __WINE_DEALLOC(operator_delete) __WINE_MALLOC;
 
 bool __cdecl Context_IsCurrentTaskCollectionCanceling(void);
 

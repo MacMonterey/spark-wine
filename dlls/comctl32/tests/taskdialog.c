@@ -24,7 +24,6 @@
 #include "winuser.h"
 #include "commctrl.h"
 
-#include "wine/heap.h"
 #include "wine/test.h"
 #include "v6util.h"
 #include "msg.h"
@@ -404,7 +403,7 @@ static void run_test_(TASKDIALOGCONFIG *info, int expect_button, int expect_radi
     int i;
 
     /* Allocate messages to test against, plus 2 implicit and 1 empty */
-    msg_start = msg = heap_alloc_zero(sizeof(*msg) * (test_messages_len + 3));
+    msg_start = msg = calloc(test_messages_len + 3, sizeof(*msg));
 
     /* Always needed, thus made implicit */
     init_test_message(TDN_DIALOG_CONSTRUCTED, 0, 0, msg++);
@@ -425,7 +424,7 @@ static void run_test_(TASKDIALOGCONFIG *info, int expect_button, int expect_radi
     ok_(file, line)(ret_radio == expect_radio_button,
                      "Wrong radio button. Expected %d, got %d\n", expect_radio_button, ret_radio);
 
-    heap_free(msg_start);
+    free(msg_start);
 }
 
 static const LONG_PTR test_ref_data = 123456;
@@ -722,10 +721,9 @@ static HRESULT CALLBACK taskdialog_callback_proc_progress_bar(HWND hwnd, UINT no
         ret = SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_STATE, PBST_PAUSED, 0);
         ok(ret == PBST_NORMAL, "Expect state: %d got state: %lx\n", PBST_NORMAL, ret);
         ret = SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_STATE, PBST_ERROR, 0);
-        /* Progress bar has fixme on handling PBM_SETSTATE message */
-        todo_wine ok(ret == PBST_PAUSED, "Expect state: %d got state: %lx\n", PBST_PAUSED, ret);
+        ok(ret == PBST_PAUSED, "Expect state: %d got state: %lx\n", PBST_PAUSED, ret);
         ret = SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_STATE, PBST_NORMAL, 0);
-        todo_wine ok(ret == PBST_ERROR, "Expect state: %d got state: %lx\n", PBST_ERROR, ret);
+        ok(ret == PBST_ERROR, "Expect state: %d got state: %lx\n", PBST_ERROR, ret);
 
         /* TDM_SET_PROGRESS_BAR_RANGE */
         ret = SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_RANGE, 0, MAKELPARAM(0, 200));

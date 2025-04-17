@@ -30,7 +30,6 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include <assert.h>
-#include <stdio.h>
 #include <limits.h>
 #include <windows.h>
 #include <winreg.h>
@@ -214,7 +213,7 @@ struct setting
     HKEY root;    /* the key on which path is rooted */
     WCHAR *path;   /* path in the registry rooted at root  */
     WCHAR *name;   /* name of the registry value. if null, this means delete the key  */
-    WCHAR *value;  /* contents of the registry value. if null, this means delete the value  */
+    void  *value;  /* contents of the registry value. if null, this means delete the value  */
     DWORD type;   /* type of registry value. REG_SZ or REG_DWORD for now */
 };
 
@@ -502,15 +501,9 @@ static void process_setting(struct setting *s)
 
     if (s->value)
     {
-	WINE_TRACE("Setting %s:%s to '%s'\n", wine_dbgstr_w(s->path),
-                   wine_dbgstr_w(s->name), wine_dbgstr_w(s->value));
         set_config_key(s->root, s->path, MAXIMUM_ALLOWED, s->name, s->value, s->type);
         if (needs_wow64)
-        {
-            WINE_TRACE("Setting 32-bit %s:%s to '%s'\n", wine_dbgstr_w(s->path),
-                       wine_dbgstr_w(s->name), wine_dbgstr_w(s->value));
             set_config_key(s->root, s->path, MAXIMUM_ALLOWED | KEY_WOW64_32KEY, s->name, s->value, s->type);
-        }
     }
     else
     {

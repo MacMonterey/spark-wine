@@ -18,11 +18,31 @@
  *
  */
 
-#include "ntdll_test.h"
-#include <winnls.h>
+#include <stdarg.h>
 #include <stdio.h>
 
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
+#include "windef.h"
+#include "winbase.h"
+#include "winternl.h"
+#include "winnls.h"
+#include "ddk/ntddk.h"
+#include "psapi.h"
+#include "wine/test.h"
+
+struct PROCESS_BASIC_INFORMATION_PRIVATE
+{
+    NTSTATUS  ExitStatus;
+    PPEB      PebBaseAddress;
+    DWORD_PTR AffinityMask;
+    DWORD_PTR BasePriority;
+    ULONG_PTR UniqueProcessId;
+    ULONG_PTR InheritedFromUniqueProcessId;
+};
+
 static NTSTATUS (WINAPI * pNtQuerySystemInformation)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+static NTSTATUS (WINAPI * pNtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
 static NTSTATUS (WINAPI * pNtSetSystemInformation)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG);
 static NTSTATUS (WINAPI * pRtlGetNativeSystemInformation)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
 static NTSTATUS (WINAPI * pNtQuerySystemInformationEx)(SYSTEM_INFORMATION_CLASS, void*, ULONG, void*, ULONG, ULONG*);
@@ -37,7 +57,6 @@ static NTSTATUS (WINAPI * pNtMapViewOfSection)(HANDLE,HANDLE,PVOID*,ULONG_PTR,SI
 static NTSTATUS (WINAPI * pNtUnmapViewOfSection)(HANDLE,PVOID);
 static NTSTATUS (WINAPI * pNtClose)(HANDLE);
 static ULONG    (WINAPI * pNtGetCurrentProcessorNumber)(void);
-static BOOL     (WINAPI * pIsWow64Process)(HANDLE, PBOOL);
 static BOOL     (WINAPI * pGetLogicalProcessorInformationEx)(LOGICAL_PROCESSOR_RELATIONSHIP,SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*,DWORD*);
 static DEP_SYSTEM_POLICY_TYPE (WINAPI * pGetSystemDEPPolicy)(void);
 static NTSTATUS (WINAPI * pNtOpenThread)(HANDLE *, ACCESS_MASK, const OBJECT_ATTRIBUTES *, const CLIENT_ID *);
@@ -47,8 +66,10 @@ static NTSTATUS (WINAPI * pNtSetInformationDebugObject)(HANDLE,DEBUGOBJECTINFOCL
 static NTSTATUS (WINAPI * pDbgUiConvertStateChangeStructure)(DBGUI_WAIT_STATE_CHANGE*,DEBUG_EVENT*);
 static HANDLE   (WINAPI * pDbgUiGetThreadDebugObject)(void);
 static void     (WINAPI * pDbgUiSetThreadDebugObject)(HANDLE);
+static NTSTATUS (WINAPI * pNtSystemDebugControl)(SYSDBG_COMMAND,PVOID,ULONG,PVOID,ULONG,PULONG);
 
 static BOOL is_wow64;
+static BOOL old_wow64;
 
 /* one_before_last_pid is used to be able to compare values of a still running process
    with the output of the test_query_process_times and test_query_process_handlecount tests.
@@ -80,6 +101,7 @@ static void InitFunctionPtrs(void)
     HMODULE hkernel32 = GetModuleHandleA("kernel32");
 
     NTDLL_GET_PROC(NtQuerySystemInformation);
+    NTDLL_GET_PROC(NtQueryInformationProcess);
     NTDLL_GET_PROC(NtQuerySystemInformationEx);
     NTDLL_GET_PROC(NtSetSystemInformation);
     NTDLL_GET_PROC(RtlGetNativeSystemInformation);
@@ -101,9 +123,20 @@ static void InitFunctionPtrs(void)
     NTDLL_GET_PROC(DbgUiConvertStateChangeStructure);
     NTDLL_GET_PROC(DbgUiGetThreadDebugObject);
     NTDLL_GET_PROC(DbgUiSetThreadDebugObject);
+    NTDLL_GET_PROC(NtSystemDebugControl);
 
-    pIsWow64Process = (void *)GetProcAddress(hkernel32, "IsWow64Process");
-    if (!pIsWow64Process || !pIsWow64Process( GetCurrentProcess(), &is_wow64 )) is_wow64 = FALSE;
+    if (!IsWow64Process( GetCurrentProcess(), &is_wow64 )) is_wow64 = FALSE;
+
+    if (is_wow64)
+    {
+        TEB64 *teb64 = ULongToPtr( NtCurrentTeb()->GdiBatchCount );
+
+        if (teb64)
+        {
+            PEB64 *peb64 = ULongToPtr(teb64->Peb);
+            old_wow64 = !peb64->LdrData;
+        }
+    }
 
     pGetSystemDEPPolicy = (void *)GetProcAddress(hkernel32, "GetSystemDEPPolicy");
     pGetLogicalProcessorInformationEx = (void *) GetProcAddress(hkernel32, "GetLogicalProcessorInformationEx");
@@ -183,7 +216,7 @@ static void test_query_basic(void)
             (void *)sbi.HighestUserAddress, (void *)sbi2.HighestUserAddress);
 #else
     ok( sbi.HighestUserAddress == (void *)0x7ffeffff, "wrong limit %p\n", sbi.HighestUserAddress);
-    todo_wine_if( is_wow64 )
+    todo_wine_if( old_wow64 )
     ok( sbi2.HighestUserAddress == (is_wow64 ? (void *)0xfffeffff : (void *)0x7ffeffff),
         "wrong limit %p\n", sbi.HighestUserAddress);
 #endif
@@ -206,7 +239,7 @@ static void test_query_basic(void)
         broken(status == STATUS_INVALID_INFO_CLASS) || broken(status == STATUS_NOT_IMPLEMENTED),
         "failed %lx\n", status );
     if (!status || status == STATUS_INFO_LENGTH_MISMATCH)
-        todo_wine_if( is_wow64 )
+        todo_wine_if( old_wow64 )
         ok( !status == !is_wow64, "got wrong status %lx wow64 %u\n", status, is_wow64 );
     if (!status)
     {
@@ -337,16 +370,15 @@ static void test_query_cpu(void)
         if (winetest_debug > 1) trace("Processor FeatureSet : %08lx\n", sci.ProcessorFeatureBits);
         ok( sci.ProcessorFeatureBits != 0, "Expected some features for this processor, got %08lx\n",
             sci.ProcessorFeatureBits);
-
-        ok( sci.ProcessorLevel == sci2.ProcessorLevel, "ProcessorLevel differs %x / %x\n",
-            sci.ProcessorLevel, sci2.ProcessorLevel );
-        ok( sci.ProcessorRevision == sci2.ProcessorRevision, "ProcessorRevision differs %x / %x\n",
-            sci.ProcessorRevision, sci2.ProcessorRevision );
-        ok( sci.MaximumProcessors == sci2.MaximumProcessors, "MaximumProcessors differs %x / %x\n",
-            sci.MaximumProcessors, sci2.MaximumProcessors );
-        ok( sci.ProcessorFeatureBits == sci2.ProcessorFeatureBits, "ProcessorFeatureBits differs %lx / %lx\n",
-            sci.ProcessorFeatureBits, sci2.ProcessorFeatureBits );
     }
+    ok( sci.ProcessorLevel == sci2.ProcessorLevel, "ProcessorLevel differs %x / %x\n",
+        sci.ProcessorLevel, sci2.ProcessorLevel );
+    ok( sci.ProcessorRevision == sci2.ProcessorRevision, "ProcessorRevision differs %x / %x\n",
+        sci.ProcessorRevision, sci2.ProcessorRevision );
+    ok( sci.MaximumProcessors == sci2.MaximumProcessors, "MaximumProcessors differs %x / %x\n",
+        sci.MaximumProcessors, sci2.MaximumProcessors );
+    ok( sci.ProcessorFeatureBits == sci2.ProcessorFeatureBits, "ProcessorFeatureBits differs %lx / %lx\n",
+        sci.ProcessorFeatureBits, sci2.ProcessorFeatureBits );
 
     memset(&sci3, 0xcc, sizeof(sci3));
     status = pNtQuerySystemInformation(SystemEmulationProcessorInformation, &sci3, sizeof(sci3), &len);
@@ -1074,6 +1106,7 @@ static void test_query_interrupt(void)
 
 static void test_time_adjustment(void)
 {
+    SYSTEM_LEAP_SECOND_INFORMATION leap;
     SYSTEM_TIME_ADJUSTMENT_QUERY query;
     SYSTEM_TIME_ADJUSTMENT adjust;
     NTSTATUS status;
@@ -1104,6 +1137,21 @@ static void test_time_adjustment(void)
     status = pNtSetSystemInformation( SystemTimeAdjustmentInformation, &adjust, sizeof(adjust)+1 );
     todo_wine
     ok( status == STATUS_INFO_LENGTH_MISMATCH, "got %08lx\n", status );
+
+    len = 0;
+    memset( &leap, 0xcc, sizeof(leap) );
+    status = pNtQuerySystemInformation( SystemLeapSecondInformation, &leap, sizeof(leap), &len );
+    if (status == STATUS_INVALID_INFO_CLASS)
+    {
+        win_skip( "NtQuerySystemInformation(SystemLeapSecondInformation) is not implemented.\n" );
+    }
+    else
+    {
+        ok( status == STATUS_SUCCESS, "got %08lx\n", status );
+        ok( len == sizeof(leap), "wrong len %lu\n", len );
+        ok( leap.Enabled == 1, "got %u\n", leap.Enabled );
+        ok( !leap.Flags, "got %lx\n", leap.Flags );
+    }
 }
 
 static void test_query_kerndebug(void)
@@ -1735,7 +1783,8 @@ static void test_query_process_wow64(void)
     status = NtQueryInformationProcess(GetCurrentProcess(), ProcessWow64Information, pbi, sizeof(ULONG_PTR), NULL);
     ok( status == STATUS_SUCCESS, "Expected STATUS_SUCCESS, got %08lx\n", status);
     ok( is_wow64 == (pbi[0] != 0), "is_wow64 %x, pbi[0] %Ix\n", is_wow64, pbi[0]);
-    ok( pbi[0] != dummy, "pbi[0] %Ix\n", pbi[0]);
+    if (is_wow64)
+        ok( (void *)pbi[0] == NtCurrentTeb()->Peb, "pbi[0] %Ix / %p\n", pbi[0], NtCurrentTeb()->Peb);
     ok( pbi[1] == dummy, "pbi[1] changed to %Ix\n", pbi[1]);
     /* Test written size on 64 bit by checking high 32 bit buffer */
     if (sizeof(ULONG_PTR) > sizeof(DWORD))
@@ -1750,6 +1799,8 @@ static void test_query_process_wow64(void)
     status = NtQueryInformationProcess(GetCurrentProcess(), ProcessWow64Information, pbi, sizeof(ULONG_PTR), &ReturnLength);
     ok( status == STATUS_SUCCESS, "Expected STATUS_SUCCESS, got %08lx\n", status);
     ok( is_wow64 == (pbi[0] != 0), "is_wow64 %x, pbi[0] %Ix\n", is_wow64, pbi[0]);
+    if (is_wow64)
+        ok( (void *)pbi[0] == NtCurrentTeb()->Peb, "pbi[0] %Ix / %p\n", pbi[0], NtCurrentTeb()->Peb);
     ok( pbi[1] == dummy, "pbi[1] changed to %Ix\n", pbi[1]);
     ok( ReturnLength == sizeof(ULONG_PTR), "Inconsistent length %ld\n", ReturnLength);
 
@@ -1760,7 +1811,7 @@ static void test_query_process_wow64(void)
     ok( status == STATUS_INFO_LENGTH_MISMATCH, "Expected STATUS_INFO_LENGTH_MISMATCH, got %08lx\n", status);
     ok( pbi[0] == dummy, "pbi[0] changed to %Ix\n", pbi[0]);
     ok( pbi[1] == dummy, "pbi[1] changed to %Ix\n", pbi[1]);
-    todo_wine ok( ReturnLength == 0xdeadbeef, "Expected 0xdeadbeef, got %ld\n", ReturnLength);
+    ok( ReturnLength == 0xdeadbeef, "Expected 0xdeadbeef, got %ld\n", ReturnLength);
 
     /* Everything is correct except a too large buffer size */
     pbi[0] = pbi[1] = dummy;
@@ -1769,7 +1820,7 @@ static void test_query_process_wow64(void)
     ok( status == STATUS_INFO_LENGTH_MISMATCH, "Expected STATUS_INFO_LENGTH_MISMATCH, got %08lx\n", status);
     ok( pbi[0] == dummy, "pbi[0] changed to %Ix\n", pbi[0]);
     ok( pbi[1] == dummy, "pbi[1] changed to %Ix\n", pbi[1]);
-    todo_wine ok( ReturnLength == 0xdeadbeef, "Expected 0xdeadbeef, got %ld\n", ReturnLength);
+    ok( ReturnLength == 0xdeadbeef, "Expected 0xdeadbeef, got %ld\n", ReturnLength);
 }
 
 static void test_query_process_basic(void)
@@ -2041,6 +2092,7 @@ static void test_query_process_debug_port(int argc, char **argv)
     STARTUPINFOA si = { 0 };
     NTSTATUS status;
     BOOL ret;
+    ULONG len;
 
     sprintf(cmdline, "%s %s %s", argv[0], argv[1], "debuggee");
 
@@ -2061,27 +2113,40 @@ static void test_query_process_debug_port(int argc, char **argv)
             NULL, sizeof(debug_port), NULL);
     ok(status == STATUS_ACCESS_VIOLATION, "Expected STATUS_ACCESS_VIOLATION, got %#lx.\n", status);
 
+    len = 0xdeadbeef;
     status = NtQueryInformationProcess(NULL, ProcessDebugPort,
-            &debug_port, sizeof(debug_port), NULL);
+            &debug_port, sizeof(debug_port), &len);
     ok(status == STATUS_INVALID_HANDLE, "Expected STATUS_INVALID_HANDLE, got %#lx.\n", status);
+    ok(len == 0xdeadbeef || broken(len != sizeof(debug_port)), /* wow64 */
+       "len set to %lx\n", len );
 
+    len = 0xdeadbeef;
     status = NtQueryInformationProcess(GetCurrentProcess(), ProcessDebugPort,
-            &debug_port, sizeof(debug_port) - 1, NULL);
+            &debug_port, sizeof(debug_port) - 1, &len);
     ok(status == STATUS_INFO_LENGTH_MISMATCH, "Expected STATUS_INFO_LENGTH_MISMATCH, got %#lx.\n", status);
+    ok(len == 0xdeadbeef || broken(len != sizeof(debug_port)), /* wow64 */
+       "len set to %lx\n", len );
 
+    len = 0xdeadbeef;
     status = NtQueryInformationProcess(GetCurrentProcess(), ProcessDebugPort,
-            &debug_port, sizeof(debug_port) + 1, NULL);
+            &debug_port, sizeof(debug_port) + 1, &len);
     ok(status == STATUS_INFO_LENGTH_MISMATCH, "Expected STATUS_INFO_LENGTH_MISMATCH, got %#lx.\n", status);
+    ok(len == 0xdeadbeef || broken(len != sizeof(debug_port)), /* wow64 */
+       "len set to %lx\n", len );
 
+    len = 0xdeadbeef;
     status = NtQueryInformationProcess(GetCurrentProcess(), ProcessDebugPort,
-            &debug_port, sizeof(debug_port), NULL);
+            &debug_port, sizeof(debug_port), &len);
     ok(!status, "NtQueryInformationProcess failed, status %#lx.\n", status);
     ok(debug_port == 0, "Expected port 0, got %#Ix.\n", debug_port);
+    ok(len == sizeof(debug_port), "len set to %lx\n", len );
 
+    len = 0xdeadbeef;
     status = NtQueryInformationProcess(pi.hProcess, ProcessDebugPort,
-            &debug_port, sizeof(debug_port), NULL);
+            &debug_port, sizeof(debug_port), &len);
     ok(!status, "NtQueryInformationProcess failed, status %#lx.\n", status);
     ok(debug_port == ~(DWORD_PTR)0, "Expected port %#Ix, got %#Ix.\n", ~(DWORD_PTR)0, debug_port);
+    ok(len == sizeof(debug_port), "len set to %lx\n", len );
 
     for (;;)
     {
@@ -2201,13 +2266,13 @@ static void test_query_process_debug_port_custom_dacl(int argc, char **argv)
 
     if (!pDbgUiSetThreadDebugObject)
     {
-        skip("DbgUiGetThreadDebugObject not found\n");
+        win_skip("DbgUiGetThreadDebugObject not found\n");
         return;
     }
 
     if (!pDbgUiGetThreadDebugObject)
     {
-        skip("DbgUiSetThreadDebugObject not found\n");
+        win_skip("DbgUiSetThreadDebugObject not found\n");
         return;
     }
 
@@ -2321,14 +2386,17 @@ static void test_query_process_image_file_name(void)
     status = NtQueryInformationProcess( GetCurrentProcess(), ProcessImageFileName, &image_file_name, sizeof(image_file_name), &ReturnLength);
     ok( status == STATUS_INFO_LENGTH_MISMATCH, "Expected STATUS_INFO_LENGTH_MISMATCH, got %08lx\n", status);
 
-    buffer = heap_alloc(ReturnLength);
+    buffer = malloc(ReturnLength);
+    memset( buffer, 0xcc, ReturnLength );
     status = NtQueryInformationProcess( GetCurrentProcess(), ProcessImageFileName, buffer, ReturnLength, &ReturnLength);
     ok( status == STATUS_SUCCESS, "Expected STATUS_SUCCESS, got %08lx\n", status);
+    ok( buffer->MaximumLength == buffer->Length + sizeof(WCHAR), "got %u, %u.\n", buffer->Length, buffer->MaximumLength );
+    ok ( !buffer->Buffer[buffer->Length / sizeof(WCHAR)], "got %#x.\n", buffer->Buffer[buffer->Length / sizeof(WCHAR)] );
     todo_wine
     ok(!memcmp(buffer->Buffer, deviceW, sizeof(deviceW)),
         "Expected image name to begin with \\Device\\, got %s\n",
         wine_dbgstr_wn(buffer->Buffer, buffer->Length / sizeof(WCHAR)));
-    heap_free(buffer);
+    free(buffer);
 
     status = NtQueryInformationProcess(NULL, ProcessImageFileNameWin32, &image_file_name, sizeof(image_file_name), NULL);
     if (status == STATUS_INVALID_INFO_CLASS)
@@ -2344,13 +2412,16 @@ static void test_query_process_image_file_name(void)
     status = NtQueryInformationProcess( GetCurrentProcess(), ProcessImageFileNameWin32, &image_file_name, sizeof(image_file_name), &ReturnLength);
     ok( status == STATUS_INFO_LENGTH_MISMATCH, "Expected STATUS_INFO_LENGTH_MISMATCH, got %08lx\n", status);
 
-    buffer = heap_alloc(ReturnLength);
+    buffer = malloc(ReturnLength);
+    memset( buffer, 0xcc, ReturnLength );
     status = NtQueryInformationProcess( GetCurrentProcess(), ProcessImageFileNameWin32, buffer, ReturnLength, &ReturnLength);
     ok( status == STATUS_SUCCESS, "Expected STATUS_SUCCESS, got %08lx\n", status);
+    ok( buffer->MaximumLength == buffer->Length + sizeof(WCHAR), "got %u, %u.\n", buffer->Length, buffer->MaximumLength );
+    ok ( !buffer->Buffer[buffer->Length / sizeof(WCHAR)], "got %#x.\n", buffer->Buffer[buffer->Length / sizeof(WCHAR)] );
     ok(memcmp(buffer->Buffer, deviceW, sizeof(deviceW)),
         "Expected image name not to begin with \\Device\\, got %s\n",
         wine_dbgstr_wn(buffer->Buffer, buffer->Length / sizeof(WCHAR)));
-    heap_free(buffer);
+    free(buffer);
 }
 
 static void test_query_process_image_info(void)
@@ -2398,6 +2469,7 @@ static void test_query_process_debug_object_handle(int argc, char **argv)
     BOOL ret;
     HANDLE debug_object;
     NTSTATUS status;
+    ULONG len;
 
     sprintf(cmdline, "%s %s %s", argv[0], argv[1], "debuggee");
 
@@ -2407,57 +2479,71 @@ static void test_query_process_debug_object_handle(int argc, char **argv)
     ok(ret, "CreateProcess failed with last error %lu\n", GetLastError());
     if (!ret) return;
 
-    status = NtQueryInformationProcess(NULL, ProcessDebugObjectHandle, NULL,
-            0, NULL);
+    len = 0xdeadbeef;
+    status = NtQueryInformationProcess(NULL, ProcessDebugObjectHandle, NULL, 0, &len);
     ok(status == STATUS_INFO_LENGTH_MISMATCH,
        "Expected NtQueryInformationProcess to return STATUS_INFO_LENGTH_MISMATCH, got 0x%08lx\n",
        status);
+    ok(len == 0xdeadbeef || broken(len == 0xfffffffc || len == 0xffc), /* wow64 */
+       "len set to %lx\n", len );
 
-    status = NtQueryInformationProcess(NULL, ProcessDebugObjectHandle, NULL,
-            sizeof(debug_object), NULL);
+    len = 0xdeadbeef;
+    status = NtQueryInformationProcess(NULL, ProcessDebugObjectHandle, NULL, sizeof(debug_object), &len);
     ok(status == STATUS_INVALID_HANDLE ||
        status == STATUS_ACCESS_VIOLATION, /* XP */
        "Expected NtQueryInformationProcess to return STATUS_INVALID_HANDLE, got 0x%08lx\n", status);
+    ok(len == 0xdeadbeef || broken(len == 0xfffffffc || len == 0xffc), /* wow64 */
+       "len set to %lx\n", len );
 
     status = NtQueryInformationProcess(GetCurrentProcess(),
-            ProcessDebugObjectHandle, NULL, sizeof(debug_object), NULL);
+            ProcessDebugObjectHandle, NULL, sizeof(debug_object), &len);
     ok(status == STATUS_ACCESS_VIOLATION,
        "Expected NtQueryInformationProcess to return STATUS_ACCESS_VIOLATION, got 0x%08lx\n", status);
+    ok(len == 0xdeadbeef || broken(len == 0xfffffffc || len == 0xffc), /* wow64 */
+       "len set to %lx\n", len );
 
     status = NtQueryInformationProcess(NULL, ProcessDebugObjectHandle,
             &debug_object, sizeof(debug_object), NULL);
     ok(status == STATUS_INVALID_HANDLE,
        "Expected NtQueryInformationProcess to return STATUS_ACCESS_VIOLATION, got 0x%08lx\n", status);
 
+    len = 0xdeadbeef;
     status = NtQueryInformationProcess(GetCurrentProcess(),
-            ProcessDebugObjectHandle, &debug_object,
-            sizeof(debug_object) - 1, NULL);
+            ProcessDebugObjectHandle, &debug_object, sizeof(debug_object) - 1, &len);
     ok(status == STATUS_INFO_LENGTH_MISMATCH,
        "Expected NtQueryInformationProcess to return STATUS_INFO_LENGTH_MISMATCH, got 0x%08lx\n", status);
+    ok(len == 0xdeadbeef || broken(len == 0xfffffffc || len == 0xffc), /* wow64 */
+       "len set to %lx\n", len );
 
+    len = 0xdeadbeef;
     status = NtQueryInformationProcess(GetCurrentProcess(),
-            ProcessDebugObjectHandle, &debug_object,
-            sizeof(debug_object) + 1, NULL);
+            ProcessDebugObjectHandle, &debug_object, sizeof(debug_object) + 1, &len);
     ok(status == STATUS_INFO_LENGTH_MISMATCH,
        "Expected NtQueryInformationProcess to return STATUS_INFO_LENGTH_MISMATCH, got 0x%08lx\n", status);
+    ok(len == 0xdeadbeef || broken(len == 0xfffffffc || len == 0xffc), /* wow64 */
+       "len set to %lx\n", len );
 
+    len = 0xdeadbeef;
     debug_object = (HANDLE)0xdeadbeef;
     status = NtQueryInformationProcess(GetCurrentProcess(),
             ProcessDebugObjectHandle, &debug_object,
-            sizeof(debug_object), NULL);
+            sizeof(debug_object), &len);
     ok(status == STATUS_PORT_NOT_SET,
        "Expected NtQueryInformationProcess to return STATUS_PORT_NOT_SET, got 0x%08lx\n", status);
     ok(debug_object == NULL ||
        broken(debug_object == (HANDLE)0xdeadbeef), /* Wow64 */
        "Expected debug object handle to be NULL, got %p\n", debug_object);
+    ok(len == sizeof(debug_object), "len set to %lx\n", len );
 
+    len = 0xdeadbeef;
     debug_object = (HANDLE)0xdeadbeef;
     status = NtQueryInformationProcess(pi.hProcess, ProcessDebugObjectHandle,
-            &debug_object, sizeof(debug_object), NULL);
+            &debug_object, sizeof(debug_object), &len);
     ok(status == STATUS_SUCCESS,
        "Expected NtQueryInformationProcess to return STATUS_SUCCESS, got 0x%08lx\n", status);
     ok(debug_object != NULL,
        "Expected debug object handle to be non-NULL, got %p\n", debug_object);
+    ok(len == sizeof(debug_object), "len set to %lx\n", len );
     status = NtClose( debug_object );
     ok( !status, "NtClose failed %lx\n", status );
 
@@ -2630,6 +2716,59 @@ static void test_query_process_debug_flags(int argc, char **argv)
         ret = CloseHandle(pi.hProcess);
         ok(ret, "CloseHandle failed, last error %#lx.\n", GetLastError());
     }
+}
+
+static void test_query_process_quota_limits(void)
+{
+    QUOTA_LIMITS qlimits;
+    NTSTATUS status;
+    HANDLE process;
+    ULONG ret_len;
+
+    status = NtQueryInformationProcess(NULL, ProcessQuotaLimits, NULL, sizeof(qlimits), NULL);
+    ok(status == STATUS_INVALID_HANDLE, "NtQueryInformationProcess failed, status %#lx.\n", status);
+
+    status = NtQueryInformationProcess(NULL, ProcessQuotaLimits, &qlimits, sizeof(qlimits), NULL);
+    ok(status == STATUS_INVALID_HANDLE, "NtQueryInformationProcess failed, status %#lx.\n", status);
+
+    process = GetCurrentProcess();
+    status = NtQueryInformationProcess( process, ProcessQuotaLimits, &qlimits, 2, &ret_len);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "NtQueryInformationProcess failed, status %#lx.\n", status);
+
+    memset(&qlimits, 0, sizeof(qlimits));
+    status = NtQueryInformationProcess( process, ProcessQuotaLimits, &qlimits, sizeof(qlimits), &ret_len);
+    ok(status == STATUS_SUCCESS, "NtQueryInformationProcess failed, status %#lx.\n", status);
+    ok(sizeof(qlimits) == ret_len, "len set to %lx\n", ret_len);
+    ok(qlimits.MinimumWorkingSetSize == 204800,"Expected MinimumWorkingSetSize = 204800, got %s\n",
+        wine_dbgstr_longlong(qlimits.MinimumWorkingSetSize));
+    ok(qlimits.MaximumWorkingSetSize == 1413120,"Expected MaximumWorkingSetSize = 1413120, got %s\n",
+        wine_dbgstr_longlong(qlimits.MaximumWorkingSetSize));
+    ok(qlimits.PagefileLimit == ~0,"Expected PagefileLimit = ~0, got %s\n",
+        wine_dbgstr_longlong(qlimits.PagefileLimit));
+    ok(qlimits.TimeLimit.QuadPart == ~0,"Expected TimeLimit = ~0, got %s\n",
+        wine_dbgstr_longlong(qlimits.TimeLimit.QuadPart));
+
+    if (winetest_debug > 1)
+    {
+        trace("Quota Limits:\n");
+        trace("PagedPoolLimit: %s\n", wine_dbgstr_longlong(qlimits.PagedPoolLimit));
+        trace("NonPagedPoolLimit: %s\n", wine_dbgstr_longlong(qlimits.NonPagedPoolLimit));
+    }
+
+    memset(&qlimits, 0, sizeof(qlimits));
+    status = NtQueryInformationProcess( process, ProcessQuotaLimits, &qlimits, sizeof(qlimits) * 2, &ret_len);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "NtQueryInformationProcess failed, status %#lx.\n", status);
+    ok(sizeof(qlimits) == ret_len, "len set to %lx\n", ret_len);
+
+    memset(&qlimits, 0, sizeof(qlimits));
+    status = NtQueryInformationProcess( process, ProcessQuotaLimits, &qlimits, sizeof(qlimits) - 1, &ret_len);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "NtQueryInformationProcess failed, status %#lx.\n", status);
+    ok(sizeof(qlimits) == ret_len, "len set to %lx\n", ret_len);
+
+    memset(&qlimits, 0, sizeof(qlimits));
+    status = NtQueryInformationProcess( process, ProcessQuotaLimits, &qlimits, sizeof(qlimits) + 1, &ret_len);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "NtQueryInformationProcess failed, status %#lx.\n", status);
+    ok(sizeof(qlimits) == ret_len, "len set to %lx\n", ret_len);
 }
 
 static void test_readvirtualmemory(void)
@@ -2845,7 +2984,7 @@ static void test_queryvirtualmemory(void)
     char stackbuf[42];
     HMODULE module;
     void *user_shared_data = (void *)0x7ffe0000;
-    char buffer[1024];
+    void *buffer[256];
     MEMORY_SECTION_NAME *name = (MEMORY_SECTION_NAME *)buffer;
     SYSTEM_BASIC_INFORMATION sbi;
 
@@ -3136,6 +3275,128 @@ static void test_affinity(void)
         "Unexpected thread affinity\n" );
 }
 
+static void test_priority(void)
+{
+    NTSTATUS status;
+    DWORD proc_priority;
+    int thread_base_priority, expected_nt_priority;
+    ULONG nt_thread_priority;
+    THREAD_BASIC_INFORMATION tbi;
+    DECLSPEC_ALIGN(8) PROCESS_PRIORITY_CLASS ppc; /* needs align, or STATUS_DATATYPE_MISALIGNMENT is returned */
+    struct PROCESS_BASIC_INFORMATION_PRIVATE pbi;
+    BOOL ret;
+
+    /* Change process priority class to HIGH_PRIORITY_CLASS and test */
+    ret = SetPriorityClass( GetCurrentProcess(), HIGH_PRIORITY_CLASS );
+    ok( ret, "SetPriorityClass to HIGH_PRIORITY_CLASS failed: %lu\n", GetLastError() );
+    proc_priority = GetPriorityClass( GetCurrentProcess() );
+    ok( proc_priority == HIGH_PRIORITY_CLASS, "Expected HIGH_PRIORITY_CLASS, got %lu\n", proc_priority );
+    status = pNtQueryInformationProcess( GetCurrentProcess(), ProcessPriorityClass, &ppc, sizeof(ppc), NULL );
+    ok( status == STATUS_SUCCESS, "NtQueryInformationProcess failed: %08lx\n", status );
+    ok( ppc.PriorityClass == PROCESS_PRIOCLASS_HIGH, "Expected PROCESS_PRIOCLASS_HIGH, got %lu\n", proc_priority );
+
+    /* Restore process priority back to normal */
+    ret = SetPriorityClass( GetCurrentProcess(), NORMAL_PRIORITY_CLASS );
+    ok( ret, "Restore SetPriorityClass failed: %lu\n", GetLastError() );
+    proc_priority = GetPriorityClass( GetCurrentProcess() );
+    ok( proc_priority == NORMAL_PRIORITY_CLASS, "Expected NORMAL_PRIORITY_CLASS after restore, got %lu\n", proc_priority );
+    status = pNtQueryInformationProcess( GetCurrentProcess(), ProcessPriorityClass, &ppc, sizeof(ppc), NULL );
+    ok( status == STATUS_SUCCESS, "NtQueryInformationProcess failed: %08lx\n", status );
+    ok( ppc.PriorityClass == PROCESS_PRIOCLASS_NORMAL, "Expected PROCESS_PRIOCLASS_NORMAL, got %lu\n", proc_priority );
+
+    /* Before checking any thread priorities, disable priority boosting
+     * in order to make the tests reliable. */
+    SetThreadPriorityBoost( GetCurrentThread(), TRUE );
+
+    /* Test thread priority:
+     * Compare the value from GetThreadPriority (thread priority level)
+     * with the BasePriority from NtQueryInformationThread. */
+    thread_base_priority = GetThreadPriority( GetCurrentThread() );
+    ok( thread_base_priority != THREAD_PRIORITY_ERROR_RETURN, "GetThreadPriority returned error\n" );
+
+    status = pNtQueryInformationThread( GetCurrentThread(), ThreadBasicInformation, &tbi, sizeof(tbi), NULL );
+    ok( status == STATUS_SUCCESS, "NtQueryInformationThread failed: %08lx\n", status );
+    ok( thread_base_priority == tbi.BasePriority, "Thread priority mismatch: Win32 API returned %d, NT BasePriority is %ld\n",
+        thread_base_priority, tbi.BasePriority );
+
+    /* Change the thread priority to THREAD_PRIORITY_HIGHEST and compare with
+     * underlying NT priority, which should be now the NORMAL_PRIORITY_CLASS
+     * base value (8) + THREAD_PRIORITY_HIGHEST (+2) = 10 (without boost). */
+    ret = SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_HIGHEST );
+    ok( ret, "SetThreadPriority(THREAD_PRIORITY_HIGHEST) failed: %lu\n", GetLastError() );
+    thread_base_priority = GetThreadPriority( GetCurrentThread() );
+    ok( thread_base_priority == THREAD_PRIORITY_HIGHEST, "Expected THREAD_PRIORITY_HIGHEST (%d), got %d\n",
+        THREAD_PRIORITY_HIGHEST, thread_base_priority );
+
+    status = pNtQueryInformationThread( GetCurrentThread(), ThreadBasicInformation, &tbi, sizeof(tbi), NULL );
+    ok( status == STATUS_SUCCESS, "NtQueryInformationThread failed after setting priority: %08lx\n", status );
+    ok( thread_base_priority == tbi.BasePriority, "After setting, API priority (%d) does not match NT BasePriority (%ld)\n",
+        thread_base_priority, tbi.BasePriority );
+    status = pNtQueryInformationProcess( GetCurrentProcess(), ProcessBasicInformation, &pbi, sizeof(pbi), NULL );
+    expected_nt_priority = pbi.BasePriority + THREAD_PRIORITY_HIGHEST;
+    ok( expected_nt_priority == tbi.Priority, "After setting, effective NT priority (%ld) does not match expected priority %d.\n",
+        tbi.Priority, expected_nt_priority );
+
+    /* Test setting the thread priority to THREAD_PRIORITY_LOWEST now, but using
+     * pNtSetInformationThread, also testing NT priority directly afterwards. */
+    nt_thread_priority = THREAD_PRIORITY_LOWEST;
+    status = pNtSetInformationThread( GetCurrentThread(), ThreadBasePriority, &nt_thread_priority, sizeof(ULONG) );
+    ok( status == STATUS_SUCCESS, "NtSetInformationThread(ThreadBasePriority) failed: %08lx\n", status );
+    /* Effective thread priority should be now NORMAL_PRIORITY_CLASS base
+     * value (8) + THREAD_PRIORITY_LOWEST (-2) = 6. */
+    status = pNtQueryInformationThread( GetCurrentThread(), ThreadBasicInformation, &tbi, sizeof(tbi), NULL );
+    ok( status == STATUS_SUCCESS, "NtQueryInformationThread failed after setting priority: %08lx\n", status );
+    ok( nt_thread_priority == tbi.BasePriority, "After setting, BasePriority (%ld) does not match set BasePriority (%ld)\n",
+        nt_thread_priority, tbi.BasePriority );
+    expected_nt_priority = pbi.BasePriority + THREAD_PRIORITY_LOWEST;
+    ok( expected_nt_priority == tbi.Priority, "After setting, effective NT priority (%ld) does not match expected priority %d.\n",
+        tbi.Priority, expected_nt_priority );
+    /* Now set NT thread priority directly to 12, a value normally impossible to
+     * reach in NORMAL_PRIORITY_CLASS without boost. */
+    nt_thread_priority = 12;
+    status = pNtSetInformationThread( GetCurrentThread(), ThreadPriority, &nt_thread_priority, sizeof(ULONG) );
+    ok( status == STATUS_SUCCESS, "NtSetInformationThread(ThreadPriority) failed: %08lx\n", status );
+    /* Effective thread priority should be now 12, BasePriority should be
+     * unchanged. */
+    status = pNtQueryInformationThread( GetCurrentThread(), ThreadBasicInformation, &tbi, sizeof(tbi), NULL );
+    ok( status == STATUS_SUCCESS, "NtQueryInformationThread failed after setting priority: %08lx\n", status );
+    ok( THREAD_PRIORITY_LOWEST == tbi.BasePriority, "After setting, BasePriority (%ld) does not match set BasePriority THREAD_PRIORITY_LOWEST.\n",
+        tbi.BasePriority );
+    ok( nt_thread_priority == tbi.Priority, "After setting, effective NT priority (%ld) does not match expected priority %lu.\n",
+        tbi.Priority, nt_thread_priority );
+    /* Changing process priority recalculates all priorities again and
+     * overwrites our custom priority of 12. */
+    ret = SetPriorityClass( GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS );
+    ok( ret, "SetPriorityClass to BELOW_NORMAL_PRIORITY_CLASS failed: %lu\n", GetLastError() );
+    /* Effective thread priority should be now BELOW_NORMAL_PRIORITY_CLASS base
+     * value (6) + THREAD_PRIORITY_LOWEST (-2) = 4. */
+    status = pNtQueryInformationThread( GetCurrentThread(), ThreadBasicInformation, &tbi, sizeof(tbi), NULL );
+    ok( status == STATUS_SUCCESS, "NtQueryInformationThread failed after setting priority: %08lx\n", status );
+    status = pNtQueryInformationProcess( GetCurrentProcess(), ProcessBasicInformation, &pbi, sizeof(pbi), NULL );
+    expected_nt_priority = pbi.BasePriority + THREAD_PRIORITY_LOWEST;
+    ok( expected_nt_priority == tbi.Priority, "After setting, effective NT priority (%ld) does not match expected priority %d.\n",
+        tbi.Priority, expected_nt_priority );
+    /* Setting an out of range priority above HIGH_PRIORITY (31) or LOW_PRIORITY (0)
+     * and lower fails. */
+    nt_thread_priority = 42;
+    status = pNtSetInformationThread( GetCurrentThread(), ThreadPriority, &nt_thread_priority, sizeof(ULONG) );
+    ok( status == STATUS_INVALID_PARAMETER, "got %08lx, expected STATUS_INVALID_PARAMETER.\n", status );
+    nt_thread_priority = 0; /* 0 also fails in addition to negative values. */
+    status = pNtSetInformationThread( GetCurrentThread(), ThreadPriority, &nt_thread_priority, sizeof(ULONG) );
+    ok( status == STATUS_INVALID_PARAMETER, "got %08lx, expected STATUS_INVALID_PARAMETER.\n", status );
+    /* Moving a thread into the realtime band is normally not possible in a non-realtime process. */
+    nt_thread_priority = 24;
+    status = pNtSetInformationThread( GetCurrentThread(), ThreadPriority, &nt_thread_priority, sizeof(ULONG) );
+    ok( status == STATUS_PRIVILEGE_NOT_HELD, "got %08lx, expected STATUS_PRIVILEGE_NOT_HELD.\n", status );
+
+    /* Restore thread priority and boosting behaviour back to normal */
+    SetThreadPriorityBoost( GetCurrentThread(), FALSE );
+    ret = SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_NORMAL );
+    ok( ret, "Restore SetThreadPriority(THREAD_PRIORITY_NORMAL) failed: %lu\n", GetLastError() );
+    ret = SetPriorityClass( GetCurrentProcess(), NORMAL_PRIORITY_CLASS );
+    ok( ret, "SetPriorityClass to NORMAL_PRIORITY_CLASS failed: %lu\n", GetLastError() );
+}
+
 static DWORD WINAPI hide_from_debugger_thread(void *arg)
 {
     HANDLE stop_event = arg;
@@ -3147,7 +3408,7 @@ static void test_HideFromDebugger(void)
 {
     NTSTATUS status;
     HANDLE thread, stop_event;
-    ULONG dummy;
+    ULONG dummy, ret_len;
 
     dummy = 0;
     status = pNtSetInformationThread( GetCurrentThread(), ThreadHideFromDebugger, &dummy, sizeof(ULONG) );
@@ -3193,6 +3454,27 @@ static void test_HideFromDebugger(void)
     status = NtQueryInformationThread( thread, ThreadHideFromDebugger, &dummy, 1, NULL );
     ok( status == STATUS_SUCCESS, "got %#lx\n", status );
     ok( dummy == 1, "Expected dummy == 1, got %08lx\n", dummy );
+
+    status = NtQueryInformationThread( thread, ThreadHideFromDebugger, &dummy, 1, (ULONG *)1 );
+    ok( status == STATUS_ACCESS_VIOLATION, "Expected STATUS_ACCESS_VIOLATION, got %08lx\n", status );
+
+    status = NtQueryInformationThread( thread, ThreadHideFromDebugger, &dummy, 0, (ULONG *)1 );
+    ok( status == STATUS_ACCESS_VIOLATION, "Expected STATUS_ACCESS_VIOLATION, got %08lx\n", status );
+
+    ret_len = 0xdeadbeef;
+    status = NtQueryInformationThread( thread, ThreadHideFromDebugger, &dummy, 0, &ret_len );
+    ok( status == STATUS_INFO_LENGTH_MISMATCH, "Expected STATUS_INFO_LENGTH_MISMATCH, got %#lx\n", status );
+    ok( ret_len == 0xdeadbeef, "Expected ret_len == deadbeef, got %08lx\n", ret_len );
+
+    ret_len = 0xdeadbeef;
+    status = NtQueryInformationThread( (HANDLE)0xdeadbeef, ThreadHideFromDebugger, &dummy, 1, &ret_len );
+    ok( status == STATUS_INVALID_HANDLE, "Expected STATUS_INVALID_HANDLE, got %#lx\n", status );
+    ok( ret_len == 0xdeadbeef, "Expected ret_len == deadbeef, got %08lx\n", ret_len );
+
+    ret_len = 0xdeadbeef;
+    status = NtQueryInformationThread( thread, ThreadHideFromDebugger, &dummy, 1, &ret_len );
+    ok( status == STATUS_SUCCESS, "got %#lx\n", status );
+    ok( ret_len == 1, "Expected ret_len == 1, got %08lx\n", ret_len );
 
     SetEvent( stop_event );
     WaitForSingleObject( thread, INFINITE );
@@ -3442,6 +3724,7 @@ static void test_thread_lookup(void)
 static void test_thread_ideal_processor(void)
 {
     ULONG number, len;
+    PROCESSOR_NUMBER processor;
     NTSTATUS status;
 
     number = 0;
@@ -3458,6 +3741,12 @@ static void test_thread_ideal_processor(void)
 
     status = pNtQueryInformationThread( GetCurrentThread(), ThreadIdealProcessor, &number, sizeof(number), &len );
     ok(status == STATUS_INVALID_INFO_CLASS, "Unexpected status %#lx.\n", status);
+
+    status = pNtQueryInformationThread( GetCurrentThread(), ThreadIdealProcessorEx, &processor, sizeof(processor) + 1, &len );
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "Unexpected status %#lx.\n", status);
+
+    status = pNtQueryInformationThread( GetCurrentThread(), ThreadIdealProcessorEx, &processor, sizeof(processor), &len );
+    ok(status == STATUS_SUCCESS, "Unexpected status %#lx.\n", status);
 }
 
 static void test_thread_info(void)
@@ -3618,6 +3907,22 @@ static void test_process_instrumentation_callback(void)
     ok( status == STATUS_SUCCESS || status == STATUS_INFO_LENGTH_MISMATCH
             || broken( status == STATUS_PRIVILEGE_NOT_HELD ) /* some versions and machines before Win10 */,
             "Got unexpected status %#lx.\n", status );
+
+    if (status)
+    {
+        win_skip( "NtSetInformationProcess failed, skipping further tests.\n" );
+        return;
+    }
+
+    status = NtSetInformationProcess( GetCurrentProcess(), ProcessInstrumentationCallback,
+                                      &info.Callback, sizeof(info.Callback) );
+    ok( status == STATUS_SUCCESS, "got %#lx.\n", status );
+    status = NtSetInformationProcess( GetCurrentProcess(), ProcessInstrumentationCallback,
+                                      &info.Callback, sizeof(info.Callback) + 4 );
+    ok( status == STATUS_SUCCESS, "got %#lx.\n", status );
+    status = NtSetInformationProcess( GetCurrentProcess(), ProcessInstrumentationCallback,
+                                      &info.Callback, sizeof(info.Callback) / 2 );
+    ok( status == STATUS_INFO_LENGTH_MISMATCH, "got %#lx.\n", status );
 }
 
 static void test_debuggee_dbgport(int argc, char **argv)
@@ -3653,6 +3958,310 @@ static void test_debuggee_dbgport(int argc, char **argv)
     if (SUCCEEDED( status )) NtClose( handle );
 
     winetest_pop_context();
+}
+
+static DWORD WINAPI test_ThreadIsTerminated_thread( void *stop_event )
+{
+    WaitForSingleObject( stop_event, INFINITE );
+    return STATUS_PENDING;
+}
+
+static void test_ThreadIsTerminated(void)
+{
+    HANDLE thread, stop_event;
+    ULONG terminated;
+    NTSTATUS status;
+
+    stop_event = CreateEventW( NULL, FALSE, FALSE, NULL );
+    thread = CreateThread( NULL, 0, test_ThreadIsTerminated_thread, stop_event, 0, NULL );
+    ok( thread != INVALID_HANDLE_VALUE, "failed, error %ld\n", GetLastError() );
+
+    status = pNtQueryInformationThread( thread, ThreadIsTerminated, &terminated, sizeof(terminated) * 2, NULL );
+    ok( status == STATUS_INFO_LENGTH_MISMATCH, "got %#lx.\n", status );
+
+    terminated = 0xdeadbeef;
+    status = pNtQueryInformationThread( thread, ThreadIsTerminated, &terminated, sizeof(terminated), NULL );
+    ok( !status, "got %#lx.\n", status );
+    ok( !terminated, "got %lu.\n", terminated );
+
+    SetEvent( stop_event );
+    WaitForSingleObject( thread, INFINITE );
+
+    status = pNtQueryInformationThread( thread, ThreadIsTerminated, &terminated, sizeof(terminated), NULL );
+    ok( !status, "got %#lx.\n", status );
+    ok( terminated == 1, "got %lu.\n", terminated );
+
+    CloseHandle(stop_event);
+    CloseHandle(thread);
+
+    status = pNtQueryInformationThread( thread, ThreadIsTerminated, &terminated, sizeof(terminated), NULL );
+    ok( status == STATUS_INVALID_HANDLE, "got %#lx.\n", status );
+}
+
+static void test_system_debug_control(void)
+{
+    NTSTATUS status;
+    int class;
+
+    for (class = 0; class < SysDbgMaxInfoClass; ++class)
+    {
+        status = pNtSystemDebugControl( class, NULL, 0, NULL, 0, NULL );
+        if (is_wow64)
+        {
+            /* Most of the calls return STATUS_NOT_IMPLEMENTED on wow64. */
+            ok( status == STATUS_DEBUGGER_INACTIVE || status == STATUS_NOT_IMPLEMENTED || status == STATUS_INFO_LENGTH_MISMATCH,
+                    "class %d, got %#lx.\n", class, status );
+        }
+        else
+        {
+            ok( status == STATUS_DEBUGGER_INACTIVE || status == STATUS_ACCESS_DENIED || status == STATUS_INFO_LENGTH_MISMATCH,
+                "class %d, got %#lx.\n", class, status );
+        }
+    }
+}
+
+static void test_process_token(int argc, char **argv)
+{
+    STARTUPINFOA si = {.cb = sizeof(si)};
+    PROCESS_ACCESS_TOKEN token_info = {0};
+    TOKEN_STATISTICS stats1, stats2;
+    HANDLE token, their_token;
+    PROCESS_INFORMATION pi;
+    char cmdline[MAX_PATH];
+    NTSTATUS status;
+    DWORD size;
+    BOOL ret;
+
+    token_info.Thread = (HANDLE)0xdeadbeef;
+
+    sprintf( cmdline, "%s %s dummy", argv[0], argv[1] );
+
+    ret = CreateProcessA( NULL, cmdline, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi );
+    ok( ret, "got error %lu\n", GetLastError() );
+
+    status = pNtSetInformationProcess( pi.hProcess, ProcessAccessToken, &token_info, sizeof(token_info) - 1 );
+    ok( status == STATUS_INFO_LENGTH_MISMATCH, "got %#lx\n", status );
+
+    status = pNtSetInformationProcess( pi.hProcess, ProcessAccessToken, &token_info, sizeof(token_info) );
+    ok( status == STATUS_INVALID_HANDLE, "got %#lx\n", status );
+
+    ret = OpenProcessToken( GetCurrentProcess(), TOKEN_QUERY | READ_CONTROL | TOKEN_DUPLICATE
+            | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_PRIVILEGES | TOKEN_ADJUST_DEFAULT, &token );
+    ok( ret, "got error %lu\n", GetLastError() );
+
+    token_info.Token = token;
+    status = pNtSetInformationProcess( pi.hProcess, ProcessAccessToken, &token_info, sizeof(token_info) );
+    todo_wine ok( status == STATUS_TOKEN_ALREADY_IN_USE, "got %#lx\n", status );
+
+    ret = DuplicateTokenEx( token, TOKEN_ALL_ACCESS, NULL, SecurityAnonymous, TokenImpersonation, &token_info.Token );
+    ok( ret, "got error %lu\n", GetLastError() );
+    status = pNtSetInformationProcess( pi.hProcess, ProcessAccessToken, &token_info, sizeof(token_info) );
+    todo_wine ok( status == STATUS_BAD_IMPERSONATION_LEVEL, "got %#lx\n", status );
+    CloseHandle( token_info.Token );
+
+    ret = DuplicateTokenEx( token, TOKEN_QUERY, NULL, SecurityAnonymous, TokenPrimary, &token_info.Token );
+    ok( ret, "got error %lu\n", GetLastError() );
+    status = pNtSetInformationProcess( pi.hProcess, ProcessAccessToken, &token_info, sizeof(token_info) );
+    ok( status == STATUS_ACCESS_DENIED, "got %#lx\n", status );
+    CloseHandle( token_info.Token );
+
+    ret = DuplicateTokenEx( token, TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, NULL, SecurityAnonymous, TokenPrimary, &token_info.Token );
+    ok(ret, "got error %lu\n", GetLastError());
+    status = pNtSetInformationProcess( pi.hProcess, ProcessAccessToken, &token_info, sizeof(token_info) );
+    ok( status == STATUS_SUCCESS, "got %#lx\n", status );
+
+    ret = OpenProcessToken( pi.hProcess, TOKEN_QUERY, &their_token );
+    ok( ret, "got error %lu\n", GetLastError() );
+
+    /* The tokens should be the same. */
+    ret = GetTokenInformation( token_info.Token, TokenStatistics, &stats1, sizeof(stats1), &size );
+    ok( ret, "got error %lu\n", GetLastError() );
+    ret = GetTokenInformation( their_token, TokenStatistics, &stats2, sizeof(stats2), &size );
+    ok( ret, "got error %lu\n", GetLastError() );
+    ok( !memcmp( &stats1.TokenId, &stats2.TokenId, sizeof(LUID) ), "expected same IDs\n" );
+
+    CloseHandle( token_info.Token );
+    CloseHandle( their_token );
+
+    ResumeThread( pi.hThread );
+    ret = WaitForSingleObject( pi.hProcess, 1000 );
+    ok( !ret, "got %d\n", ret );
+
+    CloseHandle( pi.hProcess );
+    CloseHandle( pi.hThread );
+    CloseHandle( token );
+}
+
+static void test_process_id(void)
+{
+    char image_name_buffer[1024 * sizeof(WCHAR)];
+    UNICODE_STRING *image_name = (UNICODE_STRING *)image_name_buffer;
+    SYSTEM_PROCESS_ID_INFORMATION info;
+    unsigned int i, length;
+    DWORD pids[2048];
+    WCHAR name[2048];
+    NTSTATUS status;
+    HANDLE process;
+    ULONG len;
+    BOOL bret;
+
+    status = NtQueryInformationProcess( GetCurrentProcess(), ProcessImageFileName, image_name,
+                                        sizeof(image_name_buffer), NULL );
+    ok( !status, "got %#lx.\n", status );
+    length = image_name->Length;
+    image_name->Buffer[length] = 0;
+
+    len = 0xdeadbeef;
+    status = pNtQuerySystemInformation( SystemProcessIdInformation, NULL, 0, &len );
+    ok( status == STATUS_INFO_LENGTH_MISMATCH || (is_wow64 && status == STATUS_ACCESS_VIOLATION), "got %#lx.\n", status );
+    ok( len == sizeof(info) || (is_wow64 && len == 0xdeadbeef), "got %#lx.\n", len );
+
+    info.ProcessId = 0xdeadbeef;
+    info.ImageName.Length = info.ImageName.MaximumLength = 0;
+    info.ImageName.Buffer = NULL;
+    status = pNtQuerySystemInformation( SystemProcessIdInformation, &info, sizeof(info), &len );
+    ok( status == STATUS_INVALID_CID, "got %#lx.\n", status );
+    ok( !info.ImageName.Length, "got %#x.\n", info.ImageName.Length );
+    ok( !info.ImageName.MaximumLength, "got %#x.\n", info.ImageName.MaximumLength );
+
+    info.ProcessId = GetCurrentProcessId();
+    status = pNtQuerySystemInformation( SystemProcessIdInformation, &info, sizeof(info), &len );
+    ok( status == STATUS_INFO_LENGTH_MISMATCH, "got %#lx.\n", status );
+    ok( len == sizeof(info), "got %#lx.\n", len );
+    ok( !info.ImageName.Length, "got %#x.\n", info.ImageName.Length );
+    ok( info.ImageName.MaximumLength == length + 2 || (is_wow64 && !info.ImageName.MaximumLength),
+        "got %#x.\n", info.ImageName.MaximumLength );
+
+    info.ImageName.MaximumLength = sizeof(name);
+    len = 0xdeadbeef;
+    status = pNtQuerySystemInformation( SystemProcessIdInformation, &info, sizeof(info), &len );
+    ok( status == STATUS_ACCESS_VIOLATION, "got %#lx.\n", status );
+    ok( len == sizeof(info), "got %#lx.\n", len );
+    ok( info.ImageName.Length == length || (is_wow64 && !info.ImageName.Length),
+        "got %u.\n", info.ImageName.Length );
+    ok( info.ImageName.MaximumLength == length + 2 || (is_wow64 && !info.ImageName.Length),
+        "got %#x.\n", info.ImageName.MaximumLength );
+
+    info.ProcessId = 0xdeadbeef;
+    info.ImageName.MaximumLength = sizeof(name);
+    info.ImageName.Buffer = name;
+    info.ImageName.Length = 0;
+    status = pNtQuerySystemInformation( SystemProcessIdInformation, &info, sizeof(info), &len );
+    ok( status == STATUS_INVALID_CID, "got %#lx.\n", status );
+    ok( !info.ImageName.Length, "got %#x.\n", info.ImageName.Length );
+    ok( info.ImageName.MaximumLength == sizeof(name), "got %#x.\n", info.ImageName.MaximumLength );
+    ok( info.ImageName.Buffer == name, "got %p, %p.\n", info.ImageName.Buffer, name );
+
+    info.ProcessId = 0;
+    info.ImageName.MaximumLength = sizeof(name);
+    info.ImageName.Buffer = name;
+    info.ImageName.Length = 0;
+    status = pNtQuerySystemInformation( SystemProcessIdInformation, &info, sizeof(info), &len );
+    ok( status == STATUS_INVALID_CID, "got %#lx.\n", status );
+    ok( !info.ImageName.Length, "got %#x.\n", info.ImageName.Length );
+    ok( info.ImageName.MaximumLength == sizeof(name), "got %#x.\n", info.ImageName.MaximumLength );
+    ok( info.ImageName.Buffer == name, "got non NULL.\n" );
+
+    info.ProcessId = 0;
+    info.ImageName.MaximumLength = sizeof(name);
+    info.ImageName.Buffer = name;
+    info.ImageName.Length = 4;
+    status = pNtQuerySystemInformation( SystemProcessIdInformation, &info, sizeof(info), &len );
+    ok( status == STATUS_INVALID_PARAMETER, "got %#lx.\n", status );
+    ok( info.ImageName.Length == 4, "got %#x.\n", info.ImageName.Length );
+    ok( info.ImageName.MaximumLength == sizeof(name), "got %#x.\n", info.ImageName.MaximumLength );
+    ok( info.ImageName.Buffer == name, "got non NULL.\n" );
+
+    info.ProcessId = GetCurrentProcessId();
+    info.ImageName.MaximumLength = sizeof(name);
+    info.ImageName.Buffer = name;
+    info.ImageName.Length = 4;
+    status = pNtQuerySystemInformation( SystemProcessIdInformation, &info, sizeof(info), NULL );
+    ok( status == STATUS_INVALID_PARAMETER, "got %#lx.\n", status );
+    ok( info.ImageName.Length == 4, "got %#x.\n", info.ImageName.Length );
+    ok( info.ImageName.MaximumLength == sizeof(name), "got %#x.\n", info.ImageName.MaximumLength );
+
+    info.ImageName.Length = 0;
+    memset( name, 0xcc, sizeof(name) );
+    status = pNtQuerySystemInformation( SystemProcessIdInformation, &info, sizeof(info), &len );
+    ok( !status, "got %#lx.\n", status );
+    ok( info.ImageName.Length == length, "got %#x.\n", info.ImageName.Length );
+    ok( len == sizeof(info), "got %#lx.\n", len );
+    ok( info.ImageName.MaximumLength == info.ImageName.Length + 2, "got %#x.\n", info.ImageName.MaximumLength );
+    ok( !name[info.ImageName.Length / 2], "got %#x.\n", name[info.ImageName.Length / 2] );
+
+    ok( info.ImageName.Length == image_name->Length, "got %#x, %#x.\n", info.ImageName.Length, image_name->Length );
+    ok( !wcscmp( name, image_name->Buffer ), "got %s, %s.\n", debugstr_w(name), debugstr_w(image_name->Buffer) );
+
+    bret = EnumProcesses( pids, sizeof(pids), &len );
+    ok( bret, "got error %lu.\n", GetLastError() );
+    for (i = 0; i < len / sizeof(*pids); ++i)
+    {
+        process = OpenProcess( PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pids[i] );
+        if (pids[i] && !process && GetLastError() != ERROR_ACCESS_DENIED)
+        {
+            /* process is gone already. */
+            continue;
+        }
+        info.ProcessId = pids[i];
+        info.ImageName.Length = 0;
+        info.ImageName.MaximumLength = sizeof(name);
+        info.ImageName.Buffer = name;
+        status = pNtQuerySystemInformation( SystemProcessIdInformation, &info, sizeof(info), &len );
+        ok( info.ImageName.Buffer == name || (!info.ImageName.MaximumLength && !info.ImageName.Length),
+            "got %p, %p, pid %lu, lengh %u / %u.\n", info.ImageName.Buffer, name, pids[i],
+            info.ImageName.Length, info.ImageName.MaximumLength );
+        if (pids[i])
+            ok( !status, "got %#lx, pid %lu.\n", status, pids[i] );
+        else
+            ok( status == STATUS_INVALID_CID, "got %#lx, pid %lu.\n", status, pids[i] );
+        if (process) CloseHandle( process );
+    }
+}
+
+static void test_processor_idle_cycle_time(void)
+{
+    unsigned int cpu_count = NtCurrentTeb()->Peb->NumberOfProcessors;
+    ULONG64 buffer[64];
+    NTSTATUS status;
+    USHORT group_id;
+    ULONG size;
+
+    size = 0xdeadbeef;
+    status = pNtQuerySystemInformation( SystemProcessorIdleCycleTimeInformation, NULL, 0, &size );
+    ok( status == STATUS_BUFFER_TOO_SMALL, "got %#lx.\n", status );
+    ok( size == cpu_count * sizeof(*buffer), "got %#lx.\n", size );
+
+    size = 0xdeadbeef;
+    status = pNtQuerySystemInformation( SystemProcessorIdleCycleTimeInformation, buffer, 7, &size );
+    ok( status == STATUS_BUFFER_TOO_SMALL, "got %#lx.\n", status );
+    ok( size == cpu_count * sizeof(*buffer), "got %#lx.\n", size );
+
+    size = 0xdeadbeef;
+    status = pNtQuerySystemInformation( SystemProcessorIdleCycleTimeInformation, NULL, sizeof(buffer), &size );
+    ok( status == STATUS_ACCESS_VIOLATION, "got %#lx.\n", status );
+    ok( size == 0xdeadbeef, "got %#lx.\n", size );
+
+    size = 0xdeadbeef;
+    status = pNtQuerySystemInformation( SystemProcessorIdleCycleTimeInformation, buffer, sizeof(buffer), &size );
+    ok( !status, "got %#lx.\n", status );
+    ok( size == cpu_count * sizeof(*buffer), "got %#lx.\n", size );
+
+    memset( buffer, 0xcc, sizeof(buffer) );
+    size = 0xdeadbeef;
+    status = pNtQuerySystemInformationEx( SystemProcessorIdleCycleTimeInformation, NULL, 0, buffer, sizeof(buffer), &size );
+    ok( status == STATUS_INVALID_PARAMETER, "got %#lx.\n", status );
+    ok( size == 0xdeadbeef, "got %#lx.\n", size );
+    group_id = 50;
+    size = 0xdeadbeef;
+    status = pNtQuerySystemInformationEx( SystemProcessorIdleCycleTimeInformation, &group_id, sizeof(group_id), buffer, sizeof(buffer), &size );
+    ok( status == STATUS_INVALID_PARAMETER, "got %#lx.\n", status );
+    ok( size == 0xdeadbeef, "got %#lx.\n", size );
+    group_id = 0;
+    size = 0xdeadbeef;
+    status = pNtQuerySystemInformationEx( SystemProcessorIdleCycleTimeInformation, &group_id, sizeof(group_id), buffer, sizeof(buffer), &size );
+    ok( status == STATUS_SUCCESS, "got %#lx.\n", status );
+    ok( size == cpu_count * sizeof(*buffer), "got %#lx.\n", size );
 }
 
 START_TEST(info)
@@ -3709,6 +4318,7 @@ START_TEST(info)
     test_query_process_debug_object_handle(argc, argv);
     test_query_process_debug_flags(argc, argv);
     test_query_process_image_info();
+    test_query_process_quota_limits();
     test_mapprotection();
     test_threadstack();
 
@@ -3718,8 +4328,10 @@ START_TEST(info)
     test_thread_start_address();
     test_thread_lookup();
     test_thread_ideal_processor();
+    test_ThreadIsTerminated();
 
     test_affinity();
+    test_priority();
     test_debug_object();
 
     /* belongs to its own file */
@@ -3729,4 +4341,8 @@ START_TEST(info)
 
     test_ThreadEnableAlignmentFaultFixup();
     test_process_instrumentation_callback();
+    test_system_debug_control();
+    test_process_token(argc, argv);
+    test_process_id();
+    test_processor_idle_cycle_time();
 }

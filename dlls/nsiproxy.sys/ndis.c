@@ -62,9 +62,12 @@
 #include <net/if_types.h>
 #endif
 
+#ifdef HAVE_LINUX_WIRELESS_H
+#include <linux/wireless.h>
+#endif
+
 #include <pthread.h>
 
-#define NONAMELESSUNION
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "windef.h"
@@ -172,6 +175,21 @@ static NTSTATUS if_get_physical( const char *name, UINT *type, IF_PHYSICAL_ADDRE
 
     if (*type == MIB_IF_TYPE_OTHER && !ioctl( fd, SIOCGIFFLAGS, &ifr ) && ifr.ifr_flags & IFF_POINTOPOINT)
         *type = MIB_IF_TYPE_PPP;
+
+#ifdef HAVE_LINUX_WIRELESS_H
+    if (*type == MIB_IF_TYPE_ETHERNET)
+    {
+        struct iwreq pwrq;
+
+        memset( &pwrq, 0, sizeof(pwrq) );
+        memcpy( pwrq.ifr_name, name, size );
+        if (ioctl( fd, SIOCGIWNAME, &pwrq ) != -1)
+        {
+            TRACE( "iface %s, wireless protocol %s.\n", debugstr_a(name), debugstr_a(pwrq.u.name) );
+            *type = IF_TYPE_IEEE80211;
+        }
+    }
+#endif
 
 err:
     close( fd );
@@ -387,6 +405,8 @@ static void ifinfo_fill_dynamic( struct if_entry *entry, struct nsi_ndis_ifinfo_
                     data->out_ucast_pkts = values[6];
                     data->out_errors     = values[7];
                     data->out_discards   = values[8];
+                    /* Some applications check for link speed >= 1000000 */
+                    data->rcv_speed = data->xmit_speed = 1000000;
                     break;
                 }
             }

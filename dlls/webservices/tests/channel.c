@@ -403,7 +403,7 @@ static void test_WsCreateChannelForListener(void)
 
 static void test_WsResetListener(void)
 {
-    WS_STRING url = { ARRAY_SIZE( L"net.tcp://+:2017/path" ) - 1, (WCHAR *)L"net.tcp://+:2017/path" };
+    static const WS_STRING url = WS_STRING_VALUE( L"net.tcp://+:2017/path" );
     WS_LISTENER *listener;
     WS_LISTENER_STATE state;
     WS_LISTENER_PROPERTY prop;
@@ -1217,12 +1217,13 @@ static const char send_record_end[] = { 0x08, 0x02, 0x6e, 0x73, 0x89, 0xff, 0x01
 static BOOL send_dict_str( int sock, char *addr, const char *str, int dict_str_count )
 {
     char buf[512], dict_buf[256], body_buf[128], dict_size_buf[5];
+    const int max_len = ARRAY_SIZE(dict_buf) - ARRAY_SIZE(dict_size_buf);
     int offset, dict_buf_size, body_buf_size, dict_size;
 
     /* Session dictionary strings. */
-    offset = write_size( dict_buf, strlen(str) );
-    memcpy( dict_buf + offset, str, strlen(str) );
-    dict_buf_size = strlen(str) + offset;
+    offset = write_size( dict_buf, strnlen(str, max_len) );
+    memcpy( dict_buf + offset, str, strnlen(str, max_len) );
+    dict_buf_size = strnlen( str, max_len ) + offset;
 
     dict_size = write_size( dict_size_buf, dict_buf_size );
 

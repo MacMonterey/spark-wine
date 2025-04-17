@@ -866,18 +866,10 @@ static TOPOID topology_generate_id(void)
     return next_topology_id;
 }
 
-/***********************************************************************
- *      MFCreateTopology (mf.@)
- */
-HRESULT WINAPI MFCreateTopology(IMFTopology **topology)
+HRESULT create_topology(TOPOID id, IMFTopology **topology)
 {
     struct topology *object;
     HRESULT hr;
-
-    TRACE("%p.\n", topology);
-
-    if (!topology)
-        return E_POINTER;
 
     if (!(object = calloc(1, sizeof(*object))))
         return E_OUTOFMEMORY;
@@ -892,11 +884,24 @@ HRESULT WINAPI MFCreateTopology(IMFTopology **topology)
         return hr;
     }
 
-    object->id = topology_generate_id();
+    object->id = id;
 
     *topology = &object->IMFTopology_iface;
 
     return S_OK;
+}
+
+/***********************************************************************
+ *      MFCreateTopology (mf.@)
+ */
+HRESULT WINAPI MFCreateTopology(IMFTopology **topology)
+{
+    TRACE("%p.\n", topology);
+
+    if (!topology)
+        return E_POINTER;
+
+    return create_topology(topology_generate_id(), topology);
 }
 
 static HRESULT WINAPI topology_node_QueryInterface(IMFTopologyNode *iface, REFIID riid, void **out)
@@ -2227,6 +2232,82 @@ HRESULT WINAPI MFCreateSequencerSource(IUnknown *reserved, IMFSequencerSource **
     object->refcount = 1;
 
     *seq_source = &object->IMFSequencerSource_iface;
+
+    return S_OK;
+}
+
+struct segment_offset
+{
+    IUnknown IUnknown_iface;
+    LONG refcount;
+    MFSequencerElementId id;
+    MFTIME timeoffset;
+};
+
+static inline struct segment_offset *impl_offset_from_IUnknown(IUnknown *iface)
+{
+    return CONTAINING_RECORD(iface, struct segment_offset, IUnknown_iface);
+}
+
+static HRESULT WINAPI segment_offset_QueryInterface(IUnknown *iface, REFIID riid, void **obj)
+{
+    if (IsEqualIID(riid, &IID_IUnknown))
+    {
+        *obj = iface;
+        IUnknown_AddRef(iface);
+        return S_OK;
+    }
+
+    *obj = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI segment_offset_AddRef(IUnknown *iface)
+{
+    struct segment_offset *offset = impl_offset_from_IUnknown(iface);
+    return InterlockedIncrement(&offset->refcount);
+}
+
+static ULONG WINAPI segment_offset_Release(IUnknown *iface)
+{
+    struct segment_offset *offset = impl_offset_from_IUnknown(iface);
+    ULONG refcount = InterlockedDecrement(&offset->refcount);
+
+    if (!refcount)
+        free(offset);
+
+    return refcount;
+}
+
+static const IUnknownVtbl segment_offset_vtbl =
+{
+    segment_offset_QueryInterface,
+    segment_offset_AddRef,
+    segment_offset_Release,
+};
+
+/***********************************************************************
+ *      MFCreateSequencerSegmentOffset (mf.@)
+ */
+HRESULT WINAPI MFCreateSequencerSegmentOffset(MFSequencerElementId id, MFTIME timeoffset, PROPVARIANT *ret)
+{
+    struct segment_offset *offset;
+
+    TRACE("%#lx, %s, %p.\n", id, debugstr_time(timeoffset), ret);
+
+    if (!ret)
+        return E_POINTER;
+
+    if (!(offset = calloc(1, sizeof(*offset))))
+        return E_OUTOFMEMORY;
+
+    offset->IUnknown_iface.lpVtbl = &segment_offset_vtbl;
+    offset->refcount = 1;
+    offset->id = id;
+    offset->timeoffset = timeoffset;
+
+    V_VT(ret) = VT_UNKNOWN;
+    V_UNKNOWN(ret) = &offset->IUnknown_iface;
 
     return S_OK;
 }

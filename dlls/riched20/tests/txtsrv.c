@@ -103,6 +103,8 @@ static ITextServicesVtbl itextServicesStdcallVtbl;
 /* ITextHost implementation for conformance testing. */
 
 DEFINE_EXPECT(ITextHostImpl_TxViewChange);
+DEFINE_EXPECT(ITextHostImpl_TxScrollWindowEx);
+DEFINE_EXPECT(ITextHostImpl_TxGetClientRect);
 
 typedef struct ITextHostTestImpl
 {
@@ -268,6 +270,7 @@ static void __thiscall ITextHostImpl_TxScrollWindowEx(ITextHost *iface, INT dx, 
     ITextHostTestImpl *This = impl_from_ITextHost(iface);
     TRACECALL("Call to TxScrollWindowEx(%p, %d, %d, %p, %p, %p, %p, %d)\n",
               This, dx, dy, lprcScroll, lprcClip, hRgnUpdate, lprcUpdate, fuScroll);
+    INCREASE_CALL_COUNTER(ITextHostImpl_TxScrollWindowEx);
 }
 
 static void __thiscall ITextHostImpl_TxSetCapture(ITextHost *iface, BOOL fCapture)
@@ -321,6 +324,7 @@ static HRESULT __thiscall ITextHostImpl_TxGetClientRect(ITextHost *iface, LPRECT
 {
     ITextHostTestImpl *This = impl_from_ITextHost(iface);
     TRACECALL("Call to TxGetClientRect(%p, prc=%p)\n", This, prc);
+    INCREASE_CALL_COUNTER(ITextHostImpl_TxGetClientRect);
     *prc = This->client_rect;
     return S_OK;
 }
@@ -424,6 +428,8 @@ static HRESULT __thiscall ITextHostImpl_TxGetPropertyBits(ITextHost *iface, DWOR
 
 static int en_vscroll_sent;
 static int en_update_sent;
+static int en_change_sent;
+static int en_selchange_sent;
 static HRESULT __thiscall ITextHostImpl_TxNotify( ITextHost *iface, DWORD code, void *data )
 {
     ITextHostTestImpl *This = impl_from_ITextHost(iface);
@@ -437,6 +443,15 @@ static HRESULT __thiscall ITextHostImpl_TxNotify( ITextHost *iface, DWORD code, 
     case EN_UPDATE:
         en_update_sent++;
         ok( !data, "got %p\n", data );
+        break;
+    case EN_CHANGE:
+        en_change_sent++;
+        todo_wine
+        ok( data != NULL, "got %p\n", data );
+        break;
+    case EN_SELCHANGE:
+        en_selchange_sent++;
+        ok( data != NULL, "got %p\n", data );
         break;
     }
     return S_OK;
@@ -1268,26 +1283,173 @@ static void test_set_selection_message( void )
 {
     ITextServices *txtserv;
     ITextHost *host;
+    CHARRANGE range;
     LRESULT result;
     HRESULT hr;
 
     if (!init_texthost(&txtserv, &host))
         return;
 
-    CLEAR_COUNTER(ITextHostImpl_TxViewChange);
-    hr = ITextServices_TxSendMessage(txtserv, EM_SETSEL, 0, 20, &result);
+    ITextServices_TxSetText(txtserv, L"");
+
+    if (winetest_debug > 1) trace("TxSendMessage EM_SETEVENTMASK");
+
+    hr = ITextServices_TxSendMessage( txtserv, EM_SETEVENTMASK, 0, ENM_CHANGE | ENM_SELCHANGE, &result );
     ok( hr == S_OK, "got %08lx\n", hr );
-    CHECK_CALLED(ITextHostImpl_TxViewChange);
+
+    if (winetest_debug > 1) trace("TxSendMessage EM_SETSEL 0 20");
 
     CLEAR_COUNTER(ITextHostImpl_TxViewChange);
+    en_change_sent = 0;
+    en_selchange_sent = 0;
+
+    hr = ITextServices_TxSendMessage(txtserv, EM_SETSEL, 0, 20, &result);
+    ok( hr == S_OK, "got %08lx\n", hr );
+
+    CHECK_CALLED(ITextHostImpl_TxViewChange);
+    ok(en_change_sent == 0, "got %d\n", en_change_sent);
+    todo_wine
+    ok(en_selchange_sent == 0, "got %d\n", en_selchange_sent);
+
+    hr = ITextServices_TxSendMessage(txtserv, EM_EXGETSEL, 0, (LPARAM)&range, &result); ok( hr == S_OK, "got %08lx\n", hr ); trace("getsel: %lu, %lu\n", range.cpMin, range.cpMax);
+
+    if (winetest_debug > 1) trace("TxSendMessage EM_SETSELEX 0 20");
+
+    CLEAR_COUNTER(ITextHostImpl_TxViewChange);
+    en_change_sent = 0;
+    en_selchange_sent = 0;
+
+    range.cpMin = 0;
+    range.cpMax = 20;
+    hr = ITextServices_TxSendMessage(txtserv, EM_EXSETSEL, 0, (LPARAM)&range, &result);
+    ok( hr == S_OK, "got %08lx\n", hr );
+
+    CHECK_CALLED(ITextHostImpl_TxViewChange);
+    ok(en_change_sent == 0, "got %d\n", en_change_sent);
+    ok(en_selchange_sent == 0, "got %d\n", en_selchange_sent);
+
+    if (winetest_debug > 1) trace("TxSetText");
+
+    CLEAR_COUNTER(ITextHostImpl_TxViewChange);
+    en_change_sent = 0;
+    en_selchange_sent = 0;
+
+    hr = ITextServices_TxSendMessage(txtserv, EM_EXGETSEL, 0, (LPARAM)&range, &result); ok( hr == S_OK, "got %08lx\n", hr ); trace("getsel: %lu, %lu\n", range.cpMin, range.cpMax);
+
     ITextServices_TxSetText(txtserv, lorem);
+
+    hr = ITextServices_TxSendMessage(txtserv, EM_EXGETSEL, 0, (LPARAM)&range, &result); ok( hr == S_OK, "got %08lx\n", hr ); trace("getsel: %lu, %lu\n", range.cpMin, range.cpMax);
+
     CHECK_CALLED(ITextHostImpl_TxViewChange);
+    ok(en_change_sent == 1, "got %d\n", en_change_sent);
+    todo_wine
+    ok(en_selchange_sent == 0, "got %d\n", en_selchange_sent);
+
+    if (winetest_debug > 1) trace("TxSendMessage EM_SETSEL 0 20");
 
     CLEAR_COUNTER(ITextHostImpl_TxViewChange);
+    en_change_sent = 0;
+    en_selchange_sent = 0;
+
     hr = ITextServices_TxSendMessage(txtserv, EM_SETSEL, 0, 20, &result);
     ok( hr == S_OK, "got %08lx\n", hr );
-    CHECK_CALLED(ITextHostImpl_TxViewChange);
 
+    CHECK_CALLED(ITextHostImpl_TxViewChange);
+    ok(en_change_sent == 0, "got %d\n", en_change_sent);
+    ok(en_selchange_sent == 1, "got %d\n", en_selchange_sent);
+
+    hr = ITextServices_TxSendMessage(txtserv, EM_EXGETSEL, 0, (LPARAM)&range, &result); ok( hr == S_OK, "got %08lx\n", hr ); trace("getsel: %lu, %lu\n", range.cpMin, range.cpMax);
+
+    if (winetest_debug > 1) trace("TxSendMessage EM_SETSELEX 0 20");
+
+    CLEAR_COUNTER(ITextHostImpl_TxViewChange);
+    en_change_sent = 0;
+    en_selchange_sent = 0;
+
+    range.cpMin = 0;
+    range.cpMax = 20;
+    hr = ITextServices_TxSendMessage(txtserv, EM_EXSETSEL, 0, (LPARAM)&range, &result);
+    ok( hr == S_OK, "got %08lx\n", hr );
+
+    CHECK_CALLED(ITextHostImpl_TxViewChange);
+    ok(en_change_sent == 0, "got %d\n", en_change_sent);
+    ok(en_selchange_sent == 0, "got %d\n", en_selchange_sent);
+
+    hr = ITextServices_TxSendMessage(txtserv, EM_EXGETSEL, 0, (LPARAM)&range, &result); ok( hr == S_OK, "got %08lx\n", hr ); trace("getsel: %lu, %lu\n", range.cpMin, range.cpMax);
+
+    if (winetest_debug > 1) trace("release interfaces");
+
+    ITextServices_Release( txtserv );
+    ITextHost_Release( host );
+}
+
+static void test_scrollcaret( void )
+{
+    ITextServices *txtserv;
+    ITextHost *host;
+    LRESULT result;
+    HRESULT hr;
+
+    if (!init_texthost(&txtserv, &host))
+        return;
+
+    hr = ITextServices_TxSendMessage(txtserv, EM_SCROLLCARET, 0, 0, &result);
+    ok( hr == S_OK, "got %08lx\n", hr );
+
+    ITextServices_Release( txtserv );
+    ITextHost_Release( host );
+}
+
+static void test_inplace_active( BOOL active )
+{
+    ITextServices *txtserv;
+    ITextHost *host;
+    LRESULT result;
+    HRESULT hr;
+
+    ITextHostTestImpl *host_impl;
+    if (!init_texthost(&txtserv, &host))
+        return;
+
+    host_impl = impl_from_ITextHost( host );
+    host_impl->window = CreateWindowExA( 0, "static", NULL, WS_POPUP|WS_VISIBLE, 0, 0, 100, 100, 0, 0, 0, NULL );
+    host_impl->client_rect = (RECT) { 0, 0, 150, 150 };
+    host_impl->scrollbars = WS_VSCROLL | ES_AUTOVSCROLL;
+    host_impl->props = TXTBIT_MULTILINE | TXTBIT_RICHTEXT | TXTBIT_WORDWRAP;
+    ITextServices_OnTxPropertyBitsChange( txtserv, TXTBIT_SCROLLBARCHANGE | TXTBIT_MULTILINE | TXTBIT_RICHTEXT | TXTBIT_WORDWRAP, host_impl->props );
+
+    CLEAR_COUNTER(ITextHostImpl_TxScrollWindowEx);
+    CLEAR_COUNTER(ITextHostImpl_TxGetClientRect);
+
+    if (active) {
+        hr = ITextServices_OnTxInPlaceActivate( txtserv, &host_impl->client_rect );
+        ok( hr == S_OK, "got %08lx\n", hr );
+    }
+
+    hr = ITextServices_TxSendMessage(txtserv, EM_SETEVENTMASK, 0, ENM_REQUESTRESIZE, &result);
+    ok( hr == S_OK, "got %08lx\n", hr );
+
+    hr = ITextServices_TxDraw( txtserv, DVASPECT_CONTENT, 0, NULL, NULL, GetDC(host_impl->window), NULL, (RECTL *)&host_impl->client_rect, NULL, NULL, NULL, 0, TXTVIEW_INACTIVE );
+    ok( hr == S_OK, "got %08lx\n", hr );
+
+    hr = ITextServices_TxSendMessage(txtserv, EM_SETSEL, 0, -1, &result);
+    ok( hr == S_OK, "got %08lx\n", hr );
+
+    hr = ITextServices_TxSendMessage(txtserv, EM_REPLACESEL, TRUE, (LPARAM) lorem, &result);
+    ok( hr == S_OK, "got %08lx\n", hr );
+
+    hr = ITextServices_TxDraw( txtserv, DVASPECT_CONTENT, 0, NULL, NULL, GetDC(host_impl->window), NULL, (RECTL *)&host_impl->client_rect, NULL, NULL, NULL, 0, TXTVIEW_INACTIVE );
+    ok( hr == S_OK, "got %08lx\n", hr );
+
+    if (active) {
+        CHECK_CALLED(ITextHostImpl_TxScrollWindowEx);
+        CHECK_CALLED(ITextHostImpl_TxGetClientRect);
+    } else {
+        CHECK_NOT_CALLED(ITextHostImpl_TxScrollWindowEx);
+        CHECK_NOT_CALLED(ITextHostImpl_TxGetClientRect);
+    }
+
+    DestroyWindow( host_impl->window );
     ITextServices_Release( txtserv );
     ITextHost_Release( host );
 }
@@ -1326,6 +1488,9 @@ START_TEST( txtsrv )
         test_TxGetScroll();
         test_notifications();
         test_set_selection_message();
+        test_scrollcaret();
+        test_inplace_active(TRUE);
+        test_inplace_active(FALSE);
     }
     if (wrapperCodeMem) VirtualFree(wrapperCodeMem, 0, MEM_RELEASE);
 }

@@ -18,7 +18,6 @@
 
 #define COBJMACROS
 #define CONST_VTABLE
-#define NONAMELESSUNION
 
 #include <wine/test.h>
 #include <stdarg.h>
@@ -31,7 +30,6 @@
 #include "urlmon.h"
 
 #include "initguid.h"
-#include "wine/heap.h"
 
 DEFINE_GUID(CLSID_AboutProtocol, 0x3050F406, 0x98B5, 0x11CF, 0xBB,0x82, 0x00,0xAA,0x00,0xBD,0xCE,0x0B);
 
@@ -276,41 +274,26 @@ static void test_RegisterFormatEnumerator(void)
     IEnumFORMATETC_Release(format);
     IBindCtx_Release(bctx);
 }
-static const WCHAR url1[] = {'r','e','s',':','/','/','m','s','h','t','m','l','.','d','l','l',
-        '/','b','l','a','n','k','.','h','t','m',0};
-static const WCHAR url2[] = {'i','n','d','e','x','.','h','t','m',0};
-static const WCHAR url3[] = {'f','i','l','e',':','/','/','c',':','\\','I','n','d','e','x','.','h','t','m',0};
-static const WCHAR url4[] = {'f','i','l','e',':','s','o','m','e','%','2','0','f','i','l','e',
-        '%','2','e','j','p','g',0};
-static const WCHAR url5[] = {'h','t','t','p',':','/','/','w','w','w','.','w','i','n','e','h','q',
-        '.','o','r','g',0};
-static const WCHAR url6[] = {'a','b','o','u','t',':','b','l','a','n','k',0};
-static const WCHAR url7[] = {'f','t','p',':','/','/','w','i','n','e','h','q','.','o','r','g','/',
-        'f','i','l','e','.','t','e','s','t',0};
-static const WCHAR url8[] = {'t','e','s','t',':','1','2','3','a','b','c',0};
-static const WCHAR url9[] =
-    {'h','t','t','p',':','/','/','w','w','w','.','w','i','n','e','h','q','.','o','r','g',
-     '/','s','i','t','e','/','a','b','o','u','t',0};
-static const WCHAR url10[] = {'h','t','t','p',':','/','/','g','o','o','g','l','e','.','*','.',
-        'c','o','m',0};
-static const WCHAR url4e[] = {'f','i','l','e',':','s','o','m','e',' ','f','i','l','e',
-        '.','j','p','g',0};
+static const WCHAR url1[] = L"res://mshtml.dll/blank.htm";
+static const WCHAR url2[] = L"index.htm";
+static const WCHAR url3[] = L"file://c:\\Index.htm";
+static const WCHAR url4[] = L"file:some%20file%2ejpg";
+static const WCHAR url5[] = L"http://www.winehq.org";
+static const WCHAR url6[] = L"about:blank";
+static const WCHAR url7[] = L"ftp://winehq.org/file.test";
+static const WCHAR url8[] = L"test:123abc";
+static const WCHAR url9[] = L"http://www.winehq.org/site/about";
+static const WCHAR url10[] = L"http://google.*.com";
+static const WCHAR url4e[] = L"file:some file.jpg";
 
-static const WCHAR path3[] = {'c',':','\\','I','n','d','e','x','.','h','t','m',0};
-static const WCHAR path4[] = {'s','o','m','e',' ','f','i','l','e','.','j','p','g',0};
+static const WCHAR path3[] = L"c:\\Index.htm";
+static const WCHAR path4[] = L"some file.jpg";
 
-static const WCHAR wszRes[] = {'r','e','s',0};
-static const WCHAR wszFile[] = {'f','i','l','e',0};
-static const WCHAR wszHttp[] = {'h','t','t','p',0};
-static const WCHAR wszAbout[] = {'a','b','o','u','t',0};
-static const WCHAR wszEmpty[] = {0};
-static const WCHAR wszGoogle[] = {'g','o','o','g','l','e','.','*','.','c','o','m',0};
+static const WCHAR wszGoogle[] = L"google.*.com";
 
-static const WCHAR wszWineHQ[] = {'w','w','w','.','w','i','n','e','h','q','.','o','r','g',0};
-static const WCHAR wszHttpWineHQ[] = {'h','t','t','p',':','/','/','w','w','w','.',
-    'w','i','n','e','h','q','.','o','r','g',0};
-static const WCHAR wszHttpGoogle[] = {'h','t','t','p',':','/','/','g','o','o','g','l','e',
-    '.','*','.','c','o','m',0};
+static const WCHAR wszWineHQ[] = L"www.winehq.org";
+static const WCHAR wszHttpWineHQ[] = L"http://www.winehq.org";
+static const WCHAR wszHttpGoogle[] = L"http://google.*.com";
 
 struct parse_test {
     LPCWSTR url;
@@ -326,13 +309,13 @@ struct parse_test {
 };
 
 static const struct parse_test parse_tests[] = {
-    {url1, S_OK,   url1,  E_INVALIDARG, NULL, wszRes, NULL, E_FAIL, NULL, E_FAIL},
-    {url2, E_FAIL, url2,  E_INVALIDARG, NULL, wszEmpty, NULL, E_FAIL, NULL, E_FAIL},
-    {url3, E_FAIL, url3,  S_OK, path3,        wszFile, wszEmpty, S_OK, NULL, E_FAIL},
-    {url4, E_FAIL, url4e, S_OK, path4,        wszFile, wszEmpty, S_OK, NULL, E_FAIL},
-    {url5, E_FAIL, url5,  E_INVALIDARG, NULL, wszHttp, wszWineHQ, S_OK, wszHttpWineHQ, S_OK},
-    {url6, S_OK,   url6,  E_INVALIDARG, NULL, wszAbout, NULL, E_FAIL, NULL, E_FAIL},
-    {url10, E_FAIL, url10, E_INVALIDARG,NULL, wszHttp, wszGoogle, S_OK, wszHttpGoogle, S_OK}
+    {url1,  S_OK,   url1,  E_INVALIDARG, NULL, L"res",   NULL,      E_FAIL, NULL,          E_FAIL},
+    {url2,  E_FAIL, url2,  E_INVALIDARG, NULL, L"",      NULL,      E_FAIL, NULL,          E_FAIL},
+    {url3,  E_FAIL, url3,  S_OK, path3,        L"file",  L"",       S_OK,   NULL,          E_FAIL},
+    {url4,  E_FAIL, url4e, S_OK, path4,        L"file",  L"",       S_OK,   NULL,          E_FAIL},
+    {url5,  E_FAIL, url5,  E_INVALIDARG, NULL, L"http",  wszWineHQ, S_OK,   wszHttpWineHQ, S_OK},
+    {url6,  S_OK,   url6,  E_INVALIDARG, NULL, L"about", NULL,      E_FAIL, NULL,          E_FAIL},
+    {url10, E_FAIL, url10, E_INVALIDARG, NULL, L"http",  wszGoogle, S_OK,   wszHttpGoogle, S_OK}
 };
 
 static void test_CoInternetParseUrl(void)
@@ -386,8 +369,8 @@ static void test_CoInternetParseUrl(void)
         ok(size == lstrlenW(parse_tests[i].schema), "[%d] wrong size\n", i);
         ok(!lstrcmpW(parse_tests[i].schema, buf), "[%d] wrong schema\n", i);
 
-        if(memcmp(parse_tests[i].url, wszRes, 3*sizeof(WCHAR))
-                && memcmp(parse_tests[i].url, wszAbout, 5*sizeof(WCHAR))) {
+        if(memcmp(parse_tests[i].url, L"res", sizeof(L"res")-sizeof(WCHAR))
+                && memcmp(parse_tests[i].url, L"about", sizeof(L"about")-sizeof(WCHAR))) {
             memset(buf, 0xf0, sizeof(buf));
             hres = pCoInternetParseUrl(parse_tests[i].url, PARSE_DOMAIN, 0, buf,
                     ARRAY_SIZE(buf), &size, 0);
@@ -403,6 +386,17 @@ static void test_CoInternetParseUrl(void)
         if(parse_tests[i].rootdocument)
             ok(!lstrcmpW(parse_tests[i].rootdocument, buf), "[%d] wrong rootdocument, received %s\n", i, wine_dbgstr_w(buf));
     }
+
+    size = 0xdeadbeef;
+    hres = pCoInternetParseUrl(L"http://a/b/../c", PARSE_CANONICALIZE, 0, buf, 3, &size, 0);
+    ok(hres == E_POINTER, "got %#lx\n", hres);
+    ok(size == wcslen(L"http://a/c") + 1, "got %lu\n", size);
+
+    size = 0xdeadbeef;
+    hres = pCoInternetParseUrl(L"http://a/b/../c", PARSE_CANONICALIZE, 0, buf, sizeof(buf), &size, 0);
+    ok(hres == S_OK, "got %#lx\n", hres);
+    ok(!wcscmp(buf, L"http://a/c"), "got %s\n", debugstr_w(buf));
+    ok(size == wcslen(buf), "got %lu\n", size);
 }
 
 static void test_CoInternetCompareUrl(void)
@@ -706,12 +700,6 @@ static void test_FindMimeFromData(void)
     BYTE b;
     int i;
 
-    static const WCHAR app_octet_streamW[] =
-        {'a','p','p','l','i','c','a','t','i','o','n','/','o','c','t','e','t','-','s','t','r','e','a','m',0};
-    static const WCHAR image_pjpegW[] = {'i','m','a','g','e','/','p','j','p','e','g',0};
-    static const WCHAR text_htmlW[] = {'t','e','x','t','/','h','t','m','l',0};
-    static const WCHAR text_plainW[] = {'t','e','x','t','/','p','l','a','i','n',0};
-
     for(i = 0; i < ARRAY_SIZE(mime_tests); i++) {
         mime = (LPWSTR)0xf0f0f0f0;
         hres = pFindMimeFromData(NULL, mime_tests[i].url, NULL, 0, NULL, 0, &mime, 0);
@@ -731,13 +719,13 @@ static void test_FindMimeFromData(void)
         }
 
         mime = (LPWSTR)0xf0f0f0f0;
-        hres = pFindMimeFromData(NULL, mime_tests[i].url, NULL, 0, text_plainW, 0, &mime, 0);
+        hres = pFindMimeFromData(NULL, mime_tests[i].url, NULL, 0, L"text/plain", 0, &mime, 0);
         ok(hres == S_OK, "[%d] FindMimeFromData failed: %08lx\n", i, hres);
         ok(!lstrcmpW(mime, L"text/plain"), "[%d] wrong mime: %s\n", i, wine_dbgstr_w(mime));
         CoTaskMemFree(mime);
 
         mime = (LPWSTR)0xf0f0f0f0;
-        hres = pFindMimeFromData(NULL, mime_tests[i].url, NULL, 0, app_octet_streamW, 0, &mime, 0);
+        hres = pFindMimeFromData(NULL, mime_tests[i].url, NULL, 0, L"application/octet-stream", 0, &mime, 0);
         ok(hres == S_OK, "[%d] FindMimeFromData failed: %08lx\n", i, hres);
         ok(!lstrcmpW(mime, L"application/octet-stream"), "[%d] wrong mime: %s\n", i, wine_dbgstr_w(mime));
         CoTaskMemFree(mime);
@@ -755,7 +743,7 @@ static void test_FindMimeFromData(void)
             continue;
 
         hres = pFindMimeFromData(NULL, NULL, mime_tests2[i].data, mime_tests2[i].size,
-                app_octet_streamW, 0, &mime, 0);
+                L"application/octet-stream", 0, &mime, 0);
         ok(hres == S_OK, "[%d] FindMimeFromData failed: %08lx\n", i, hres);
         ok(!lstrcmpW(mime, mime_tests2[i].mime) || broken(mime_tests2[i].broken_mime
                         && !lstrcmpW(mime, mime_tests2[i].broken_mime)),
@@ -763,7 +751,7 @@ static void test_FindMimeFromData(void)
         CoTaskMemFree(mime);
 
         hres = pFindMimeFromData(NULL, NULL, mime_tests2[i].data, mime_tests2[i].size,
-                text_plainW, 0, &mime, 0);
+                L"text/plain", 0, &mime, 0);
         ok(hres == S_OK, "[%d] FindMimeFromData failed: %08lx\n", i, hres);
         ok(!lstrcmpW(mime, mime_tests2[i].mime) || broken(mime_tests2[i].broken_mime
                     && !lstrcmpW(mime, mime_tests2[i].broken_mime)),
@@ -771,7 +759,7 @@ static void test_FindMimeFromData(void)
         CoTaskMemFree(mime);
 
         hres = pFindMimeFromData(NULL, NULL, mime_tests2[i].data, mime_tests2[i].size,
-                text_htmlW, 0, &mime, 0);
+                L"text/html", 0, &mime, 0);
         ok(hres == S_OK, "[%d] FindMimeFromData failed: %08lx\n", i, hres);
         if(!lstrcmpW(L"application/octet-stream", mime_tests2[i].mime)
            || !lstrcmpW(L"text/plain", mime_tests2[i].mime) || i==92)
@@ -781,7 +769,7 @@ static void test_FindMimeFromData(void)
         CoTaskMemFree(mime);
 
         hres = pFindMimeFromData(NULL, NULL, mime_tests2[i].data, mime_tests2[i].size,
-                image_pjpegW, 0, &mime, 0);
+                L"image/pjpeg", 0, &mime, 0);
         ok(hres == S_OK, "[%d] FindMimeFromData failed: %08lx\n", i, hres);
         ok(!lstrcmpW(mime, mime_tests2[i].mime_pjpeg ? mime_tests2[i].mime_pjpeg : mime_tests2[i].mime)
            || broken(!lstrcmpW(mime, mime_tests2[i].mime)),
@@ -792,7 +780,7 @@ static void test_FindMimeFromData(void)
     hres = pFindMimeFromData(NULL, NULL, NULL, 0, NULL, 0, &mime, 0);
     ok(hres == E_INVALIDARG, "FindMimeFromData failed: %08lx, expected E_INVALIDARG\n", hres);
 
-    hres = pFindMimeFromData(NULL, NULL, NULL, 0, text_plainW, 0, &mime, 0);
+    hres = pFindMimeFromData(NULL, NULL, NULL, 0, L"text/plain", 0, &mime, 0);
     ok(hres == E_INVALIDARG, "FindMimeFromData failed: %08lx, expected E_INVALIDARG\n", hres);
 
     hres = pFindMimeFromData(NULL, NULL, data1, 0, NULL, 0, &mime, 0);
@@ -801,12 +789,12 @@ static void test_FindMimeFromData(void)
     hres = pFindMimeFromData(NULL, url1, data1, 0, NULL, 0, &mime, 0);
     ok(hres == E_FAIL, "FindMimeFromData failed: %08lx, expected E_FAIL\n", hres);
 
-    hres = pFindMimeFromData(NULL, NULL, data1, 0, text_plainW, 0, &mime, 0);
+    hres = pFindMimeFromData(NULL, NULL, data1, 0, L"text/plain", 0, &mime, 0);
     ok(hres == S_OK, "FindMimeFromData failed: %08lx\n", hres);
     ok(!lstrcmpW(mime, L"text/plain"), "wrong mime: %s\n", wine_dbgstr_w(mime));
     CoTaskMemFree(mime);
 
-    hres = pFindMimeFromData(NULL, NULL, data1, 0, text_plainW, 0, NULL, 0);
+    hres = pFindMimeFromData(NULL, NULL, data1, 0, L"text/plain", 0, NULL, 0);
     ok(hres == E_INVALIDARG, "FindMimeFromData failed: %08lx, expected E_INVALIDARG\n", hres);
 }
 
@@ -815,8 +803,6 @@ static void register_protocols(void)
     IInternetSession *session;
     IClassFactory *factory;
     HRESULT hres;
-
-    static const WCHAR wszAbout[] = {'a','b','o','u','t',0};
 
     hres = pCoInternetGetSession(0, &session, 0);
     ok(hres == S_OK, "CoInternetGetSession failed: %08lx\n", hres);
@@ -830,7 +816,7 @@ static void register_protocols(void)
         return;
 
     IInternetSession_RegisterNameSpace(session, factory, &CLSID_AboutProtocol,
-                                       wszAbout, 0, NULL, 0);
+                                       L"about", 0, NULL, 0);
     IClassFactory_Release(factory);
 
     IInternetSession_Release(session);
@@ -1000,15 +986,13 @@ static void test_NameSpace(void)
     DWORD size;
     HRESULT hres;
 
-    static const WCHAR wszTest[] = {'t','e','s','t',0};
-
     hres = pCoInternetGetSession(0, &session, 0);
     ok(hres == S_OK, "CoInternetGetSession failed: %08lx\n", hres);
     if(FAILED(hres))
         return;
 
     hres = IInternetSession_RegisterNameSpace(session, NULL, &IID_NULL,
-                                              wszTest, 0, NULL, 0);
+                                              L"test", 0, NULL, 0);
     ok(hres == E_INVALIDARG, "RegisterNameSpace failed: %08lx\n", hres);
 
     hres = IInternetSession_RegisterNameSpace(session, &test_protocol_cf, &IID_NULL,
@@ -1016,7 +1000,7 @@ static void test_NameSpace(void)
     ok(hres == E_INVALIDARG, "RegisterNameSpace failed: %08lx\n", hres);
 
     hres = IInternetSession_RegisterNameSpace(session, &test_protocol_cf, &IID_NULL,
-                                              wszTest, 0, NULL, 0);
+                                              L"test", 0, NULL, 0);
     ok(hres == S_OK, "RegisterNameSpace failed: %08lx\n", hres);
 
     qiret = E_NOINTERFACE;
@@ -1071,8 +1055,8 @@ static void test_NameSpace(void)
         hres = pCoInternetGetSecurityUrl(url8, &sec_url, PSU_SECURITY_URL_ONLY, 0);
         ok(hres == S_OK, "CoInternetGetSecurityUrl failed: %08lx\n", hres);
         if(hres == S_OK) {
-            ok(lstrlenW(sec_url) > ARRAY_SIZE(wszFile) &&
-                    !memcmp(sec_url, wszFile, sizeof(wszFile)-sizeof(WCHAR)),
+            ok(lstrlenW(sec_url) > ARRAY_SIZE(L"file") &&
+                    !memcmp(sec_url, L"file", sizeof(L"file")-sizeof(WCHAR)),
                     "Encoded url = %s\n", wine_dbgstr_w(sec_url));
             CoTaskMemFree(sec_url);
         }
@@ -1081,22 +1065,22 @@ static void test_NameSpace(void)
         CHECK_CALLED(ParseUrl);
     }
 
-    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf, wszTest);
+    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf, L"test");
     ok(hres == S_OK, "UnregisterNameSpace failed: %08lx\n", hres);
 
     hres = pCoInternetParseUrl(url8, PARSE_ENCODE, 0, buf, ARRAY_SIZE(buf), &size, 0);
     ok(hres == S_OK, "CoInternetParseUrl failed: %08lx\n", hres);
 
     hres = IInternetSession_RegisterNameSpace(session, &test_protocol_cf2, &IID_NULL,
-                                              wszTest, 0, NULL, 0);
+                                              L"test", 0, NULL, 0);
     ok(hres == S_OK, "RegisterNameSpace failed: %08lx\n", hres);
 
     hres = IInternetSession_RegisterNameSpace(session, &test_protocol_cf, &IID_NULL,
-                                              wszTest, 0, NULL, 0);
+                                              L"test", 0, NULL, 0);
     ok(hres == S_OK, "RegisterNameSpace failed: %08lx\n", hres);
 
     hres = IInternetSession_RegisterNameSpace(session, &test_protocol_cf, &IID_NULL,
-                                              wszTest, 0, NULL, 0);
+                                              L"test", 0, NULL, 0);
     ok(hres == S_OK, "RegisterNameSpace failed: %08lx\n", hres);
 
     SET_EXPECT(QI_IInternetProtocolInfo);
@@ -1108,7 +1092,7 @@ static void test_NameSpace(void)
     CHECK_CALLED(QI_IInternetProtocolInfo);
     CHECK_CALLED(ParseUrl_ENCODE);
 
-    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf, wszTest);
+    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf, L"test");
     ok(hres == S_OK, "UnregisterNameSpace failed: %08lx\n", hres);
 
     SET_EXPECT(QI_IInternetProtocolInfo);
@@ -1120,7 +1104,7 @@ static void test_NameSpace(void)
     CHECK_CALLED(QI_IInternetProtocolInfo);
     CHECK_CALLED(ParseUrl_ENCODE);
 
-    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf, wszTest);
+    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf, L"test");
     ok(hres == S_OK, "UnregisterNameSpace failed: %08lx\n", hres);
 
     expect_cf = &test_protocol_cf2;
@@ -1133,16 +1117,16 @@ static void test_NameSpace(void)
     CHECK_CALLED(QI_IInternetProtocolInfo);
     CHECK_CALLED(ParseUrl_ENCODE);
 
-    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf, wszTest);
+    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf, L"test");
     ok(hres == S_OK, "UnregisterNameSpace failed: %08lx\n", hres);
-    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf, wszTest);
+    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf, L"test");
     ok(hres == S_OK, "UnregisterNameSpace failed: %08lx\n", hres);
     hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf, NULL);
     ok(hres == E_INVALIDARG, "UnregisterNameSpace failed: %08lx\n", hres);
-    hres = IInternetSession_UnregisterNameSpace(session, NULL, wszTest);
+    hres = IInternetSession_UnregisterNameSpace(session, NULL, L"test");
     ok(hres == E_INVALIDARG, "UnregisterNameSpace failed: %08lx\n", hres);
 
-    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf2, wszTest);
+    hres = IInternetSession_UnregisterNameSpace(session, &test_protocol_cf2, L"test");
     ok(hres == S_OK, "UnregisterNameSpace failed: %08lx\n", hres);
 
     hres = pCoInternetParseUrl(url8, PARSE_ENCODE, 0, buf, ARRAY_SIZE(buf), &size, 0);
@@ -1156,23 +1140,21 @@ static void test_MimeFilter(void)
     IInternetSession *session;
     HRESULT hres;
 
-    static const WCHAR mimeW[] = {'t','e','s','t','/','m','i','m','e',0};
-
     hres = pCoInternetGetSession(0, &session, 0);
     ok(hres == S_OK, "CoInternetGetSession failed: %08lx\n", hres);
     if(FAILED(hres))
         return;
 
-    hres = IInternetSession_RegisterMimeFilter(session, &test_cf, &IID_NULL, mimeW);
+    hres = IInternetSession_RegisterMimeFilter(session, &test_cf, &IID_NULL, L"test/mime");
     ok(hres == S_OK, "RegisterMimeFilter failed: %08lx\n", hres);
 
-    hres = IInternetSession_UnregisterMimeFilter(session, &test_cf, mimeW);
+    hres = IInternetSession_UnregisterMimeFilter(session, &test_cf, L"test/mime");
     ok(hres == S_OK, "UnregisterMimeFilter failed: %08lx\n", hres);
 
-    hres = IInternetSession_UnregisterMimeFilter(session, &test_cf, mimeW);
+    hres = IInternetSession_UnregisterMimeFilter(session, &test_cf, L"test/mime");
     ok(hres == S_OK, "UnregisterMimeFilter failed: %08lx\n", hres);
 
-    hres = IInternetSession_UnregisterMimeFilter(session, (void*)0xdeadbeef, mimeW);
+    hres = IInternetSession_UnregisterMimeFilter(session, (void*)0xdeadbeef, L"test/mime");
     ok(hres == S_OK, "UnregisterMimeFilter failed: %08lx\n", hres);
 
     IInternetSession_Release(session);
@@ -1228,7 +1210,7 @@ static void test_CopyStgMedium(void)
     HRESULT hres;
     int size;
 
-    static WCHAR fileW[] = {'f','i','l','e',0};
+    static WCHAR fileW[] = L"file";
 
     memset(&src, 0xf0, sizeof(src));
     memset(&dst, 0xe0, sizeof(dst));
@@ -1238,28 +1220,28 @@ static void test_CopyStgMedium(void)
     hres = pCopyStgMedium(&src, &dst);
     ok(hres == S_OK, "CopyStgMedium failed: %08lx\n", hres);
     ok(dst.tymed == TYMED_NULL, "tymed=%ld\n", dst.tymed);
-    ok(dst.u.hGlobal == empty, "u=%p\n", dst.u.hGlobal);
+    ok(dst.hGlobal == empty, "u=%p\n", dst.hGlobal);
     ok(!dst.pUnkForRelease, "pUnkForRelease=%p, expected NULL\n", dst.pUnkForRelease);
 
     memset(&dst, 0xe0, sizeof(dst));
     src.tymed = TYMED_ISTREAM;
-    src.u.pstm = NULL;
+    src.pstm = NULL;
     src.pUnkForRelease = NULL;
     hres = pCopyStgMedium(&src, &dst);
     ok(hres == S_OK, "CopyStgMedium failed: %08lx\n", hres);
     ok(dst.tymed == TYMED_ISTREAM, "tymed=%ld\n", dst.tymed);
-    ok(!dst.u.pstm, "pstm=%p\n", dst.u.pstm);
+    ok(!dst.pstm, "pstm=%p\n", dst.pstm);
     ok(!dst.pUnkForRelease, "pUnkForRelease=%p, expected NULL\n", dst.pUnkForRelease);
 
     memset(&dst, 0xe0, sizeof(dst));
     src.tymed = TYMED_FILE;
-    src.u.lpszFileName = fileW;
+    src.lpszFileName = fileW;
     src.pUnkForRelease = NULL;
     hres = pCopyStgMedium(&src, &dst);
     ok(hres == S_OK, "CopyStgMedium failed: %08lx\n", hres);
     ok(dst.tymed == TYMED_FILE, "tymed=%ld\n", dst.tymed);
-    ok(dst.u.lpszFileName && dst.u.lpszFileName != fileW, "lpszFileName=%p\n", dst.u.lpszFileName);
-    ok(!lstrcmpW(dst.u.lpszFileName, fileW), "wrong file name\n");
+    ok(dst.lpszFileName && dst.lpszFileName != fileW, "lpszFileName=%p\n", dst.lpszFileName);
+    ok(!lstrcmpW(dst.lpszFileName, fileW), "wrong file name\n");
     ok(!dst.pUnkForRelease, "pUnkForRelease=%p, expected NULL\n", dst.pUnkForRelease);
     ReleaseStgMedium(&dst);
 
@@ -1269,28 +1251,28 @@ static void test_CopyStgMedium(void)
     memset(ptr1, 0xfa, 10);
     memset(&dst, 0xe0, sizeof(dst));
     src.tymed = TYMED_HGLOBAL;
-    src.u.hGlobal = hg;
+    src.hGlobal = hg;
     hres = pCopyStgMedium(&src, &dst);
     ok(hres == S_OK, "CopyStgMedium failed: %08lx\n", hres);
     ok(dst.tymed == TYMED_HGLOBAL, "tymed=%ld\n", dst.tymed);
-    ok(dst.u.hGlobal != hg, "got %p, %p\n", dst.u.hGlobal, hg);
-    size = GlobalSize(dst.u.hGlobal);
+    ok(dst.hGlobal != hg, "got %p, %p\n", dst.hGlobal, hg);
+    size = GlobalSize(dst.hGlobal);
     ok(size == 10, "got size %d\n", size);
     /* compare contents */
-    ptr2 = GlobalLock(dst.u.hGlobal);
+    ptr2 = GlobalLock(dst.hGlobal);
     ok(!memcmp(ptr1, ptr2, 10), "got wrong data\n");
     GlobalUnlock(ptr2);
     GlobalUnlock(ptr1);
-    ok(GlobalFlags(dst.u.hGlobal) == 0, "got 0x%08x\n", GlobalFlags(dst.u.hGlobal));
+    ok(GlobalFlags(dst.hGlobal) == 0, "got 0x%08x\n", GlobalFlags(dst.hGlobal));
     GlobalFree(hg);
     ReleaseStgMedium(&dst);
 
     memset(&dst, 0xe0, sizeof(dst));
     src.tymed = TYMED_HGLOBAL;
-    src.u.hGlobal = NULL;
+    src.hGlobal = NULL;
     hres = pCopyStgMedium(&src, &dst);
     ok(hres == S_OK, "CopyStgMedium failed: %08lx\n", hres);
-    ok(dst.u.hGlobal == NULL, "got %p\n", dst.u.hGlobal);
+    ok(dst.hGlobal == NULL, "got %p\n", dst.hGlobal);
 
     hres = pCopyStgMedium(&src, NULL);
     ok(hres == E_POINTER, "CopyStgMedium failed: %08lx, expected E_POINTER\n", hres);
@@ -1498,7 +1480,7 @@ static void test_user_agent(void)
     ok(hres == E_OUTOFMEMORY, "ObtainUserAgentString failed: %08lx\n", hres);
     ok(size > 0, "size=%ld, expected non-zero\n", size);
 
-    str2 = HeapAlloc(GetProcessHeap(), 0, (size+20)*sizeof(CHAR));
+    str2 = malloc(size + 20);
     saved = size;
     hres = pObtainUserAgentString(0, str2, &size);
     ok(hres == S_OK, "ObtainUserAgentString failed: %08lx\n", hres);
@@ -1682,7 +1664,7 @@ static void test_user_agent(void)
     hres = UrlMkSetSessionOption(URLMON_OPTION_USERAGENT, NULL, 0, 0);
     ok(hres == E_INVALIDARG, "UrlMkSetSessionOption failed: %08lx\n", hres);
 
-    HeapFree(GetProcessHeap(), 0, str2);
+    free(str2);
 }
 
 static void test_MkParseDisplayNameEx(void)
@@ -1694,9 +1676,7 @@ static void test_MkParseDisplayNameEx(void)
     IBindCtx *bctx;
     HRESULT hres;
 
-    static const WCHAR clsid_nameW[] = {'c','l','s','i','d',':',
-            '2','0','D','0','4','F','E','0','-','3','A','E','A','-','1','0','6','9','-','A','2','D','8',
-            '-','0','8','0','0','2','B','3','0','3','0','9','D',':',0};
+    static const WCHAR clsid_nameW[] = L"clsid:20D04FE0-3AEA-1069-A2D8-08002B30309D:";
 
     const struct
     {
@@ -1706,22 +1686,22 @@ static void test_MkParseDisplayNameEx(void)
         LPMONIKER *ppmk;
     } invalid_parameters[] =
     {
-        {NULL,  NULL,     NULL,   NULL},
-        {NULL,  NULL,     NULL,   &mon},
-        {NULL,  NULL,     &eaten, NULL},
-        {NULL,  NULL,     &eaten, &mon},
-        {NULL,  wszEmpty, NULL,   NULL},
-        {NULL,  wszEmpty, NULL,   &mon},
-        {NULL,  wszEmpty, &eaten, NULL},
-        {NULL,  wszEmpty, &eaten, &mon},
-        {&bctx, NULL,     NULL,   NULL},
-        {&bctx, NULL,     NULL,   &mon},
-        {&bctx, NULL,     &eaten, NULL},
-        {&bctx, NULL,     &eaten, &mon},
-        {&bctx, wszEmpty, NULL,   NULL},
-        {&bctx, wszEmpty, NULL,   &mon},
-        {&bctx, wszEmpty, &eaten, NULL},
-        {&bctx, wszEmpty, &eaten, &mon},
+        {NULL,  NULL, NULL,   NULL},
+        {NULL,  NULL, NULL,   &mon},
+        {NULL,  NULL, &eaten, NULL},
+        {NULL,  NULL, &eaten, &mon},
+        {NULL,  L"",  NULL,   NULL},
+        {NULL,  L"",  NULL,   &mon},
+        {NULL,  L"",  &eaten, NULL},
+        {NULL,  L"",  &eaten, &mon},
+        {&bctx, NULL, NULL,   NULL},
+        {&bctx, NULL, NULL,   &mon},
+        {&bctx, NULL, &eaten, NULL},
+        {&bctx, NULL, &eaten, &mon},
+        {&bctx, L"",  NULL,   NULL},
+        {&bctx, L"",  NULL,   &mon},
+        {&bctx, L"",  &eaten, NULL},
+        {&bctx, L"",  &eaten, &mon},
     };
 
     int i;
@@ -2358,7 +2338,7 @@ static void test_bsc_marshaling(void)
     rem_bindinfo.cbSize = sizeof(rem_bindinfo);
 
     rem_bindinfo.stgmedData.tymed = TYMED_ISTREAM;
-    rem_bindinfo.stgmedData.u.pstm = binding_stream;
+    rem_bindinfo.stgmedData.pstm = binding_stream;
     rem_bindinfo.cbstgmedData = 3;
     IStream_AddRef(binding_stream);
 
@@ -2375,8 +2355,8 @@ static void test_bsc_marshaling(void)
     ok(!bindinfo.pUnk, "pUnk = %p\n", bindinfo.pUnk);
     ok(bindinfo.stgmedData.tymed == TYMED_NULL, "tymed = %lu\n",
        bindinfo.stgmedData.tymed);
-    ok(!bindinfo.stgmedData.u.pstm, "stm = %p\n",
-       bindinfo.stgmedData.u.pstm);
+    ok(!bindinfo.stgmedData.pstm, "stm = %p\n",
+       bindinfo.stgmedData.pstm);
     ok(!bindinfo.stgmedData.pUnkForRelease, "pUnkForRelease = %p\n",
        bindinfo.stgmedData.pUnkForRelease);
     ok(bindinfo.cbstgmedData == 3, "cbstgmedData = %lu\n", bindinfo.cbstgmedData);
@@ -2394,7 +2374,7 @@ static void test_bsc_marshaling(void)
     rem_bindinfo.cbSize = sizeof(rem_bindinfo);
 
     rem_bindinfo.stgmedData.tymed = TYMED_ISTREAM;
-    rem_bindinfo.stgmedData.u.pstm = binding_stream;
+    rem_bindinfo.stgmedData.pstm = binding_stream;
     rem_bindinfo.stgmedData.pUnkForRelease = &unk_out.IUnknown_iface;
     unk_out.ref = 1;
     rem_bindinfo.cbstgmedData = 3;
@@ -2413,8 +2393,8 @@ static void test_bsc_marshaling(void)
     ok(!bindinfo.pUnk, "pUnk = %p\n", bindinfo.pUnk);
     ok(bindinfo.stgmedData.tymed == TYMED_NULL, "tymed = %lu\n",
        bindinfo.stgmedData.tymed);
-    ok(!bindinfo.stgmedData.u.pstm, "stm = %p\n",
-       bindinfo.stgmedData.u.pstm);
+    ok(!bindinfo.stgmedData.pstm, "stm = %p\n",
+       bindinfo.stgmedData.pstm);
     ok(!bindinfo.stgmedData.pUnkForRelease, "pUnkForRelease = %p\n",
        bindinfo.stgmedData.pUnkForRelease);
     ok(bindinfo.cbstgmedData == 3, "cbstgmedData = %lu\n", bindinfo.cbstgmedData);
@@ -2435,7 +2415,7 @@ static void test_bsc_marshaling(void)
 
     buf = GlobalAlloc(0, 5);
     strcpy(buf, "test");
-    rem_bindinfo.stgmedData.u.hGlobal = buf;
+    rem_bindinfo.stgmedData.hGlobal = buf;
     rem_bindinfo.cbstgmedData = 5;
 
     hres = IBindStatusCallback_GetBindInfo(bsc, &bindf, &bindinfo);
@@ -2451,8 +2431,8 @@ static void test_bsc_marshaling(void)
     ok(!bindinfo.pUnk, "pUnk = %p\n", bindinfo.pUnk);
     ok(bindinfo.stgmedData.tymed == TYMED_NULL, "tymed = %lu\n",
        bindinfo.stgmedData.tymed);
-    ok(!bindinfo.stgmedData.u.pstm, "stm = %p\n",
-       bindinfo.stgmedData.u.pstm);
+    ok(!bindinfo.stgmedData.pstm, "stm = %p\n",
+       bindinfo.stgmedData.pstm);
     ok(!bindinfo.stgmedData.pUnkForRelease, "pUnkForRelease = %p\n",
        bindinfo.stgmedData.pUnkForRelease);
     ok(bindinfo.cbstgmedData == 5, "cbstgmedData = %lu\n", bindinfo.cbstgmedData);
@@ -2574,7 +2554,7 @@ static void test_bsc_marshaling(void)
         rem_bindinfo.cbSize = sizeof(rem_bindinfo);
 
         rem_bindinfo.stgmedData.tymed = TYMED_ISTREAM;
-        rem_bindinfo.stgmedData.u.pstm = binding_stream;
+        rem_bindinfo.stgmedData.pstm = binding_stream;
         rem_bindinfo.cbstgmedData = 3;
         IStream_AddRef(binding_stream);
 
@@ -2591,8 +2571,8 @@ static void test_bsc_marshaling(void)
         ok(!bindinfo.pUnk, "pUnk = %p\n", bindinfo.pUnk);
         ok(bindinfo.stgmedData.tymed == TYMED_NULL, "tymed = %lu\n",
            bindinfo.stgmedData.tymed);
-        ok(!bindinfo.stgmedData.u.pstm, "stm = %p\n",
-           bindinfo.stgmedData.u.pstm);
+        ok(!bindinfo.stgmedData.pstm, "stm = %p\n",
+           bindinfo.stgmedData.pstm);
         ok(!bindinfo.stgmedData.pUnkForRelease, "pUnkForRelease = %p\n",
            bindinfo.stgmedData.pUnkForRelease);
         ok(bindinfo.cbstgmedData == 3, "cbstgmedData = %lu\n", bindinfo.cbstgmedData);
@@ -2610,7 +2590,7 @@ static void test_bsc_marshaling(void)
         rem_bindinfo.cbSize = sizeof(rem_bindinfo);
 
         rem_bindinfo.stgmedData.tymed = TYMED_ISTREAM;
-        rem_bindinfo.stgmedData.u.pstm = binding_stream;
+        rem_bindinfo.stgmedData.pstm = binding_stream;
         rem_bindinfo.stgmedData.pUnkForRelease = &unk_out.IUnknown_iface;
         unk_out.ref = 1;
         rem_bindinfo.cbstgmedData = 3;
@@ -2629,8 +2609,8 @@ static void test_bsc_marshaling(void)
         ok(!bindinfo.pUnk, "pUnk = %p\n", bindinfo.pUnk);
         ok(bindinfo.stgmedData.tymed == TYMED_NULL, "tymed = %lu\n",
            bindinfo.stgmedData.tymed);
-        ok(!bindinfo.stgmedData.u.pstm, "stm = %p\n",
-           bindinfo.stgmedData.u.pstm);
+        ok(!bindinfo.stgmedData.pstm, "stm = %p\n",
+           bindinfo.stgmedData.pstm);
         ok(!bindinfo.stgmedData.pUnkForRelease, "pUnkForRelease = %p\n",
            bindinfo.stgmedData.pUnkForRelease);
         ok(bindinfo.cbstgmedData == 3, "cbstgmedData = %lu\n", bindinfo.cbstgmedData);
@@ -2651,7 +2631,7 @@ static void test_bsc_marshaling(void)
 
         buf = GlobalAlloc(0, 5);
         strcpy(buf, "test");
-        rem_bindinfo.stgmedData.u.hGlobal = buf;
+        rem_bindinfo.stgmedData.hGlobal = buf;
         rem_bindinfo.cbstgmedData = 5;
 
         hres = IBindStatusCallbackEx_GetBindInfoEx(callbackex, &bindf, &bindinfo, &bindf2, &reserved);
@@ -2667,8 +2647,8 @@ static void test_bsc_marshaling(void)
         ok(!bindinfo.pUnk, "pUnk = %p\n", bindinfo.pUnk);
         ok(bindinfo.stgmedData.tymed == TYMED_NULL, "tymed = %lu\n",
            bindinfo.stgmedData.tymed);
-        ok(!bindinfo.stgmedData.u.pstm, "stm = %p\n",
-           bindinfo.stgmedData.u.pstm);
+        ok(!bindinfo.stgmedData.pstm, "stm = %p\n",
+           bindinfo.stgmedData.pstm);
         ok(!bindinfo.stgmedData.pUnkForRelease, "pUnkForRelease = %p\n",
            bindinfo.stgmedData.pUnkForRelease);
         ok(bindinfo.cbstgmedData == 5, "cbstgmedData = %lu\n", bindinfo.cbstgmedData);
@@ -2683,20 +2663,20 @@ static void test_bsc_marshaling(void)
     /* Test marshaling stgmed from OnDataAvailable */
     memset(&in_stgmed, 0xcc, sizeof(in_stgmed));
     stgmed.tymed = TYMED_ISTREAM;
-    stgmed.u.pstm = binding_stream;
+    stgmed.pstm = binding_stream;
     stgmed.pUnkForRelease = NULL;
 
     hres = IBindStatusCallback_OnDataAvailable(bsc, 1, 10, &formatetc, &stgmed);
     ok(hres == S_OK, "OnDataAvailable failed: %08lx\n", hres);
 
     ok(in_stgmed.tymed == TYMED_ISTREAM, "tymed = %lu\n", in_stgmed.tymed);
-    ok(in_stgmed.u.pstm != NULL, "pstm = NULL\n");
+    ok(in_stgmed.pstm != NULL, "pstm = NULL\n");
     ok(!in_stgmed.pUnkForRelease, "pUnkForRelease = %p\n", in_stgmed.pUnkForRelease);
 
     /* OnDataAvailable with both IStream and pUnkForRelease */
     memset(&in_stgmed, 0xcc, sizeof(in_stgmed));
     stgmed.tymed = TYMED_ISTREAM;
-    stgmed.u.pstm = binding_stream;
+    stgmed.pstm = binding_stream;
     stgmed.pUnkForRelease = &unk_in.IUnknown_iface;
     unk_in.ref = 1;
 
@@ -2704,27 +2684,27 @@ static void test_bsc_marshaling(void)
     ok(hres == S_OK, "OnDataAvailable failed: %08lx\n", hres);
 
     ok(in_stgmed.tymed == TYMED_ISTREAM, "tymed = %lu\n", in_stgmed.tymed);
-    ok(in_stgmed.u.pstm != NULL, "pstm = NULL\n");
+    ok(in_stgmed.pstm != NULL, "pstm = NULL\n");
     ok(in_stgmed.pUnkForRelease != NULL, "pUnkForRelease = %p\n", in_stgmed.pUnkForRelease);
     ok(unk_in.ref > 1, "ref = %lu\n", unk_in.ref);
 
     /* OnDataAvailable with TYMED_ISTREAM, but NULL stream */
     memset(&in_stgmed, 0xcc, sizeof(in_stgmed));
     stgmed.tymed = TYMED_ISTREAM;
-    stgmed.u.pstm = binding_stream;
+    stgmed.pstm = binding_stream;
     stgmed.pUnkForRelease = NULL;
 
     hres = IBindStatusCallback_OnDataAvailable(bsc, 1, 10, &formatetc, &stgmed);
     ok(hres == S_OK, "OnDataAvailable failed: %08lx\n", hres);
 
     ok(in_stgmed.tymed == TYMED_ISTREAM, "tymed = %lu\n", in_stgmed.tymed);
-    ok(in_stgmed.u.pstm != NULL, "pstm = NULL\n");
+    ok(in_stgmed.pstm != NULL, "pstm = NULL\n");
     ok(!in_stgmed.pUnkForRelease, "pUnkForRelease = %p\n", in_stgmed.pUnkForRelease);
 
     /* OnDataAvailable with TYMED_NULL and pUnkForRelease */
     memset(&in_stgmed, 0xcc, sizeof(in_stgmed));
     stgmed.tymed = TYMED_NULL;
-    stgmed.u.pstm = binding_stream;
+    stgmed.pstm = binding_stream;
     stgmed.pUnkForRelease = &unk_in.IUnknown_iface;
     unk_in.ref = 1;
 
@@ -2732,7 +2712,7 @@ static void test_bsc_marshaling(void)
     ok(hres == S_OK, "OnDataAvailable failed: %08lx\n", hres);
 
     ok(in_stgmed.tymed == TYMED_NULL, "tymed = %lu\n", in_stgmed.tymed);
-    ok(!in_stgmed.u.pstm, "pstm != NULL\n");
+    ok(!in_stgmed.pstm, "pstm != NULL\n");
     ok(in_stgmed.pUnkForRelease != NULL, "pUnkForRelease = %p\n", in_stgmed.pUnkForRelease);
     ok(unk_in.ref == 1, "ref = %lu\n", unk_in.ref);
 

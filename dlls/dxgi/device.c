@@ -100,7 +100,7 @@ static ULONG STDMETHODCALLTYPE dxgi_device_Release(IWineDXGIDevice *iface)
         wined3d_mutex_unlock();
         IWineDXGIAdapter_Release(device->adapter);
         wined3d_private_store_cleanup(&device->private_store);
-        heap_free(device);
+        free(device);
     }
 
     return refcount;
@@ -341,7 +341,7 @@ static HRESULT STDMETHODCALLTYPE dxgi_device_create_resource(IWineDXGIDevice *if
             "resource %p.\n", iface, wined3d_resource, usage, shared_resource, outer, needs_surface,
             resource);
 
-    if (!(object = heap_alloc_zero(sizeof(*object))))
+    if (!(object = calloc(1, sizeof(*object))))
     {
         ERR("Failed to allocate DXGI resource object memory.\n");
         return E_OUTOFMEMORY;
@@ -350,7 +350,7 @@ static HRESULT STDMETHODCALLTYPE dxgi_device_create_resource(IWineDXGIDevice *if
     if (FAILED(hr = dxgi_resource_init(object, (IDXGIDevice *)iface, outer, needs_surface, wined3d_resource)))
     {
         WARN("Failed to initialize resource, hr %#lx.\n", hr);
-        heap_free(object);
+        free(object);
         return hr;
     }
 
@@ -455,7 +455,7 @@ static HRESULT STDMETHODCALLTYPE dxgi_swapchain_factory_create_swapchain(IWineDX
     if (FAILED(hr))
         return hr;
 
-    if (!(object = heap_alloc_zero(sizeof(*object))))
+    if (!(object = calloc(1, sizeof(*object))))
     {
         ERR("Failed to allocate swapchain memory.\n");
         return E_OUTOFMEMORY;
@@ -464,13 +464,13 @@ static HRESULT STDMETHODCALLTYPE dxgi_swapchain_factory_create_swapchain(IWineDX
     if (FAILED(hr = d3d11_swapchain_init(object, device, &wined3d_desc)))
     {
         WARN("Failed to initialise swapchain, hr %#lx.\n", hr);
-        heap_free(object);
+        free(object);
         return hr;
     }
 
     TRACE("Created swapchain %p.\n", object);
 
-    *swapchain = &object->IDXGISwapChain1_iface;
+    *swapchain = (IDXGISwapChain1 *)&object->IDXGISwapChain4_iface;
 
     return S_OK;
 }

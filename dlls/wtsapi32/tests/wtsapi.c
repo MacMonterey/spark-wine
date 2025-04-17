@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <windef.h>
 #include <winbase.h>
+#include <winuser.h>
 #include <winternl.h>
 #include <lmcons.h>
 #include <wtsapi32.h>
@@ -68,8 +69,7 @@ static void check_wts_process_info(const WTS_PROCESS_INFOW *info, DWORD count)
 
     for (i = 0; i < count; i++)
     {
-        char sid_buffer[50];
-        SID_AND_ATTRIBUTES *sid = (SID_AND_ATTRIBUTES *)sid_buffer;
+        SID_AND_ATTRIBUTES *sid;
         const SYSTEM_PROCESS_INFORMATION *nt_process;
         HANDLE process, token;
         DWORD size;
@@ -88,11 +88,13 @@ static void check_wts_process_info(const WTS_PROCESS_INFOW *info, DWORD count)
 
         if ((process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, info[i].ProcessId)))
         {
+            sid = malloc(50);
             ret = OpenProcessToken(process, TOKEN_QUERY, &token);
             ok(ret, "failed to open token, error %lu\n", GetLastError());
-            ret = GetTokenInformation(token, TokenUser, sid_buffer, sizeof(sid_buffer), &size);
+            ret = GetTokenInformation(token, TokenUser, sid, 50, &size);
             ok(ret, "failed to get token user, error %lu\n", GetLastError());
             ok(EqualSid(info[i].pUserSid, sid->Sid), "SID did not match\n");
+            free(sid);
             CloseHandle(token);
             CloseHandle(process);
         }
@@ -187,13 +189,42 @@ static void test_WTSEnumerateProcessesW(void)
     pWTSFreeMemoryExW(WTSTypeProcessInfoLevel0, info, count);
 }
 
+static LONGLONG get_system_time_as_longlong(void)
+{
+    LARGE_INTEGER li;
+    FILETIME ft;
+
+    GetSystemTimeAsFileTime(&ft);
+    li.u.LowPart = ft.dwLowDateTime;
+    li.u.HighPart = ft.dwHighDateTime;
+    return li.QuadPart;
+}
+
 static void test_WTSQuerySessionInformation(void)
 {
     WCHAR *buf1, usernameW[UNLEN + 1], computernameW[MAX_COMPUTERNAME_LENGTH + 1];
     char *buf2, username[UNLEN + 1], computername[MAX_COMPUTERNAME_LENGTH + 1];
-    DWORD count, tempsize;
+    DWORD count, tempsize, sessionId;
+    WTS_CONNECTSTATE_CLASS *state;
+    WTSINFOW *wtsinfoW;
+    WTSINFOA *wtsinfoA;
     USHORT *protocol;
+    LONGLONG t1, t2;
     BOOL ret;
+
+    count = 0;
+    ret = WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTSConnectState, (WCHAR **)&state, &count);
+    ok(ret, "got error %lu\n", GetLastError());
+    ok(count == sizeof(*state), "got %lu\n", count);
+    ok(*state == WTSActive, "got %d.\n", *state);
+    WTSFreeMemory(state);
+
+    count = 0;
+    ret = WTSQuerySessionInformationA(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTSConnectState, (char **)&state, &count);
+    ok(ret, "got error %lu\n", GetLastError());
+    ok(count == sizeof(*state), "got %lu\n", count);
+    ok(*state == WTSActive, "got %d.\n", *state);
+    WTSFreeMemory(state);
 
     SetLastError(0xdeadbeef);
     count = 0;
@@ -293,6 +324,66 @@ static void test_WTSQuerySessionInformation(void)
     ok(protocol != NULL, "protocol not set\n");
     ok(count == sizeof(*protocol), "got %lu\n", count);
     WTSFreeMemory(protocol);
+
+    ProcessIdToSessionId(GetCurrentProcessId(), &sessionId);
+
+    count = 0;
+    wtsinfoW = NULL;
+    t1 = get_system_time_as_longlong();
+    ret = WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTSSessionInfo,
+                                      (WCHAR **)&wtsinfoW, &count);
+    ok(ret, "got %lu\n", GetLastError());
+    t2 = get_system_time_as_longlong();
+    ok(count == sizeof(*wtsinfoW), "got %lu\n", count);
+    ok(wtsinfoW->State == WTSActive, "got %d.\n", wtsinfoW->State);
+    ok(wtsinfoW->SessionId == sessionId, "expected %lu, got %lu\n", sessionId, wtsinfoW->SessionId);
+    ok(wtsinfoW->IncomingBytes == 0, "got %lu\n", wtsinfoW->IncomingBytes);
+    ok(wtsinfoW->OutgoingBytes == 0, "got %lu\n", wtsinfoW->OutgoingBytes);
+    ok(wtsinfoW->IncomingFrames == 0, "got %lu\n", wtsinfoW->IncomingFrames);
+    ok(wtsinfoW->OutgoingFrames == 0, "got %lu\n", wtsinfoW->OutgoingFrames);
+    ok(wtsinfoW->IncomingCompressedBytes == 0, "got %lu\n", wtsinfoW->IncomingCompressedBytes);
+    ok(wtsinfoW->OutgoingCompressedBytes == 0, "got %lu\n", wtsinfoW->OutgoingCompressedBytes);
+    ok(!wcscmp(wtsinfoW->WinStationName, L"Console"), "got %s\n", wine_dbgstr_w(wtsinfoW->WinStationName));
+    ok(!wcsicmp(wtsinfoW->Domain, computernameW),
+            "expected %s, got %s\n",
+            wine_dbgstr_w(computernameW), wine_dbgstr_w(wtsinfoW->Domain));
+    ok(!wcsicmp(wtsinfoW->UserName, usernameW),
+            "expected %s, got %s\n",
+            wine_dbgstr_w(usernameW), wine_dbgstr_w(wtsinfoW->UserName));
+    ok(t1 <= wtsinfoW->CurrentTime.QuadPart,
+            "out of order %s %s\n",
+            wine_dbgstr_longlong(t1), wine_dbgstr_longlong(wtsinfoW->CurrentTime.QuadPart));
+    ok(wtsinfoW->CurrentTime.QuadPart <= t2,
+            "out of order %s %s\n",
+            wine_dbgstr_longlong(wtsinfoW->CurrentTime.QuadPart), wine_dbgstr_longlong(t2));
+    WTSFreeMemory(wtsinfoW);
+
+    count = 0;
+    wtsinfoA = NULL;
+    t1 = get_system_time_as_longlong();
+    ret = WTSQuerySessionInformationA(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTSSessionInfo,
+                                      (char **)&wtsinfoA, &count);
+    ok(ret, "got %lu\n", GetLastError());
+    t2 = get_system_time_as_longlong();
+    ok(count == sizeof(*wtsinfoA), "got %lu\n", count);
+    ok(wtsinfoA->State == WTSActive, "got %d.\n", wtsinfoA->State);
+    ok(wtsinfoA->SessionId == sessionId, "expected %lu, got %lu\n", sessionId, wtsinfoA->SessionId);
+    ok(wtsinfoA->IncomingBytes == 0, "got %lu\n", wtsinfoA->IncomingBytes);
+    ok(wtsinfoA->OutgoingBytes == 0, "got %lu\n", wtsinfoA->OutgoingBytes);
+    ok(wtsinfoA->IncomingFrames == 0, "got %lu\n", wtsinfoA->IncomingFrames);
+    ok(wtsinfoA->OutgoingFrames == 0, "got %lu\n", wtsinfoA->OutgoingFrames);
+    ok(wtsinfoA->IncomingCompressedBytes == 0, "got %lu\n", wtsinfoA->IncomingCompressedBytes);
+    ok(wtsinfoA->OutgoingCompressedBytes == 0, "got %lu\n", wtsinfoA->OutgoingCompressedBytes);
+    ok(!strcmp(wtsinfoA->WinStationName, "Console"), "got %s\n", wtsinfoA->WinStationName);
+    ok(!stricmp(wtsinfoA->Domain, computername), "expected %s, got %s\n", computername, wtsinfoA->Domain);
+    ok(!stricmp(wtsinfoA->UserName, username), "expected %s, got %s\n", username, wtsinfoA->UserName);
+    ok(t1 <= wtsinfoA->CurrentTime.QuadPart,
+            "out of order %s %s\n",
+            wine_dbgstr_longlong(t1), wine_dbgstr_longlong(wtsinfoA->CurrentTime.QuadPart));
+    ok(wtsinfoA->CurrentTime.QuadPart <= t2,
+            "out of order %s %s\n",
+            wine_dbgstr_longlong(wtsinfoA->CurrentTime.QuadPart), wine_dbgstr_longlong(t2));
+    WTSFreeMemory(wtsinfoA);
 }
 
 static void test_WTSQueryUserToken(void)
@@ -305,6 +396,46 @@ static void test_WTSQueryUserToken(void)
     ok(GetLastError()==ERROR_INVALID_PARAMETER, "expected ERROR_INVALID_PARAMETER got: %ld\n", GetLastError());
 }
 
+static void test_WTSEnumerateSessions(void)
+{
+    BOOL console_found = FALSE, services_found = FALSE;
+    WTS_SESSION_INFOW *info;
+    WTS_SESSION_INFOA *infoA;
+    DWORD count, count2;
+    unsigned int i;
+    BOOL bret;
+
+    bret = WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &info, &count);
+    ok(bret, "got error %lu.\n", GetLastError());
+    todo_wine_if(count == 1) ok(count >= 2, "got %lu.\n", count);
+
+    bret = WTSEnumerateSessionsA(WTS_CURRENT_SERVER_HANDLE, 0, 1, &infoA, &count2);
+    ok(bret, "got error %lu.\n", GetLastError());
+    ok(count2 == count, "got %lu.\n", count2);
+
+    for (i = 0; i < count; ++i)
+    {
+        trace("SessionId %lu, name %s, State %d.\n", info[i].SessionId, debugstr_w(info[i].pWinStationName), info[i].State);
+        if (!wcscmp(info[i].pWinStationName, L"Console"))
+        {
+            console_found = TRUE;
+            ok(info[i].State == WTSActive, "got State %d.\n", info[i].State);
+            ok(!strcmp(infoA[i].pWinStationName, "Console"), "got %s.\n", debugstr_a(infoA[i].pWinStationName));
+        }
+        else if (!wcscmp(info[i].pWinStationName, L"Services"))
+        {
+            services_found = TRUE;
+            ok(info[i].State == WTSDisconnected, "got State %d.\n", info[i].State);
+            ok(!strcmp(infoA[i].pWinStationName, "Services"), "got %s.\n", debugstr_a(infoA[i].pWinStationName));
+        }
+    }
+    ok(console_found, "Console session not found.\n");
+    todo_wine ok(services_found, "Services session not found.\n");
+
+    WTSFreeMemory(info);
+    WTSFreeMemory(infoA);
+}
+
 START_TEST (wtsapi)
 {
     pWTSEnumerateProcessesExW = (void *)GetProcAddress(GetModuleHandleA("wtsapi32"), "WTSEnumerateProcessesExW");
@@ -313,4 +444,5 @@ START_TEST (wtsapi)
     test_WTSEnumerateProcessesW();
     test_WTSQuerySessionInformation();
     test_WTSQueryUserToken();
+    test_WTSEnumerateSessions();
 }

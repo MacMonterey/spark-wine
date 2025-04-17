@@ -92,9 +92,11 @@ struct tlsdata
     struct list       spies;         /* Spies installed with CoRegisterInitializeSpy */
     DWORD             spies_lock;
     DWORD             cancelcount;
+    CO_MTA_USAGE_COOKIE implicit_mta_cookie; /* mta referenced by roapi from sta thread */
 };
 
 extern HRESULT WINAPI InternalTlsAllocData(struct tlsdata **data);
+extern BOOL WINAPI InternalIsProcessInitialized(void);
 
 static inline HRESULT com_get_tlsdata(struct tlsdata **data)
 {
@@ -161,6 +163,7 @@ void apartment_release(struct apartment *apt);
 struct apartment * apartment_get_current_or_mta(void);
 HRESULT apartment_increment_mta_usage(CO_MTA_USAGE_COOKIE *cookie);
 void apartment_decrement_mta_usage(CO_MTA_USAGE_COOKIE cookie);
+HRESULT ensure_mta(void);
 struct apartment * apartment_get_mta(void);
 HRESULT apartment_get_inproc_class_object(struct apartment *apt, const struct class_reg_data *regdata,
         REFCLSID rclsid, REFIID riid, DWORD class_context, void **ppv);
@@ -256,4 +259,5 @@ struct ifstub * stub_manager_new_ifstub(struct stub_manager *m, IRpcStubBuffer *
 HRESULT ipid_get_dispatch_params(const IPID *ipid, struct apartment **stub_apt,
         struct stub_manager **manager, IRpcStubBuffer **stub, IRpcChannelBuffer **chan,
         IID *iid, IUnknown **iface);
+HRESULT ipid_get_dest_context(const IPID *ipid, MSHCTX *dest_context, void **dest_context_data);
 HRESULT start_apartment_remote_unknown(struct apartment *apt);

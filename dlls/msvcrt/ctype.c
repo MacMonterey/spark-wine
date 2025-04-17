@@ -453,6 +453,22 @@ int CDECL __iscsymf(int c)
 }
 
 /*********************************************************************
+ *		__iswcsym (MSVCRT.@)
+ */
+int CDECL __iswcsym(wint_t c)
+{
+  return (iswalnum(c) || c == '_');
+}
+
+/*********************************************************************
+ *		__iswcsymf (MSVCRT.@)
+ */
+int CDECL __iswcsymf(wint_t c)
+{
+  return (iswalpha(c) || c == '_');
+}
+
+/*********************************************************************
  *		_toupper_l (MSVCRT.@)
  */
 int CDECL _toupper_l(int c, _locale_t locale)
@@ -466,7 +482,11 @@ int CDECL _toupper_l(int c, _locale_t locale)
         locinfo = locale->locinfo;
 
     if((unsigned)c < 256)
+    {
+        if(locinfo->pctype[c] & _LEADBYTE)
+            return c;
         return locinfo->pcumap[c];
+    }
 
     if(locinfo->pctype[(c>>8)&255] & _LEADBYTE)
         *p++ = (c>>8) & 255;
@@ -520,7 +540,11 @@ int CDECL _tolower_l(int c, _locale_t locale)
         locinfo = locale->locinfo;
 
     if((unsigned)c < 256)
+    {
+        if(locinfo->pctype[c] & _LEADBYTE)
+            return c;
         return locinfo->pclmap[c];
+    }
 
     if(locinfo->pctype[(c>>8)&255] & _LEADBYTE)
         *p++ = (c>>8) & 255;

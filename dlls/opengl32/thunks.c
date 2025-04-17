@@ -43,15 +43,6 @@ BOOL WINAPI wglDeleteContext( HGLRC oldContext )
     return args.ret;
 }
 
-int WINAPI wglDescribePixelFormat( HDC hdc, int ipfd, UINT cjpfd, PIXELFORMATDESCRIPTOR *ppfd )
-{
-    struct wglDescribePixelFormat_params args = { .teb = NtCurrentTeb(), .hdc = hdc, .ipfd = ipfd, .cjpfd = cjpfd, .ppfd = ppfd };
-    NTSTATUS status;
-    TRACE( "hdc %p, ipfd %d, cjpfd %u, ppfd %p\n", hdc, ipfd, cjpfd, ppfd );
-    if ((status = UNIX_CALL( wglDescribePixelFormat, &args ))) WARN( "wglDescribePixelFormat returned %#lx\n", status );
-    return args.ret;
-}
-
 BOOL WINAPI wglMakeCurrent( HDC hDc, HGLRC newContext )
 {
     struct wglMakeCurrent_params args = { .teb = NtCurrentTeb(), .hDc = hDc, .newContext = newContext };
@@ -24173,15 +24164,6 @@ static BOOL WINAPI wglBindTexImageARB( HPBUFFERARB hPbuffer, int iBuffer )
     return args.ret;
 }
 
-static BOOL WINAPI wglChoosePixelFormatARB( HDC hdc, const int *piAttribIList, const FLOAT *pfAttribFList, UINT nMaxFormats, int *piFormats, UINT *nNumFormats )
-{
-    struct wglChoosePixelFormatARB_params args = { .teb = NtCurrentTeb(), .hdc = hdc, .piAttribIList = piAttribIList, .pfAttribFList = pfAttribFList, .nMaxFormats = nMaxFormats, .piFormats = piFormats, .nNumFormats = nNumFormats };
-    NTSTATUS status;
-    TRACE( "hdc %p, piAttribIList %p, pfAttribFList %p, nMaxFormats %u, piFormats %p, nNumFormats %p\n", hdc, piAttribIList, pfAttribFList, nMaxFormats, piFormats, nNumFormats );
-    if ((status = UNIX_CALL( wglChoosePixelFormatARB, &args ))) WARN( "wglChoosePixelFormatARB returned %#lx\n", status );
-    return args.ret;
-}
-
 static HGLRC WINAPI wglCreateContextAttribsARB( HDC hDC, HGLRC hShareContext, const int *attribList )
 {
     struct wglCreateContextAttribsARB_params args = { .teb = NtCurrentTeb(), .hDC = hDC, .hShareContext = hShareContext, .attribList = attribList };
@@ -24223,24 +24205,6 @@ static HDC WINAPI wglGetPbufferDCARB( HPBUFFERARB hPbuffer )
     NTSTATUS status;
     TRACE( "hPbuffer %p\n", hPbuffer );
     if ((status = UNIX_CALL( wglGetPbufferDCARB, &args ))) WARN( "wglGetPbufferDCARB returned %#lx\n", status );
-    return args.ret;
-}
-
-static BOOL WINAPI wglGetPixelFormatAttribfvARB( HDC hdc, int iPixelFormat, int iLayerPlane, UINT nAttributes, const int *piAttributes, FLOAT *pfValues )
-{
-    struct wglGetPixelFormatAttribfvARB_params args = { .teb = NtCurrentTeb(), .hdc = hdc, .iPixelFormat = iPixelFormat, .iLayerPlane = iLayerPlane, .nAttributes = nAttributes, .piAttributes = piAttributes, .pfValues = pfValues };
-    NTSTATUS status;
-    TRACE( "hdc %p, iPixelFormat %d, iLayerPlane %d, nAttributes %u, piAttributes %p, pfValues %p\n", hdc, iPixelFormat, iLayerPlane, nAttributes, piAttributes, pfValues );
-    if ((status = UNIX_CALL( wglGetPixelFormatAttribfvARB, &args ))) WARN( "wglGetPixelFormatAttribfvARB returned %#lx\n", status );
-    return args.ret;
-}
-
-static BOOL WINAPI wglGetPixelFormatAttribivARB( HDC hdc, int iPixelFormat, int iLayerPlane, UINT nAttributes, const int *piAttributes, int *piValues )
-{
-    struct wglGetPixelFormatAttribivARB_params args = { .teb = NtCurrentTeb(), .hdc = hdc, .iPixelFormat = iPixelFormat, .iLayerPlane = iLayerPlane, .nAttributes = nAttributes, .piAttributes = piAttributes, .piValues = piValues };
-    NTSTATUS status;
-    TRACE( "hdc %p, iPixelFormat %d, iLayerPlane %d, nAttributes %u, piAttributes %p, piValues %p\n", hdc, iPixelFormat, iLayerPlane, nAttributes, piAttributes, piValues );
-    if ((status = UNIX_CALL( wglGetPixelFormatAttribivARB, &args ))) WARN( "wglGetPixelFormatAttribivARB returned %#lx\n", status );
     return args.ret;
 }
 
@@ -24334,23 +24298,26 @@ static BOOL WINAPI wglSwapIntervalEXT( int interval )
     return args.ret;
 }
 
-extern const GLubyte * WINAPI glGetStringi( GLenum name, GLuint index ) DECLSPEC_HIDDEN;
-extern void * WINAPI glMapBuffer( GLenum target, GLenum access ) DECLSPEC_HIDDEN;
-extern void * WINAPI glMapBufferARB( GLenum target, GLenum access ) DECLSPEC_HIDDEN;
-extern void * WINAPI glMapBufferRange( GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access ) DECLSPEC_HIDDEN;
-extern void * WINAPI glMapNamedBuffer( GLuint buffer, GLenum access ) DECLSPEC_HIDDEN;
-extern void * WINAPI glMapNamedBufferEXT( GLuint buffer, GLenum access ) DECLSPEC_HIDDEN;
-extern void * WINAPI glMapNamedBufferRange( GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access ) DECLSPEC_HIDDEN;
-extern void * WINAPI glMapNamedBufferRangeEXT( GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access ) DECLSPEC_HIDDEN;
-extern GLboolean WINAPI glUnmapBuffer( GLenum target ) DECLSPEC_HIDDEN;
-extern GLboolean WINAPI glUnmapBufferARB( GLenum target ) DECLSPEC_HIDDEN;
-extern GLboolean WINAPI glUnmapNamedBuffer( GLuint buffer ) DECLSPEC_HIDDEN;
-extern GLboolean WINAPI glUnmapNamedBufferEXT( GLuint buffer ) DECLSPEC_HIDDEN;
-extern HDC WINAPI wglGetCurrentReadDCARB(void) DECLSPEC_HIDDEN;
-extern const char * WINAPI wglGetExtensionsStringARB( HDC hdc ) DECLSPEC_HIDDEN;
-extern const char * WINAPI wglGetExtensionsStringEXT(void) DECLSPEC_HIDDEN;
-extern const GLchar * WINAPI wglQueryCurrentRendererStringWINE( GLenum attribute ) DECLSPEC_HIDDEN;
-extern const GLchar * WINAPI wglQueryRendererStringWINE( HDC dc, GLint renderer, GLenum attribute ) DECLSPEC_HIDDEN;
+extern const GLubyte * WINAPI glGetStringi( GLenum name, GLuint index );
+extern void * WINAPI glMapBuffer( GLenum target, GLenum access );
+extern void * WINAPI glMapBufferARB( GLenum target, GLenum access );
+extern void * WINAPI glMapBufferRange( GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access );
+extern void * WINAPI glMapNamedBuffer( GLuint buffer, GLenum access );
+extern void * WINAPI glMapNamedBufferEXT( GLuint buffer, GLenum access );
+extern void * WINAPI glMapNamedBufferRange( GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access );
+extern void * WINAPI glMapNamedBufferRangeEXT( GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access );
+extern GLboolean WINAPI glUnmapBuffer( GLenum target );
+extern GLboolean WINAPI glUnmapBufferARB( GLenum target );
+extern GLboolean WINAPI glUnmapNamedBuffer( GLuint buffer );
+extern GLboolean WINAPI glUnmapNamedBufferEXT( GLuint buffer );
+extern BOOL WINAPI wglChoosePixelFormatARB( HDC hdc, const int *piAttribIList, const FLOAT *pfAttribFList, UINT nMaxFormats, int *piFormats, UINT *nNumFormats );
+extern HDC WINAPI wglGetCurrentReadDCARB(void);
+extern const char * WINAPI wglGetExtensionsStringARB( HDC hdc );
+extern const char * WINAPI wglGetExtensionsStringEXT(void);
+extern BOOL WINAPI wglGetPixelFormatAttribfvARB( HDC hdc, int iPixelFormat, int iLayerPlane, UINT nAttributes, const int *piAttributes, FLOAT *pfValues );
+extern BOOL WINAPI wglGetPixelFormatAttribivARB( HDC hdc, int iPixelFormat, int iLayerPlane, UINT nAttributes, const int *piAttributes, int *piValues );
+extern const GLchar * WINAPI wglQueryCurrentRendererStringWINE( GLenum attribute );
+extern const GLchar * WINAPI wglQueryRendererStringWINE( HDC dc, GLint renderer, GLenum attribute );
 const void *extension_procs[] =
 {
     glAccumxOES,

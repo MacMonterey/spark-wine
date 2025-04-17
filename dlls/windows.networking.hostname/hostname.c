@@ -120,7 +120,7 @@ struct hostname
     IHostName IHostName_iface;
     LONG ref;
 
-    HSTRING rawname;
+    HSTRING raw_name;
 };
 
 static inline struct hostname *impl_from_IHostName( IHostName *iface )
@@ -161,7 +161,15 @@ static ULONG WINAPI hostname_Release( IHostName *iface )
 {
     struct hostname *impl = impl_from_IHostName( iface );
     ULONG ref = InterlockedDecrement( &impl->ref );
+
     TRACE( "iface %p decreasing refcount to %lu.\n", iface, ref );
+
+    if (!ref)
+    {
+        WindowsDeleteString( impl->raw_name );
+        free( impl );
+    }
+
     return ref;
 }
 
@@ -196,7 +204,7 @@ static HRESULT WINAPI hostname_get_RawName( IHostName *iface, HSTRING *value )
     TRACE( "iface %p, value %p.\n", iface, value );
 
     if (!value) return E_INVALIDARG;
-    return WindowsDuplicateString( impl->rawname, value );
+    return WindowsDuplicateString( impl->raw_name, value );
 }
 
 static HRESULT WINAPI hostname_get_DisplayName( IHostName *iface, HSTRING *value )
@@ -246,6 +254,7 @@ DEFINE_IINSPECTABLE( hostname_factory, IHostNameFactory, struct hostname_statics
 static HRESULT WINAPI hostname_factory_CreateHostName( IHostNameFactory *iface, HSTRING name, IHostName **value )
 {
     struct hostname *impl;
+    HRESULT hr;
 
     TRACE( "iface %p, name %s, value %p\n", iface, debugstr_hstring(name), value );
 
@@ -255,7 +264,11 @@ static HRESULT WINAPI hostname_factory_CreateHostName( IHostNameFactory *iface, 
 
     impl->IHostName_iface.lpVtbl = &hostname_vtbl;
     impl->ref = 1;
-    impl->rawname = name;
+    if (FAILED(hr = WindowsDuplicateString( name, &impl->raw_name )))
+    {
+        free( impl );
+        return hr;
+    }
 
     *value = &impl->IHostName_iface;
     TRACE( "created IHostName %p.\n", *value );

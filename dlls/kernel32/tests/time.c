@@ -681,7 +681,7 @@ static void test_GetCalendarInfo(void)
     char bufferA[20];
     WCHAR bufferW[20];
     DWORD val1, val2;
-    int ret, ret2;
+    int i, j, ret, ret2;
 
     if (!pGetCalendarInfoA || !pGetCalendarInfoW)
     {
@@ -744,6 +744,22 @@ static void test_GetCalendarInfo(void)
     ok( ret2, "GetCalendarInfoW failed err %lu\n", GetLastError() );
     ret2 = WideCharToMultiByte( CP_ACP, 0, bufferW, -1, NULL, 0, NULL, NULL );
     ok( ret == ret2, "got %d, expected %d\n", ret, ret2 );
+
+    for (i = CAL_GREGORIAN; i <= CAL_UMALQURA; i++)
+    {
+        WCHAR name[80];
+        ret = pGetCalendarInfoW( 0x0409, i, CAL_SCALNAME, name, ARRAY_SIZE(name), NULL);
+        for (j = CAL_ICALINTVALUE; j <= CAL_SRELATIVELONGDATE; j++)
+        {
+            ret2 = pGetCalendarInfoW( 0x0409, i, j, bufferW, ARRAY_SIZE(bufferW), NULL);
+            if (ret || j == CAL_ITWODIGITYEARMAX)
+                ok( ret2 || broken(j == CAL_SRELATIVELONGDATE),  /* win7 doesn't have this */
+                    "calendar %u %s value %02x failed\n", i, wine_dbgstr_w(name), j );
+            else
+                ok( !ret2, "calendar %u %s value %02x succeeded %s\n",
+                    i, wine_dbgstr_w(name), j, wine_dbgstr_w(bufferW) );
+        }
+    }
 }
 
 static void test_GetDynamicTimeZoneInformation(void)
@@ -1124,6 +1140,73 @@ static void test_QueryUnbiasedInterruptTime(void)
     else win_skip( "RtlQueryUnbiasedInterruptTime not supported\n" );
 }
 
+static void test_processor_idle_cycle_time(void)
+{
+    unsigned int cpu_count = NtCurrentTeb()->Peb->NumberOfProcessors;
+    ULONG64 buffer[64];
+    ULONG size;
+    DWORD err;
+    BOOL bret;
+
+    SetLastError( 0xdeadbeef );
+    size = 0;
+    bret = QueryIdleProcessorCycleTime( &size, NULL );
+    err = GetLastError();
+    ok( bret == TRUE && err == 0xdeadbeef, "got %d, %ld.\n", bret, err );
+    ok( size == cpu_count * sizeof(ULONG64), "got %lu.\n", size );
+
+    size = 4;
+    memset( buffer, 0xcc, sizeof(buffer) );
+    SetLastError( 0xdeadbeef );
+    bret = QueryIdleProcessorCycleTime( &size, NULL );
+    err = GetLastError();
+    ok( bret == TRUE && err == 0xdeadbeef, "got %d, %ld.\n", bret, err );
+    ok( size == 4, "got %lu.\n", size );
+    ok( buffer[0] == 0xcccccccccccccccc, "got %#I64x.\n", buffer[0] );
+
+    size = sizeof(buffer);
+    SetLastError( 0xdeadbeef );
+    bret = QueryIdleProcessorCycleTime( &size, NULL );
+    err = GetLastError();
+    ok( bret == TRUE && err == 0xdeadbeef, "got %d, %ld.\n", bret, err );
+    ok( size == sizeof(buffer), "got %lu.\n", size );
+
+    size = sizeof(buffer);
+    SetLastError( 0xdeadbeef );
+    bret = QueryIdleProcessorCycleTime( &size, buffer );
+    err = GetLastError();
+    ok( bret == TRUE && err == 0xdeadbeef, "got %d, %ld.\n", bret, err );
+    ok( size == cpu_count * sizeof(ULONG64), "got %lu.\n", size );
+
+    SetLastError( 0xdeadbeef );
+    size = 0;
+    bret = QueryIdleProcessorCycleTimeEx( 0, &size, NULL );
+    err = GetLastError();
+    ok( bret == TRUE && err == 0xdeadbeef, "got %d, %ld.\n", bret, err );
+    ok( size == cpu_count * sizeof(ULONG64), "got %lu.\n", size );
+
+    size = 4;
+    SetLastError( 0xdeadbeef );
+    bret = QueryIdleProcessorCycleTimeEx( 0, &size, NULL );
+    err = GetLastError();
+    ok( bret == TRUE && err == 0xdeadbeef, "got %d, %ld.\n", bret, err );
+    ok( size == 4, "got %lu.\n", size );
+
+    size = sizeof(buffer);
+    SetLastError( 0xdeadbeef );
+    bret = QueryIdleProcessorCycleTimeEx( 0, &size, NULL );
+    err = GetLastError();
+    ok( bret == TRUE && err == 0xdeadbeef, "got %d, %ld.\n", bret, err );
+    ok( size == sizeof(buffer), "got %lu.\n", size );
+
+    size = sizeof(buffer);
+    SetLastError( 0xdeadbeef );
+    bret = QueryIdleProcessorCycleTimeEx( 0, &size, buffer );
+    err = GetLastError();
+    ok( bret == TRUE && err == 0xdeadbeef, "got %d, %ld.\n", bret, err );
+    ok( size == cpu_count * sizeof(ULONG64), "got %lu.\n", size );
+}
+
 START_TEST(time)
 {
     HMODULE hKernel = GetModuleHandleA("kernel32");
@@ -1155,4 +1238,5 @@ START_TEST(time)
     test_GetTimeZoneInformationForYear();
     test_GetTickCount();
     test_QueryUnbiasedInterruptTime();
+    test_processor_idle_cycle_time();
 }

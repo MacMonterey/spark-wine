@@ -20,7 +20,6 @@
  */
 
 #define COBJMACROS
-#define NONAMELESSUNION
 
 #include <stdarg.h>
 
@@ -418,6 +417,9 @@ static struct control *dialog_create_window( msi_dialog *dialog, MSIRECORD *rec,
         deformat_string( dialog->package, text, &title_font );
         font = dialog_get_style( title_font, &title );
     }
+
+    if (!wcsicmp( MSI_RecordGetString( rec, 3 ), L"Line" ))
+        height = 2; /* line is exactly 2 units in height */
 
     control->hwnd = CreateWindowExW( exstyle, szCls, title, style,
                           x, y, width, height, parent, NULL, NULL, NULL );
@@ -1163,60 +1165,8 @@ static UINT dialog_checkbox_control( msi_dialog *dialog, MSIRECORD *rec )
 
 static UINT dialog_line_control( msi_dialog *dialog, MSIRECORD *rec )
 {
-    DWORD attributes;
-    LPCWSTR name;
-    DWORD style, exstyle = 0;
-    DWORD x, y, width, height;
-    struct control *control;
-
-    TRACE("%p %p\n", dialog, rec);
-
-    style = WS_CHILD | SS_ETCHEDHORZ | SS_SUNKEN;
-
-    name = MSI_RecordGetString( rec, 2 );
-    attributes = MSI_RecordGetInteger( rec, 8 );
-
-    if( attributes & msidbControlAttributesVisible )
-        style |= WS_VISIBLE;
-    if( ~attributes & msidbControlAttributesEnabled )
-        style |= WS_DISABLED;
-    if( attributes & msidbControlAttributesSunken )
-        exstyle |= WS_EX_CLIENTEDGE;
-
-    dialog_map_events( dialog, name );
-
-    control = malloc( offsetof( struct control, name[wcslen( name ) + 1] ) );
-    if (!control)
-        return ERROR_OUTOFMEMORY;
-
-    lstrcpyW( control->name, name );
-    list_add_head( &dialog->controls, &control->entry );
-    control->handler = NULL;
-    control->property = NULL;
-    control->value = NULL;
-    control->hBitmap = NULL;
-    control->hIcon = NULL;
-    control->hDll = NULL;
-    control->tabnext = wcsdup( MSI_RecordGetString( rec, 11 ) );
-    control->type = wcsdup( MSI_RecordGetString( rec, 3 ) );
-    control->progress_current = 0;
-    control->progress_max = 100;
-    control->progress_backwards = FALSE;
-
-    x = MSI_RecordGetInteger( rec, 4 );
-    y = MSI_RecordGetInteger( rec, 5 );
-    width = MSI_RecordGetInteger( rec, 6 );
-
-    x = dialog_scale_unit( dialog, x );
-    y = dialog_scale_unit( dialog, y );
-    width = dialog_scale_unit( dialog, width );
-    height = 2; /* line is exactly 2 units in height */
-
-    control->hwnd = CreateWindowExW( exstyle, L"Static", NULL, style,
-                          x, y, width, height, dialog->hwnd, NULL, NULL, NULL );
-
-    TRACE("Dialog %s control %s hwnd %p\n",
-           debugstr_w(dialog->name), debugstr_w(name), control->hwnd );
+    if (!dialog_add_control( dialog, rec, L"Static", SS_ETCHEDHORZ | SS_SUNKEN))
+        return ERROR_FUNCTION_FAILED;
 
     return ERROR_SUCCESS;
 }
@@ -2488,9 +2438,9 @@ static void seltree_add_child_features( MSIPACKAGE *package, HWND hwnd, const WC
         memset( &tvis, 0, sizeof tvis );
         tvis.hParent = hParent;
         tvis.hInsertAfter = TVI_LAST;
-        tvis.u.item.mask = TVIF_TEXT | TVIF_PARAM;
-        tvis.u.item.pszText = feature->Title;
-        tvis.u.item.lParam = (LPARAM) feature;
+        tvis.item.mask = TVIF_TEXT | TVIF_PARAM;
+        tvis.item.pszText = feature->Title;
+        tvis.item.lParam = (LPARAM) feature;
 
         hitem = (HTREEITEM) SendMessageW( hwnd, TVM_INSERTITEMW, 0, (LPARAM) &tvis );
         if (!hitem)
@@ -2912,8 +2862,11 @@ static UINT dialog_directorylist_up( msi_dialog *dialog )
 
     /* strip off the last directory */
     ptr = PathFindFileNameW( path );
-    if (ptr != path) *(ptr - 1) = '\0';
-    PathAddBackslashW( path );
+    if (ptr != path)
+    {
+        *(ptr - 1) = '\0';
+        PathAddBackslashW( path );
+    }
 
     dialog_set_property( dialog->package, prop, path );
 
@@ -3154,14 +3107,12 @@ static LONGLONG vcl_get_cost( msi_dialog *dialog )
         if (ERROR_SUCCESS == (MSI_GetFeatureCost(dialog->package, feature,
                 MSICOSTTREE_SELFONLY, INSTALLSTATE_LOCAL, &each_cost)))
         {
-            /* each_cost is in 512-byte units */
-            total_cost += each_cost * 512;
+            total_cost += each_cost;
         }
         if (ERROR_SUCCESS == (MSI_GetFeatureCost(dialog->package, feature,
                 MSICOSTTREE_SELFONLY, INSTALLSTATE_ABSENT, &each_cost)))
         {
-            /* each_cost is in 512-byte units */
-            total_cost -= each_cost * 512;
+            total_cost -= each_cost;
         }
     }
     return total_cost;
@@ -3178,7 +3129,7 @@ static void dialog_vcl_add_drives( msi_dialog *dialog, struct control *control )
     DWORD size, flags;
     int i = 0;
 
-    cost = vcl_get_cost(dialog);
+    cost = vcl_get_cost(dialog) * 512;
     StrFormatByteSizeW(cost, cost_text, MAX_PATH);
 
     size = GetLogicalDriveStringsW( 0, NULL );

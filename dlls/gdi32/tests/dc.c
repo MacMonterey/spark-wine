@@ -19,9 +19,6 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#define NONAMELESSSTRUCT
-#define NONAMELESSUNION
-
 #include <assert.h>
 #include <stdio.h>
 
@@ -41,6 +38,8 @@ static void test_dc_values(void)
     HDC hdc = CreateDCA("DISPLAY", NULL, NULL, NULL);
     COLORREF color;
     int extra, attr;
+    float limit;
+    BOOL ret;
 
     ok( hdc != NULL, "CreateDC failed\n" );
     color = SetBkColor( hdc, 0x12345678 );
@@ -93,6 +92,22 @@ static void test_dc_values(void)
     attr = GetDeviceCaps(ULongToHandle(0xdeadbeef), TECHNOLOGY);
     ok(!attr, "GetDeviceCaps rets %d\n", attr);
     ok(GetLastError() == ERROR_INVALID_HANDLE, "GetLastError() = %lu\n", GetLastError());
+
+    /* Miter limit */
+    limit = 123.0f;
+    ret = GetMiterLimit(hdc, &limit);
+    ok(ret, "Unexpected return value.\n");
+    ok(limit == 10.0f, "Unexpected default miter limit %f.\n", limit);
+
+    limit = 456.0;
+    ret = SetMiterLimit(hdc, 0.9f, &limit);
+    ok(!ret, "Unexpected return value.\n");
+    ok(limit == 456.0f, "Unexpected default miter limit %f.\n", limit);
+
+    limit = 0.0;
+    ret = SetMiterLimit(hdc, 1.0f, &limit);
+    ok(ret, "Unexpected return value.\n");
+    ok(limit == 10.0f, "Unexpected default miter limit %f.\n", limit);
 
     DeleteDC( hdc );
 }
@@ -616,7 +631,7 @@ static void test_CreateCompatibleDC(void)
     dm.dmSize = sizeof(dm);
     bRet = EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm);
     ok(bRet, "EnumDisplaySettingsEx failed\n");
-    dm.u1.s1.dmScale = 200;
+    dm.dmScale = 200;
     dm.dmFields |= DM_SCALE;
     hdc = CreateDCA( "DISPLAY", NULL, NULL, &dm );
 
@@ -1346,14 +1361,14 @@ static HDC create_printer_dc(int scale, BOOL reset)
     if (!pOpenPrinterA( buffer, &hprn, NULL )) goto done;
 
     pGetPrinterA( hprn, 2, NULL, 0, &len );
-    pbuf = HeapAlloc( GetProcessHeap(), 0, len );
+    pbuf = malloc( len );
     if (!pGetPrinterA( hprn, 2, (LPBYTE)pbuf, len, &len )) goto done;
 
     pGetPrinterDriverA( hprn, NULL, 3, NULL, 0, &len );
-    dbuf = HeapAlloc( GetProcessHeap(), 0, len );
+    dbuf = malloc( len );
     if (!pGetPrinterDriverA( hprn, NULL, 3, (LPBYTE)dbuf, len, &len )) goto done;
 
-    pbuf->pDevMode->u1.s1.dmScale = scale;
+    pbuf->pDevMode->dmScale = scale;
     pbuf->pDevMode->dmFields |= DM_SCALE;
 
     hdc = CreateDCA( dbuf->pDriverPath, pbuf->pPrinterName, pbuf->pPortName, pbuf->pDevMode );
@@ -1363,8 +1378,8 @@ static HDC create_printer_dc(int scale, BOOL reset)
 
     if (reset) ResetDCA( hdc, pbuf->pDevMode );
 done:
-    HeapFree( GetProcessHeap(), 0, dbuf );
-    HeapFree( GetProcessHeap(), 0, pbuf );
+    free( dbuf );
+    free( pbuf );
     if (hprn) pClosePrinter( hprn );
     if (winspool) FreeLibrary( winspool );
     if (!hdc) skip( "could not create a DC for the default printer\n" );
@@ -1600,7 +1615,7 @@ static void test_clip_box(void)
 
     EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &scale_mode);
     scale_mode.dmFields |= DM_SCALE;
-    scale_mode.u1.s1.dmScale = 200;
+    scale_mode.dmScale = 200;
 
     SetRect(&screen_rect, GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
             GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN),

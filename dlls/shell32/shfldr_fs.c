@@ -588,7 +588,7 @@ static HRESULT SHELL32_CreateExtensionUIObject(IShellFolder2 *iface,
     IPersistFile *persist_file;
     char extensionA[20];
     WCHAR extensionW[20], buf[MAX_PATH];
-    DWORD size = MAX_PATH;
+    DWORD size = sizeof(buf);
     STRRET path;
     WCHAR *file;
     GUID guid;
@@ -710,12 +710,12 @@ IShellFolder_fnGetUIObjectOf (IShellFolder2 * iface,
         } else if (IsEqualIID (riid, &IID_IExtractIconA) && (cidl == 1)) {
             pidl = ILCombine (This->pidlRoot, apidl[0]);
             pObj = (LPUNKNOWN) IExtractIconA_Constructor (pidl);
-            SHFree (pidl);
+            ILFree(pidl);
             hr = S_OK;
         } else if (IsEqualIID (riid, &IID_IExtractIconW) && (cidl == 1)) {
             pidl = ILCombine (This->pidlRoot, apidl[0]);
             pObj = (LPUNKNOWN) IExtractIconW_Constructor (pidl);
-            SHFree (pidl);
+            ILFree(pidl);
             hr = S_OK;
         } else if (IsEqualIID (riid, &IID_IDropTarget) && (cidl >= 1)) {
             hr = IShellFolder2_QueryInterface (iface, &IID_IDropTarget,
@@ -724,7 +724,7 @@ IShellFolder_fnGetUIObjectOf (IShellFolder2 * iface,
          IsEqualIID(riid,&IID_IShellLinkA)) && (cidl == 1)) {
             pidl = ILCombine (This->pidlRoot, apidl[0]);
             hr = IShellLink_ConstructFromFile(NULL, riid, pidl, &pObj);
-            SHFree (pidl);
+            ILFree(pidl);
         } else {
             hr = E_NOINTERFACE;
         }
@@ -807,7 +807,7 @@ static void get_display_name( WCHAR dest[MAX_PATH], const WCHAR *path, LPCITEMID
         if (!is_unix)
         {
             len = WideCharToMultiByte( CP_UNIXCP, 0, path + 8, -1, NULL, 0, NULL, NULL );
-            buffer = heap_alloc( len );
+            buffer = malloc( len );
             len = WideCharToMultiByte( CP_UNIXCP, 0, path + 8, -1, buffer, len, NULL, NULL );
             for (i = 0; i < len; i++) if (buffer[i] == '\\') buffer[i] = '/';
             if ((res = wine_get_dos_file_name( buffer )))
@@ -1232,7 +1232,7 @@ static WCHAR *build_paths_list(LPCWSTR wszBasePath, int cidl, const LPCITEMIDLIS
     int i;
     
     iPathLen = lstrlenW(wszBasePath);
-    wszPathsList = heap_alloc(MAX_PATH*sizeof(WCHAR)*cidl+1);
+    wszPathsList = malloc(MAX_PATH * sizeof(WCHAR) * cidl + 1);
     wszListPos = wszPathsList;
     
     for (i = 0; i < cidl; i++) {
@@ -1305,66 +1305,12 @@ ISFHelper_fnDeleteItems (ISFHelper * iface, UINT cidl, LPCITEMIDLIST * apidl)
         {
             LPITEMIDLIST pidl = ILCombine(This->pidlRoot, apidl[i]);
             SHChangeNotify(wEventId, SHCNF_IDLIST, pidl, NULL);
-            SHFree(pidl);
+            ILFree(pidl);
         }
 
         wszCurrentPath += lstrlenW(wszCurrentPath)+1;
     }
-    heap_free(wszPathsList);
-    return ret;
-}
-
-/****************************************************************************
- * ISFHelper_fnCopyItems
- *
- * copies items to this folder
- */
-static HRESULT WINAPI
-ISFHelper_fnCopyItems (ISFHelper * iface, IShellFolder * pSFFrom, UINT cidl,
-                       LPCITEMIDLIST * apidl)
-{
-    HRESULT ret=E_FAIL;
-    IPersistFolder2 *ppf2 = NULL;
-    WCHAR wszSrcPathRoot[MAX_PATH],
-      wszDstPath[MAX_PATH+1];
-    WCHAR *wszSrcPathsList;
-    IGenericSFImpl *This = impl_from_ISFHelper(iface);
-
-    SHFILEOPSTRUCTW fop;
-
-    TRACE ("(%p)->(%p,%u,%p)\n", This, pSFFrom, cidl, apidl);
-
-    IShellFolder_QueryInterface (pSFFrom, &IID_IPersistFolder2,
-     (LPVOID *) & ppf2);
-    if (ppf2) {
-        LPITEMIDLIST pidl;
-
-        if (SUCCEEDED (IPersistFolder2_GetCurFolder (ppf2, &pidl))) {
-            SHGetPathFromIDListW (pidl, wszSrcPathRoot);
-            if (This->sPathTarget)
-                lstrcpynW(wszDstPath, This->sPathTarget, MAX_PATH);
-            else
-                wszDstPath[0] = 0;
-            PathAddBackslashW(wszSrcPathRoot);
-            PathAddBackslashW(wszDstPath);
-            wszSrcPathsList = build_paths_list(wszSrcPathRoot, cidl, apidl);
-            ZeroMemory(&fop, sizeof(fop));
-            fop.hwnd = GetActiveWindow();
-            fop.wFunc = FO_COPY;
-            fop.pFrom = wszSrcPathsList;
-            fop.pTo = wszDstPath;
-            fop.fFlags = FOF_ALLOWUNDO;
-            ret = S_OK;
-            if(SHFileOperationW(&fop))
-            {
-                WARN("Copy failed\n");
-                ret = E_FAIL;
-            }
-            heap_free(wszSrcPathsList);
-        }
-        SHFree(pidl);
-        IPersistFolder2_Release(ppf2);
-    }
+    free(wszPathsList);
     return ret;
 }
 
@@ -1376,7 +1322,6 @@ static const ISFHelperVtbl shvt =
     ISFHelper_fnGetUniqueName,
     ISFHelper_fnAddFolder,
     ISFHelper_fnDeleteItems,
-    ISFHelper_fnCopyItems
 };
 
 /************************************************************************
@@ -1852,7 +1797,7 @@ static const IDropTargetVtbl dtvt = {
     ISFDropTarget_Drop
 };
 
-static HRESULT create_fs( IUnknown *outer_unk, REFIID riid, void **ppv, const CLSID *clsid)
+static HRESULT create_fs( IUnknown *outer_unk, REFIID riid, void **ppv, const CLSID *clsid, const WCHAR *path_target)
 {
     IGenericSFImpl *sf;
     HRESULT hr;
@@ -1875,6 +1820,16 @@ static HRESULT create_fs( IUnknown *outer_unk, REFIID riid, void **ppv, const CL
     sf->ISFHelper_iface.lpVtbl = &shvt;
     sf->pclsid = clsid;
     sf->outer_unk = outer_unk ? outer_unk : &sf->IUnknown_inner;
+    if (path_target)
+    {
+        SIZE_T size = (wcslen(path_target) + 1) * sizeof(WCHAR);
+        if (!(sf->sPathTarget = SHAlloc(size)))
+        {
+            LocalFree(sf);
+            return E_OUTOFMEMORY;
+        }
+        memcpy(sf->sPathTarget, path_target, size);
+    }
 
     hr = IUnknown_QueryInterface(&sf->IUnknown_inner, riid, ppv);
     IUnknown_Release(&sf->IUnknown_inner);
@@ -1885,25 +1840,25 @@ static HRESULT create_fs( IUnknown *outer_unk, REFIID riid, void **ppv, const CL
 
 HRESULT WINAPI IFSFolder_Constructor(IUnknown *outer_unk, REFIID riid, void **ppv)
 {
-    return create_fs( outer_unk, riid, ppv, &CLSID_ShellFSFolder );
+    return create_fs( outer_unk, riid, ppv, &CLSID_ShellFSFolder, NULL );
 }
 
 HRESULT WINAPI UnixFolder_Constructor(IUnknown *outer_unk, REFIID riid, void **ppv)
 {
-    return create_fs( outer_unk, riid, ppv, &CLSID_UnixFolder );
+    return create_fs( outer_unk, riid, ppv, &CLSID_UnixFolder, L"\\\\?\\unix\\" );
 }
 
 HRESULT WINAPI UnixDosFolder_Constructor(IUnknown *outer_unk, REFIID riid, void **ppv)
 {
-    return create_fs( outer_unk, riid, ppv, &CLSID_UnixDosFolder );
+    return create_fs( outer_unk, riid, ppv, &CLSID_UnixDosFolder, NULL );
 }
 
 HRESULT WINAPI FolderShortcut_Constructor(IUnknown *outer_unk, REFIID riid, void **ppv)
 {
-    return create_fs( outer_unk, riid, ppv, &CLSID_FolderShortcut );
+    return create_fs( outer_unk, riid, ppv, &CLSID_FolderShortcut, NULL );
 }
 
 HRESULT WINAPI MyDocuments_Constructor(IUnknown *outer_unk, REFIID riid, void **ppv)
 {
-    return create_fs( outer_unk, riid, ppv, &CLSID_MyDocuments );
+    return create_fs( outer_unk, riid, ppv, &CLSID_MyDocuments, NULL );
 }

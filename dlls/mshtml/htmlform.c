@@ -251,59 +251,8 @@ static inline HTMLFormElement *impl_from_IHTMLFormElement(IHTMLFormElement *ifac
     return CONTAINING_RECORD(iface, HTMLFormElement, IHTMLFormElement_iface);
 }
 
-static HRESULT WINAPI HTMLFormElement_QueryInterface(IHTMLFormElement *iface,
-        REFIID riid, void **ppv)
-{
-    HTMLFormElement *This = impl_from_IHTMLFormElement(iface);
-
-    return IHTMLDOMNode_QueryInterface(&This->element.node.IHTMLDOMNode_iface, riid, ppv);
-}
-
-static ULONG WINAPI HTMLFormElement_AddRef(IHTMLFormElement *iface)
-{
-    HTMLFormElement *This = impl_from_IHTMLFormElement(iface);
-
-    return IHTMLDOMNode_AddRef(&This->element.node.IHTMLDOMNode_iface);
-}
-
-static ULONG WINAPI HTMLFormElement_Release(IHTMLFormElement *iface)
-{
-    HTMLFormElement *This = impl_from_IHTMLFormElement(iface);
-
-    return IHTMLDOMNode_Release(&This->element.node.IHTMLDOMNode_iface);
-}
-
-static HRESULT WINAPI HTMLFormElement_GetTypeInfoCount(IHTMLFormElement *iface, UINT *pctinfo)
-{
-    HTMLFormElement *This = impl_from_IHTMLFormElement(iface);
-    return IDispatchEx_GetTypeInfoCount(&This->element.node.event_target.dispex.IDispatchEx_iface, pctinfo);
-}
-
-static HRESULT WINAPI HTMLFormElement_GetTypeInfo(IHTMLFormElement *iface, UINT iTInfo,
-                                              LCID lcid, ITypeInfo **ppTInfo)
-{
-    HTMLFormElement *This = impl_from_IHTMLFormElement(iface);
-    return IDispatchEx_GetTypeInfo(&This->element.node.event_target.dispex.IDispatchEx_iface, iTInfo, lcid,
-            ppTInfo);
-}
-
-static HRESULT WINAPI HTMLFormElement_GetIDsOfNames(IHTMLFormElement *iface, REFIID riid,
-                                                LPOLESTR *rgszNames, UINT cNames,
-                                                LCID lcid, DISPID *rgDispId)
-{
-    HTMLFormElement *This = impl_from_IHTMLFormElement(iface);
-    return IDispatchEx_GetIDsOfNames(&This->element.node.event_target.dispex.IDispatchEx_iface, riid, rgszNames,
-            cNames, lcid, rgDispId);
-}
-
-static HRESULT WINAPI HTMLFormElement_Invoke(IHTMLFormElement *iface, DISPID dispIdMember,
-                            REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS *pDispParams,
-                            VARIANT *pVarResult, EXCEPINFO *pExcepInfo, UINT *puArgErr)
-{
-    HTMLFormElement *This = impl_from_IHTMLFormElement(iface);
-    return IDispatchEx_Invoke(&This->element.node.event_target.dispex.IDispatchEx_iface, dispIdMember, riid,
-            lcid, wFlags, pDispParams, pVarResult, pExcepInfo, puArgErr);
-}
+DISPEX_IDISPATCH_IMPL(HTMLFormElement, IHTMLFormElement,
+                      impl_from_IHTMLFormElement(iface)->element.node.event_target.dispex)
 
 static HRESULT WINAPI HTMLFormElement_put_action(IHTMLFormElement *iface, BSTR v)
 {
@@ -452,7 +401,7 @@ static HRESULT WINAPI HTMLFormElement_get_elements(IHTMLFormElement *iface, IDis
         return E_FAIL;
     }
 
-    *p = (IDispatch*)create_collection_from_htmlcol(elements, dispex_compat_mode(&This->element.node.event_target.dispex));
+    *p = (IDispatch*)create_collection_from_htmlcol(elements, &This->element.node.event_target.dispex);
     nsIDOMHTMLCollection_Release(elements);
     return S_OK;
 }
@@ -570,7 +519,7 @@ static HRESULT WINAPI HTMLFormElement_submit(IHTMLFormElement *iface)
 
     if(This->element.node.doc) {
         HTMLDocumentNode *doc = This->element.node.doc;
-        if(doc->window && doc->window->base.outer_window)
+        if(doc->window && !is_detached_window(doc->window))
             this_window = doc->window->base.outer_window;
     }
     if(!this_window) {
@@ -768,50 +717,49 @@ static const IHTMLFormElementVtbl HTMLFormElementVtbl = {
     HTMLFormElement_tags
 };
 
-static inline HTMLFormElement *impl_from_HTMLDOMNode(HTMLDOMNode *iface)
+static inline HTMLFormElement *impl_from_DispatchEx(DispatchEx *iface)
 {
-    return CONTAINING_RECORD(iface, HTMLFormElement, element.node);
+    return CONTAINING_RECORD(iface, HTMLFormElement, element.node.event_target.dispex);
 }
 
-static HRESULT HTMLFormElement_QI(HTMLDOMNode *iface, REFIID riid, void **ppv)
+static void *HTMLFormElement_query_interface(DispatchEx *dispex, REFIID riid)
 {
-    HTMLFormElement *This = impl_from_HTMLDOMNode(iface);
+    HTMLFormElement *This = impl_from_DispatchEx(dispex);
 
-    *ppv = NULL;
+    if(IsEqualGUID(&IID_IHTMLFormElement, riid))
+        return &This->IHTMLFormElement_iface;
+    if(IsEqualGUID(&DIID_DispHTMLFormElement, riid))
+        return &This->IHTMLFormElement_iface;
 
-    if(IsEqualGUID(&IID_IUnknown, riid)) {
-        TRACE("(%p)->(IID_IUnknown %p)\n", This, ppv);
-        *ppv = &This->IHTMLFormElement_iface;
-    }else if(IsEqualGUID(&IID_IDispatch, riid)) {
-        TRACE("(%p)->(IID_IDispatch %p)\n", This, ppv);
-        *ppv = &This->IHTMLFormElement_iface;
-    }else if(IsEqualGUID(&IID_IHTMLFormElement, riid)) {
-        TRACE("(%p)->(IID_IHTMLFormElement %p)\n", This, ppv);
-        *ppv = &This->IHTMLFormElement_iface;
-    }else if(IsEqualGUID(&DIID_DispHTMLFormElement, riid)) {
-        TRACE("(%p)->(DIID_DispHTMLFormElement %p)\n", This, ppv);
-        *ppv = &This->IHTMLFormElement_iface;
-    }
-
-    if(*ppv) {
-        IUnknown_AddRef((IUnknown*)*ppv);
-        return S_OK;
-    }
-
-    return HTMLElement_QI(&This->element.node, riid, ppv);
+    return HTMLElement_query_interface(&This->element.node.event_target.dispex, riid);
 }
 
-static HRESULT HTMLFormElement_get_dispid(HTMLDOMNode *iface,
-        BSTR name, DWORD grfdex, DISPID *pid)
+static void HTMLFormElement_traverse(DispatchEx *dispex, nsCycleCollectionTraversalCallback *cb)
 {
-    HTMLFormElement *This = impl_from_HTMLDOMNode(iface);
+    HTMLFormElement *This = impl_from_DispatchEx(dispex);
+    HTMLElement_traverse(dispex, cb);
+
+    if(This->nsform)
+        note_cc_edge((nsISupports*)This->nsform, "nsform", cb);
+}
+
+static void HTMLFormElement_unlink(DispatchEx *dispex)
+{
+    HTMLFormElement *This = impl_from_DispatchEx(dispex);
+    HTMLElement_unlink(dispex);
+    unlink_ref(&This->nsform);
+}
+
+static HRESULT HTMLFormElement_get_dispid(DispatchEx *dispex, const WCHAR *name, DWORD grfdex, DISPID *dispid)
+{
+    HTMLFormElement *This = impl_from_DispatchEx(dispex);
     nsIDOMHTMLCollection *elements;
     nsAString nsstr, name_str;
     UINT32 len, i;
     nsresult nsres;
     HRESULT hres = DISP_E_UNKNOWNNAME;
 
-    TRACE("(%p)->(%s %lx %p)\n", This, wine_dbgstr_w(name), grfdex, pid);
+    TRACE("(%p)->(%s %lx %p)\n", This, wine_dbgstr_w(name), grfdex, dispid);
 
     nsres = nsIDOMHTMLFormElement_GetElements(This->nsform, &elements);
     if(NS_FAILED(nsres)) {
@@ -835,7 +783,7 @@ static HRESULT HTMLFormElement_get_dispid(HTMLDOMNode *iface,
 
         i = wcstoul(name, &end_ptr, 10);
         if(!*end_ptr && i < len) {
-            *pid = MSHTML_DISPID_CUSTOM_MIN + i;
+            *dispid = MSHTML_DISPID_CUSTOM_MIN + i;
             return S_OK;
         }
     }
@@ -873,7 +821,7 @@ static HRESULT HTMLFormElement_get_dispid(HTMLDOMNode *iface,
         if(!wcsicmp(str, name)) {
             nsIDOMElement_Release(elem);
             /* FIXME: using index for dispid */
-            *pid = MSHTML_DISPID_CUSTOM_MIN + i;
+            *dispid = MSHTML_DISPID_CUSTOM_MIN + i;
             hres = S_OK;
             break;
         }
@@ -885,7 +833,7 @@ static HRESULT HTMLFormElement_get_dispid(HTMLDOMNode *iface,
             if(!wcsicmp(str, name)) {
                 nsAString_Finish(&name_str);
                 /* FIXME: using index for dispid */
-                *pid = MSHTML_DISPID_CUSTOM_MIN + i;
+                *dispid = MSHTML_DISPID_CUSTOM_MIN + i;
                 hres = S_OK;
                 break;
             }
@@ -898,36 +846,10 @@ static HRESULT HTMLFormElement_get_dispid(HTMLDOMNode *iface,
     return hres;
 }
 
-static HRESULT HTMLFormElement_dispex_get_name(HTMLDOMNode *iface, DISPID id, BSTR *name)
+static HRESULT HTMLFormElement_invoke(DispatchEx *dispex, DISPID id, LCID lcid, WORD flags, DISPPARAMS *params,
+        VARIANT *res, EXCEPINFO *ei, IServiceProvider *caller)
 {
-    HTMLFormElement *This = impl_from_HTMLDOMNode(iface);
-    DWORD idx = id - MSHTML_DISPID_CUSTOM_MIN;
-    nsIDOMHTMLCollection *elements;
-    nsresult nsres;
-    UINT32 len = 0;
-    WCHAR buf[11];
-
-    nsres = nsIDOMHTMLFormElement_GetElements(This->nsform, &elements);
-    if(NS_FAILED(nsres))
-        return map_nsresult(nsres);
-
-    nsres = nsIDOMHTMLCollection_GetLength(elements, &len);
-    nsIDOMHTMLCollection_Release(elements);
-    if(NS_FAILED(nsres))
-        return map_nsresult(nsres);
-
-    if(idx >= len)
-        return DISP_E_MEMBERNOTFOUND;
-
-    len = swprintf(buf, ARRAY_SIZE(buf), L"%u", idx);
-    return (*name = SysAllocStringLen(buf, len)) ? S_OK : E_OUTOFMEMORY;
-}
-
-static HRESULT HTMLFormElement_invoke(HTMLDOMNode *iface,
-        DISPID id, LCID lcid, WORD flags, DISPPARAMS *params, VARIANT *res,
-        EXCEPINFO *ei, IServiceProvider *caller)
-{
-    HTMLFormElement *This = impl_from_HTMLDOMNode(iface);
+    HTMLFormElement *This = impl_from_DispatchEx(dispex);
     IDispatch *ret;
     HRESULT hres;
 
@@ -946,71 +868,52 @@ static HRESULT HTMLFormElement_invoke(HTMLDOMNode *iface,
     return S_OK;
 }
 
-static HRESULT HTMLFormElement_handle_event(HTMLDOMNode *iface, DWORD eid, nsIDOMEvent *event, BOOL *prevent_default)
+static HRESULT HTMLFormElement_handle_event(DispatchEx *dispex, DOMEvent *event, BOOL *prevent_default)
 {
-    HTMLFormElement *This = impl_from_HTMLDOMNode(iface);
+    HTMLFormElement *This = impl_from_DispatchEx(dispex);
 
-    if(eid == EVENTID_SUBMIT) {
+    if(event->event_id == EVENTID_SUBMIT) {
         *prevent_default = TRUE;
         return IHTMLFormElement_submit(&This->IHTMLFormElement_iface);
     }
 
-    return HTMLElement_handle_event(&This->element.node, eid, event, prevent_default);
-}
-
-static void HTMLFormElement_traverse(HTMLDOMNode *iface, nsCycleCollectionTraversalCallback *cb)
-{
-    HTMLFormElement *This = impl_from_HTMLDOMNode(iface);
-
-    if(This->nsform)
-        note_cc_edge((nsISupports*)This->nsform, "This->nsform", cb);
-}
-
-static void HTMLFormElement_unlink(HTMLDOMNode *iface)
-{
-    HTMLFormElement *This = impl_from_HTMLDOMNode(iface);
-
-    if(This->nsform) {
-        nsIDOMHTMLFormElement *nsform = This->nsform;
-
-        This->nsform = NULL;
-        nsIDOMHTMLFormElement_Release(nsform);
-    }
+    return HTMLElement_handle_event(&This->element.node.event_target.dispex, event, prevent_default);
 }
 
 static const NodeImplVtbl HTMLFormElementImplVtbl = {
-    &CLSID_HTMLFormElement,
-    HTMLFormElement_QI,
-    HTMLElement_destructor,
-    HTMLElement_cpc,
-    HTMLElement_clone,
-    HTMLFormElement_handle_event,
-    HTMLElement_get_attr_col,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    HTMLFormElement_get_dispid,
-    HTMLFormElement_dispex_get_name,
-    HTMLFormElement_invoke,
-    NULL,
-    HTMLFormElement_traverse,
-    HTMLFormElement_unlink
+    .clsid                 = &CLSID_HTMLFormElement,
+    .cpc_entries           = HTMLElement_cpc,
+    .clone                 = HTMLElement_clone,
+    .get_attr_col          = HTMLElement_get_attr_col,
+};
+
+static const event_target_vtbl_t HTMLFormElement_event_target_vtbl = {
+    {
+        HTMLELEMENT_DISPEX_VTBL_ENTRIES,
+        .query_interface= HTMLFormElement_query_interface,
+        .destructor     = HTMLElement_destructor,
+        .traverse       = HTMLFormElement_traverse,
+        .unlink         = HTMLFormElement_unlink,
+        .get_dispid     = HTMLFormElement_get_dispid,
+        .get_prop_desc  = dispex_index_prop_desc,
+        .invoke         = HTMLFormElement_invoke
+    },
+    HTMLELEMENT_EVENT_TARGET_VTBL_ENTRIES,
+    .handle_event       = HTMLFormElement_handle_event
 };
 
 static const tid_t HTMLFormElement_iface_tids[] = {
-    HTMLELEMENT_TIDS,
     IHTMLFormElement_tid,
     0
 };
 
-static dispex_static_data_t HTMLFormElement_dispex = {
-    L"HTMLFormElement",
-    NULL,
-    DispHTMLFormElement_tid,
-    HTMLFormElement_iface_tids,
-    HTMLElement_init_dispex_info
+dispex_static_data_t HTMLFormElement_dispex = {
+    .id           = PROT_HTMLFormElement,
+    .prototype_id = PROT_HTMLElement,
+    .vtbl         = &HTMLFormElement_event_target_vtbl.dispex_vtbl,
+    .disp_tid     = DispHTMLFormElement_tid,
+    .iface_tids   = HTMLFormElement_iface_tids,
+    .init_info    = HTMLElement_init_dispex_info,
 };
 
 HRESULT HTMLFormElement_Create(HTMLDocumentNode *doc, nsIDOMElement *nselem, HTMLElement **elem)

@@ -1,6 +1,7 @@
 MODULE    = where.exe
+IMPORTS   = shlwapi
 
 EXTRADLLFLAGS = -mconsole -municode
 
-C_SRCS = \
+SOURCES = \
 	main.c

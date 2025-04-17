@@ -1794,7 +1794,20 @@ int WINAPI WSAAddressToStringA( struct sockaddr *addr, DWORD addr_len,
             sprintf( buffer + strlen( buffer ), "]:%u", ntohs( addr6->sin6_port ) );
         break;
     }
+    case AF_BTH:
+    {
+        const SOCKADDR_BTH *sockaddr_bth = (const SOCKADDR_BTH *)addr;
+        BLUETOOTH_ADDRESS addr_bth;
 
+        if (addr_len < sizeof(SOCKADDR_BTH)) return -1;
+
+        addr_bth.ullLong = sockaddr_bth->btAddr;
+        sprintf( buffer, "(%02X:%02X:%02X:%02X:%02X:%02X)", addr_bth.rgBytes[5], addr_bth.rgBytes[4],
+                 addr_bth.rgBytes[3], addr_bth.rgBytes[2], addr_bth.rgBytes[1], addr_bth.rgBytes[0] );
+        if (sockaddr_bth->port)
+            sprintf( buffer + 19, ":%lu", sockaddr_bth->port );
+        break;
+    }
     default:
         SetLastError( WSAEINVAL );
         return -1;
@@ -1895,18 +1908,18 @@ u_long WINAPI inet_addr( const char *str )
 /***********************************************************************
  *      htonl   (ws2_32.8)
  */
-u_long WINAPI WS_htonl( u_long hostlong )
+u_long WINAPI htonl( u_long hostlong )
 {
-    return htonl( hostlong );
+    return RtlUlongByteSwap( hostlong );
 }
 
 
 /***********************************************************************
  *      htons   (ws2_32.9)
  */
-u_short WINAPI WS_htons( u_short hostshort )
+u_short WINAPI htons( u_short hostshort )
 {
-    return htons( hostshort );
+    return RtlUshortByteSwap( hostshort );
 }
 
 
@@ -1943,18 +1956,18 @@ int WINAPI WSAHtons( SOCKET s, u_short hostshort, u_short *netshort )
 /***********************************************************************
  *      ntohl   (ws2_32.14)
  */
-u_long WINAPI WS_ntohl( u_long netlong )
+u_long WINAPI ntohl( u_long netlong )
 {
-    return ntohl( netlong );
+    return RtlUlongByteSwap( netlong );
 }
 
 
 /***********************************************************************
  *      ntohs   (ws2_32.15)
  */
-u_short WINAPI WS_ntohs( u_short netshort )
+u_short WINAPI ntohs( u_short netshort )
 {
-    return ntohs( netshort );
+    return RtlUshortByteSwap( netshort );
 }
 
 
@@ -2187,6 +2200,26 @@ int WINAPI WSCEnableNSProvider( GUID *provider, BOOL enable )
 {
     FIXME( "(%s %d) Stub!\n", debugstr_guid(provider), enable );
     return 0;
+}
+
+
+/***********************************************************************
+ *      WSCGetApplicationCategory   (ws2_32.@)
+ */
+int WINAPI WSCGetApplicationCategory( const WCHAR *path, DWORD path_len, const WCHAR *extra,
+		                      DWORD extra_len, DWORD *category, int *errcode )
+{
+    FIXME( "(%s %lu %s %lu %p %p) Stub!\n",
+           debugstr_w(path), path_len, debugstr_w(extra), extra_len, category, errcode );
+
+    if (!path)
+    {
+        *errcode = WSAEINVAL;
+        return -1;
+    }
+
+    *errcode = WSANO_RECOVERY;
+    return -1;
 }
 
 

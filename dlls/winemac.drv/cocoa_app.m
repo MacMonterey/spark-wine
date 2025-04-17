@@ -25,6 +25,8 @@
 #import "cocoa_event.h"
 #import "cocoa_window.h"
 
+#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+
 
 static NSString* const WineAppWaitQueryResponseMode = @"WineAppWaitQueryResponseMode";
 
@@ -33,6 +35,12 @@ static NSString* const WineAppWaitQueryResponseMode = @"WineAppWaitQueryResponse
 // Available in macOS 10.12+
 static NSString* const NSWindowWillStartDraggingNotification = @"NSWindowWillStartDraggingNotification";
 static NSString* const NSWindowDidEndDraggingNotification = @"NSWindowDidEndDraggingNotification";
+
+// Internal distributed notification to handle cooperative app activation in Sonoma.
+static NSString* const WineAppWillActivateNotification = @"WineAppWillActivateNotification";
+static NSString* const WineActivatingAppPIDKey = @"ActivatingAppPID";
+static NSString* const WineActivatingAppPrefixKey = @"ActivatingAppPrefix";
+static NSString* const WineActivatingAppConfigDirKey = @"ActivatingAppConfigDir";
 
 
 int macdrv_err_on;
@@ -47,6 +55,24 @@ int macdrv_err_on;
 #endif
 
 
+#if !defined(MAC_OS_VERSION_14_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_14_0
+@interface NSApplication (CooperativeActivationSelectorsForOldSDKs)
+
+    - (void)activate;
+    - (void)yieldActivationToApplication:(NSRunningApplication *)application;
+    - (void)yieldActivationToApplicationWithBundleIdentifier:(NSString *)bundleIdentifier;
+
+@end
+
+@interface NSRunningApplication (CooperativeActivationSelectorsForOldSDKs)
+
+    - (BOOL)activateFromApplication:(NSRunningApplication *)application
+                            options:(NSApplicationActivationOptions)options;
+
+@end
+#endif
+
+
 /***********************************************************************
  *              WineLocalizedString
  *
@@ -54,8 +80,7 @@ int macdrv_err_on;
  */
 static NSString* WineLocalizedString(unsigned int stringID)
 {
-    NSNumber* key = [NSNumber numberWithUnsignedInt:stringID];
-    return [(NSDictionary*)localized_strings objectForKey:key];
+    return ((NSDictionary*)localized_strings)[@(stringID)];
 }
 
 
@@ -111,11 +136,13 @@ static NSString* WineLocalizedString(unsigned int stringID)
     {
         if (self == [WineApplicationController class])
         {
-            NSDictionary* defaults = [NSDictionary dictionaryWithObjectsAndKeys:
-                                      @"", @"NSQuotedKeystrokeBinding",
-                                      @"", @"NSRepeatCountBinding",
-                                      [NSNumber numberWithBool:NO], @"ApplePressAndHoldEnabled",
-                                      nil];
+            NSDictionary<NSString *, id> *defaults =
+            @{
+                @"NSQuotedKeystrokeBinding" : @"",
+                    @"NSRepeatCountBinding" : @"",
+                @"ApplePressAndHoldEnabled" : @NO
+            };
+
             [[NSUserDefaults standardUserDefaults] registerDefaults:defaults];
 
             if ([NSWindow respondsToSelector:@selector(setAllowsAutomaticWindowTabbing:)])
@@ -163,15 +190,6 @@ static NSString* WineLocalizedString(unsigned int stringID)
             latentDisplayModes = [[NSMutableDictionary alloc] init];
 
             windowsBeingDragged = [[NSMutableSet alloc] init];
-
-            // On macOS 10.12+, use notifications to more reliably detect when windows are being dragged.
-            if ([NSProcessInfo instancesRespondToSelector:@selector(isOperatingSystemAtLeastVersion:)])
-            {
-                NSOperatingSystemVersion requiredVersion = { 10, 12, 0 };
-                useDragNotifications = [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:requiredVersion];
-            }
-            else
-                useDragNotifications = NO;
 
             if (!requests || !requestsManipQueue || !eventQueues || !eventQueuesLock ||
                 !keyWindows || !originalDisplayModes || !latentDisplayModes)
@@ -227,15 +245,13 @@ static NSString* WineLocalizedString(unsigned int stringID)
             [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
             if (activateIfTransformed)
-                [NSApp activateIgnoringOtherApps:YES];
+                [self tryToActivateIgnoringOtherApps:YES];
 
-#if defined(MAC_OS_X_VERSION_10_9) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_9
-            if (!enable_app_nap && [NSProcessInfo instancesRespondToSelector:@selector(beginActivityWithOptions:reason:)])
+            if (!enable_app_nap)
             {
                 [[[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep
                                                                 reason:@"Running Windows program"] retain]; // intentional leak
             }
-#endif
 
             mainMenu = [[[NSMenu alloc] init] autorelease];
 
@@ -309,14 +325,15 @@ static NSString* WineLocalizedString(unsigned int stringID)
         {
             if (processEvents)
             {
-                NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
-                NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                                    untilDate:timeout
-                                                       inMode:NSDefaultRunLoopMode
-                                                      dequeue:YES];
-                if (event)
-                    [NSApp sendEvent:event];
-                [pool release];
+                @autoreleasepool
+                {
+                    NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                                        untilDate:timeout
+                                                           inMode:NSDefaultRunLoopMode
+                                                          dequeue:YES];
+                    if (event)
+                        [NSApp sendEvent:event];
+                }
             }
             else
                 [[NSRunLoop currentRunLoop] runMode:WineAppWaitQueryResponseMode beforeDate:timeout];
@@ -450,8 +467,6 @@ static NSString* WineLocalizedString(unsigned int stringID)
             CFRelease(lastKeyboardLayoutInputSource);
         lastKeyboardLayoutInputSource = inputSourceLayout;
 
-        inputSourceIsInputMethodValid = FALSE;
-
         if (inputSourceLayout)
         {
             CFDataRef uchr;
@@ -514,7 +529,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
                 CGRect* rect;
                 NSScreen* screen;
 
-                primaryScreenHeight = NSHeight([[screens objectAtIndex:0] frame]);
+                primaryScreenHeight = NSHeight([screens[0] frame]);
                 primaryScreenHeightValid = TRUE;
 
                 size = count * sizeof(CGRect);
@@ -552,7 +567,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
         // We don't use -primaryScreenHeight here so there's no chance of having
         // out-of-date cached info.  This method is called infrequently enough
         // that getting the screen height each time is not prohibitively expensive.
-        rect->origin.y = NSMaxY([[[NSScreen screens] objectAtIndex:0] frame]) - NSMaxY(*rect);
+        rect->origin.y = NSMaxY([[NSScreen screens][0] frame]) - NSMaxY(*rect);
     }
 
     - (WineWindow*) frontWineWindow
@@ -810,7 +825,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
         NSNumber* displayIDKey = [NSNumber numberWithUnsignedInt:displayID];
         CGDisplayModeRef originalMode;
 
-        originalMode = (CGDisplayModeRef)[originalDisplayModes objectForKey:displayIDKey];
+        originalMode = (CGDisplayModeRef)originalDisplayModes[displayIDKey];
 
         if (originalMode && [self mode:mode matchesMode:originalMode])
         {
@@ -841,7 +856,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
             CGDisplayModeRef currentMode;
             NSArray* modes;
 
-            currentMode = CGDisplayModeRetain((CGDisplayModeRef)[latentDisplayModes objectForKey:displayIDKey]);
+            currentMode = CGDisplayModeRetain((CGDisplayModeRef)latentDisplayModes[displayIDKey]);
             if (!currentMode)
                 currentMode = CGDisplayCopyDisplayMode(displayID);
             if (!currentMode) // Invalid display ID
@@ -988,11 +1003,11 @@ static NSString* WineLocalizedString(unsigned int stringID)
 
     - (void) setCursor
     {
-        NSDictionary* frame = [cursorFrames objectAtIndex:cursorFrame];
-        CGImageRef cgimage = (CGImageRef)[frame objectForKey:@"image"];
+        NSDictionary* frame = cursorFrames[cursorFrame];
+        CGImageRef cgimage = (CGImageRef)frame[@"image"];
         CGSize size = CGSizeMake(CGImageGetWidth(cgimage), CGImageGetHeight(cgimage));
         NSImage* image = [[NSImage alloc] initWithCGImage:cgimage size:NSSizeFromCGSize(cgsize_mac_from_win(size))];
-        CFDictionaryRef hotSpotDict = (CFDictionaryRef)[frame objectForKey:@"hotSpot"];
+        CFDictionaryRef hotSpotDict = (CFDictionaryRef)frame[@"hotSpot"];
         CGPoint hotSpot;
 
         if (!CGPointMakeWithDictionaryRepresentation(hotSpotDict, &hotSpot))
@@ -1014,15 +1029,15 @@ static NSString* WineLocalizedString(unsigned int stringID)
             cursorFrame = 0;
         [self setCursor];
 
-        frame = [cursorFrames objectAtIndex:cursorFrame];
-        duration = [[frame objectForKey:@"duration"] doubleValue];
+        frame = cursorFrames[cursorFrame];
+        duration = [frame[@"duration"] doubleValue];
         date = [[theTimer fireDate] dateByAddingTimeInterval:duration];
         [cursorTimer setFireDate:date];
     }
 
     - (void) setCursorWithFrames:(NSArray*)frames
     {
-        if (self.cursorFrames == frames)
+        if (self.cursorFrames == frames || [self.cursorFrames isEqualToArray:frames])
             return;
 
         self.cursorFrames = frames;
@@ -1034,8 +1049,8 @@ static NSString* WineLocalizedString(unsigned int stringID)
         {
             if ([frames count] > 1)
             {
-                NSDictionary* frame = [frames objectAtIndex:0];
-                NSTimeInterval duration = [[frame objectForKey:@"duration"] doubleValue];
+                NSDictionary* frame = frames[0];
+                NSTimeInterval duration = [frame[@"duration"] doubleValue];
                 NSDate* date = [NSDate dateWithTimeIntervalSinceNow:duration];
                 self.cursorTimer = [[[NSTimer alloc] initWithFireDate:date
                                                              interval:1000000
@@ -1290,7 +1305,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
     {
         for (WineWindow* w in [NSApp windows])
         {
-            if ([w isKindOfClass:[WineWindow class]] && ![w isMiniaturized] && [w isVisible])
+            if ([w isKindOfClass:[WineWindow class]] && ![w isMiniaturized] && [w isVisible] && [w presentsVisibleContent])
                 return YES;
         }
 
@@ -1820,17 +1835,6 @@ static NSString* WineLocalizedString(unsigned int stringID)
                     [window postKeyEvent:anEvent];
             }
         }
-        else if (!useDragNotifications && type == NSEventTypeAppKitDefined)
-        {
-            WineWindow *window = (WineWindow *)[anEvent window];
-            short subtype = [anEvent subtype];
-
-            // These subtypes are not documented but they appear to mean
-            // "a window is being dragged" and "a window is no longer being
-            // dragged", respectively.
-            if ((subtype == 20 || subtype == 21) && [window isKindOfClass:[WineWindow class]])
-                [self handleWindowDrag:window begin:(subtype == 20)];
-        }
 
         return ret;
     }
@@ -1890,25 +1894,23 @@ static NSString* WineLocalizedString(unsigned int stringID)
             [windowsBeingDragged removeObject:window];
         }];
 
-        if (useDragNotifications) {
-            [nc addObserverForName:NSWindowWillStartDraggingNotification
-                            object:nil
-                             queue:[NSOperationQueue mainQueue]
-                        usingBlock:^(NSNotification *note){
-                NSWindow* window = [note object];
-                if ([window isKindOfClass:[WineWindow class]])
-                    [self handleWindowDrag:(WineWindow *)window begin:YES];
-            }];
+        [nc addObserverForName:NSWindowWillStartDraggingNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *note){
+            NSWindow* window = [note object];
+            if ([window isKindOfClass:[WineWindow class]])
+                [self handleWindowDrag:(WineWindow *)window begin:YES];
+        }];
 
-            [nc addObserverForName:NSWindowDidEndDraggingNotification
-                            object:nil
-                             queue:[NSOperationQueue mainQueue]
-                        usingBlock:^(NSNotification *note){
-                NSWindow* window = [note object];
-                if ([window isKindOfClass:[WineWindow class]])
-                    [self handleWindowDrag:(WineWindow *)window begin:NO];
-            }];
-        }
+        [nc addObserverForName:NSWindowDidEndDraggingNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *note){
+            NSWindow* window = [note object];
+            if ([window isKindOfClass:[WineWindow class]])
+                [self handleWindowDrag:(WineWindow *)window begin:NO];
+        }];
 
         [nc addObserver:self
                selector:@selector(keyboardSelectionDidChange)
@@ -1939,26 +1941,170 @@ static NSString* WineLocalizedString(unsigned int stringID)
                 selector:@selector(enabledKeyboardInputSourcesChanged)
                     name:(NSString*)kTISNotifyEnabledKeyboardInputSourcesChanged
                   object:nil];
+
+        if ([NSApplication instancesRespondToSelector:@selector(yieldActivationToApplication:)])
+        {
+            /* App activation cooperation, starting in macOS 14 Sonoma. */
+            [dnc addObserver:self
+                    selector:@selector(otherWineAppWillActivate:)
+                        name:WineAppWillActivateNotification
+                      object:nil
+          suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
+        }
+    }
+
+    - (void) otherWineAppWillActivate:(NSNotification *)note
+    {
+        NSProcessInfo *ourProcess;
+        pid_t otherPID;
+        NSString *ourConfigDir, *otherConfigDir, *ourPrefix, *otherPrefix;
+        NSRunningApplication *otherApp;
+
+        /* No point in yielding if we're not the foreground app. */
+        if (![NSApp isActive]) return;
+
+        /* Ignore requests from ourself, dead processes, and other prefixes. */
+        ourProcess = [NSProcessInfo processInfo];
+        otherPID = [note.userInfo[WineActivatingAppPIDKey] integerValue];
+        if (otherPID == ourProcess.processIdentifier) return;
+
+        otherApp = [NSRunningApplication runningApplicationWithProcessIdentifier:otherPID];
+        if (!otherApp) return;
+
+        ourConfigDir = ourProcess.environment[@"WINECONFIGDIR"];
+        otherConfigDir = note.userInfo[WineActivatingAppConfigDirKey];
+        if (ourConfigDir.length && otherConfigDir.length &&
+            ![ourConfigDir isEqualToString:otherConfigDir])
+        {
+            return;
+        }
+
+        ourPrefix = ourProcess.environment[@"WINEPREFIX"];
+        otherPrefix = note.userInfo[WineActivatingAppPrefixKey];
+        if (ourPrefix.length && otherPrefix.length &&
+            ![ourPrefix isEqualToString:otherPrefix])
+        {
+            return;
+        }
+
+        /* There's a race condition here. The requesting app sends out
+           WineAppWillActivateNotification and then activates itself, but since
+           distributed notifications are asynchronous, we may not have yielded
+           in time. So we call activateFromApplication: on the other app here,
+           which will work around that race if it happened. If we didn't hit the
+           race, the activateFromApplication: call will be a no-op. */
+
+        /* We only add this observer if NSApplication responds to the yield
+           methods, so they're safe to call without checking here. */
+        [NSApp yieldActivationToApplication:otherApp];
+        [otherApp activateFromApplication:[NSRunningApplication currentApplication]
+                                  options:0];
+    }
+
+    - (void) tryToActivateIgnoringOtherApps:(BOOL)ignore
+    {
+        NSProcessInfo *processInfo;
+        NSString *configDir, *prefix;
+        NSDictionary *userInfo;
+
+        if ([NSApp isActive]) return;  /* Nothing to do. */
+
+        if (!ignore ||
+            ![NSApplication instancesRespondToSelector:@selector(yieldActivationToApplication:)])
+        {
+            /* Either we don't need to force activation, or the OS is old enough
+               that this is our only option. */
+            [NSApp activateIgnoringOtherApps:ignore];
+            return;
+        }
+
+        /* Ask other Wine apps to yield activation to us. */
+        processInfo = [NSProcessInfo processInfo];
+        configDir = processInfo.environment[@"WINECONFIGDIR"];
+        prefix = processInfo.environment[@"WINEPREFIX"];
+        userInfo = @{
+            WineActivatingAppPIDKey: @(processInfo.processIdentifier),
+            WineActivatingAppPrefixKey: prefix ? prefix : @"",
+            WineActivatingAppConfigDirKey: configDir ? configDir : @""
+        };
+
+        [[NSDistributedNotificationCenter defaultCenter]
+            postNotificationName:WineAppWillActivateNotification
+                          object:nil
+                        userInfo:userInfo
+              deliverImmediately:YES];
+
+        /* This is racy. See the note in otherWineAppWillActivate:. */
+        [NSApp activate];
+     }
+
+    static BOOL InputSourceShouldBeIgnored(TISInputSourceRef inputSource)
+    {
+        /* Certain system utilities are technically input sources, but we
+           shouldn't consider them as such for our purposes. */
+        static CFStringRef ignoredIDs[] = {
+            /* The "Emoji & Symbols" palette. */
+            CFSTR("com.apple.CharacterPaletteIM"),
+            /* The on-screen keyboard and accessibility panel. */
+            CFSTR("com.apple.inputmethod.AssistiveControl"),
+            /* The popup for accented characters when you hold down a key. */
+            CFSTR("com.apple.PressAndHold"),
+            /* Emoji list on MacBooks with the Touch Bar. */
+            CFSTR("com.apple.inputmethod.EmojiFunctionRowItem"),
+            /* Dictation. Ideally this would actually receive key events, since
+               escape cancels it, but it remains a "selected" input source even
+               when not active, so we need to ignore it to avoid incorrectly
+               sending input to it. */
+            CFSTR("com.apple.inputmethod.ironwood"),
+        };
+
+        CFStringRef sourceID = TISGetInputSourceProperty(inputSource, kTISPropertyInputSourceID);
+        for (int i = 0; i < sizeof(ignoredIDs) / sizeof(CFStringRef); i++)
+        {
+            if (CFEqual(sourceID, ignoredIDs[i]))
+                return YES;
+        }
+
+        return NO;
     }
 
     - (BOOL) inputSourceIsInputMethod
     {
-        if (!inputSourceIsInputMethodValid)
+        static dispatch_once_t onceToken;
+        static CFDictionaryRef filterDict;
+        CFArrayRef enabledSources;
+        CFIndex i;
+        BOOL ret = NO;
+
+        /* There may be multiple active ("selected") input sources, but there is
+           always exactly one selected keyboard input source. For instance,
+           handwriting methods are active simultaneously with a keyboard source.
+           As the name implies, TISCopyCurrentKeyboardInputSource only returns
+           the keyboard source, so it's not sufficient for our needs. We use
+           TISCreateInputSourceList instead to find all selected sources. */
+        dispatch_once(&onceToken, ^{
+            filterDict = CFDictionaryCreate(NULL, (const void **)&kTISPropertyInputSourceIsSelected, (const void **)&kCFBooleanTrue, 1,
+                                            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+
+        });
+        enabledSources = TISCreateInputSourceList(filterDict, false);
+        for (i = 0; i < CFArrayGetCount(enabledSources); i++)
         {
-            TISInputSourceRef inputSource = TISCopyCurrentKeyboardInputSource();
-            if (inputSource)
+            TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(enabledSources, i);
+            CFStringRef type = TISGetInputSourceProperty(source, kTISPropertyInputSourceType);
+
+            /* kTISTypeKeyboardLayout is for physical keyboards. Any type other
+               than that is an IME. */
+            if (!CFEqual(type, kTISTypeKeyboardLayout) && !InputSourceShouldBeIgnored(source))
             {
-                CFStringRef type = TISGetInputSourceProperty(inputSource, kTISPropertyInputSourceType);
-                inputSourceIsInputMethod = !CFEqual(type, kTISTypeKeyboardLayout);
-                CFRelease(inputSource);
+                ret = YES;
+                break;
             }
-            else
-                inputSourceIsInputMethod = FALSE;
-            inputSourceIsInputMethodValid = TRUE;
         }
 
-        return inputSourceIsInputMethod;
-    }
+        CFRelease(enabledSources);
+        return ret;
+     }
 
     - (void) releaseMouseCapture
     {
@@ -1982,17 +2128,24 @@ static NSString* WineLocalizedString(unsigned int stringID)
 
     - (void) unminimizeWindowIfNoneVisible
     {
-        if (![self frontWineWindow])
+        WineWindow *bestOption = nil;
+
+        if ([self isAnyWineWindowVisible])
+            return;
+
+        for (WineWindow *window in [NSApp windows])
         {
-            for (WineWindow* window in [NSApp windows])
-            {
-                if ([window isKindOfClass:[WineWindow class]] && [window isMiniaturized])
-                {
-                    [window deminiaturize:self];
-                    break;
-                }
-            }
+            if (![window isKindOfClass:[WineWindow class]] || ![window isMiniaturized])
+                continue;
+
+            bestOption = window;
+
+            /* Prefer any window that would actually show something. */
+            if ([window presentsVisibleContent])
+                break;
         }
+
+        [bestOption deminiaturize:self];
     }
 
     - (void) setRetinaMode:(int)mode
@@ -2020,7 +2173,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
         latentDisplayModes = [[NSMutableDictionary alloc] init];
         for (displayID in modesToRealize)
         {
-            CGDisplayModeRef mode = (CGDisplayModeRef)[modesToRealize objectForKey:displayID];
+            CGDisplayModeRef mode = (CGDisplayModeRef)modesToRealize[displayID];
             [self setMode:mode forDisplay:[displayID unsignedIntValue]];
         }
 
@@ -2162,34 +2315,34 @@ static NSString* WineLocalizedString(unsigned int stringID)
  */
 static void PerformRequest(void *info)
 {
-    NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
+@autoreleasepool
+{
     WineApplicationController* controller = [WineApplicationController sharedController];
 
     for (;;)
     {
-        __block dispatch_block_t block;
+        @autoreleasepool
+        {
+            __block dispatch_block_t block;
 
-        dispatch_sync(controller->requestsManipQueue, ^{
-            if ([controller->requests count])
-            {
-                block = (dispatch_block_t)[[controller->requests objectAtIndex:0] retain];
-                [controller->requests removeObjectAtIndex:0];
-            }
-            else
-                block = nil;
-        });
+            dispatch_sync(controller->requestsManipQueue, ^{
+                if ([controller->requests count])
+                {
+                    block = (dispatch_block_t)[controller->requests[0] retain];
+                    [controller->requests removeObjectAtIndex:0];
+                }
+                else
+                    block = nil;
+            });
 
-        if (!block)
-            break;
+            if (!block)
+                break;
 
-        block();
-        [block release];
-
-        [pool release];
-        pool = [[NSAutoreleasePool alloc] init];
+            block();
+            [block release];
+        }
     }
-
-    [pool release];
+}
 }
 
 /***********************************************************************
@@ -2228,13 +2381,12 @@ void LogError(const char* func, NSString* format, ...)
  */
 void LogErrorv(const char* func, NSString* format, va_list args)
 {
-    NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
-
+@autoreleasepool
+{
     NSString* message = [[NSString alloc] initWithFormat:format arguments:args];
     fprintf(stderr, "err:%s:%s", func, [message UTF8String]);
     [message release];
-
-    [pool release];
+}
 }
 
 /***********************************************************************

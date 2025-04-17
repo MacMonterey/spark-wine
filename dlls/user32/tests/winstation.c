@@ -595,9 +595,9 @@ static void test_inputdesktop(void)
     INPUT inputs[1];
 
     inputs[0].type = INPUT_KEYBOARD;
-    U(inputs[0]).ki.wVk = 0;
-    U(inputs[0]).ki.wScan = 0x3c0;
-    U(inputs[0]).ki.dwFlags = KEYEVENTF_UNICODE;
+    inputs[0].ki.wVk = 0;
+    inputs[0].ki.wScan = 0x3c0;
+    inputs[0].ki.dwFlags = KEYEVENTF_UNICODE;
 
     /* OpenInputDesktop creates new handles for each calls */
     old_input_desk = OpenInputDesktop(0, FALSE, DESKTOP_ALL_ACCESS);
@@ -652,9 +652,8 @@ static void test_inputdesktop(void)
         win_skip("Skip tests on NT4\n");
         return;
     }
-    todo_wine
     ok(GetLastError() == ERROR_ACCESS_DENIED, "unexpected last error %08lx\n", GetLastError());
-    ok(ret == 1 || broken(ret == 0) /* Win64 */, "unexpected return count %ld\n", ret);
+    ok(ret == 0 || broken(ret == 1) /* Win32 */, "unexpected return count %ld\n", ret);
 
     /* Set thread desktop back to the old thread desktop, SendInput should success. */
     ret = SetThreadDesktop(old_thread_desk);
@@ -693,16 +692,14 @@ static void test_inputdesktop(void)
     memset(name, 0, sizeof(name));
     ret = GetUserObjectInformationA(input_desk, UOI_NAME, name, 1024, NULL);
     ok(ret, "GetUserObjectInformation failed!\n");
-    todo_wine
     ok(!strcmp(name, "new_desk"), "unexpected desktop %s\n", name);
     ret = CloseDesktop(input_desk);
     ok(ret, "CloseDesktop failed!\n");
 
     SetLastError(0xdeadbeef);
     ret = SendInput(1, inputs, sizeof(INPUT));
-    todo_wine
     ok(GetLastError() == ERROR_ACCESS_DENIED, "unexpected last error %08lx\n", GetLastError());
-    ok(ret == 1 || broken(ret == 0) /* Win64 */, "unexpected return count %ld\n", ret);
+    ok(ret == 0 || broken(ret == 1) /* Win32 */, "unexpected return count %ld\n", ret);
 
     /* Set thread desktop to the new desktop, SendInput should success. */
     ret = SetThreadDesktop(new_desk);
@@ -798,7 +795,6 @@ static void test_inputdesktop2(void)
     ok(hdesk != NULL, "OpenDesktop failed!\n");
     SetLastError(0xdeadbeef);
     ret = SwitchDesktop(hdesk);
-    todo_wine
     ok(!ret, "Switch to desktop belong to non default winstation should fail!\n");
     todo_wine
     ok(GetLastError() == ERROR_ACCESS_DENIED || broken(GetLastError() == 0xdeadbeef), "last error %08lx\n", GetLastError());
@@ -1093,6 +1089,31 @@ static void test_invisible_winstation(char **argv)
     SetProcessWindowStation(old_winstation);
 }
 
+static void test_get_security(void)
+{
+    SECURITY_INFORMATION info = DACL_SECURITY_INFORMATION;
+    HDESK desktop = GetThreadDesktop(GetCurrentThreadId());
+    DWORD size, expect_size;
+    char buffer[500];
+    BOOL ret;
+
+    size = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = GetUserObjectSecurity( desktop, &info, NULL, 0, &size );
+    ok( !ret, "got %#x\n", ret );
+    ok( GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got error %lu\n", GetLastError() );
+    ok( size && size < sizeof(buffer), "got size %lu\n", size );
+    expect_size = size;
+
+    size = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = GetUserObjectSecurity( desktop, &info, buffer, sizeof(buffer), &size );
+    ok( ret == TRUE, "got %#x\n", ret );
+    ok( GetLastError() == 0xdeadbeef, "got error %lu\n", GetLastError() );
+    ok( size == expect_size, "got size %lu\n", size );
+    ok( IsValidSecurityDescriptor(buffer), "expected valid SD\n" );
+}
+
 START_TEST(winstation)
 {
     char **argv;
@@ -1126,4 +1147,5 @@ START_TEST(winstation)
     test_getuserobjectinformation();
     test_foregroundwindow();
     test_invisible_winstation(argv);
+    test_get_security();
 }

@@ -24,7 +24,6 @@
 #include "winbase.h"
 #include "objbase.h"
 
-#include "wine/heap.h"
 #include "wine/list.h"
 #include "wine/debug.h"
 
@@ -52,11 +51,13 @@ void async_empty_queue(struct async_queue *queue)
 {
     struct async_task *task, *next;
 
+    if (!queue->init) return;
+
     EnterCriticalSection(&queue->cs);
     LIST_FOR_EACH_ENTRY_SAFE(task, next, &queue->tasks, struct async_task, entry)
     {
         list_remove(&task->entry);
-        heap_free(task);
+        free(task);
     }
     LeaveCriticalSection(&queue->cs);
 
@@ -69,6 +70,7 @@ static void CALLBACK async_worker(TP_CALLBACK_INSTANCE *instance, void *ctx)
     HANDLE handles[2] = { queue->cancel, queue->wait };
     DWORD ret;
 
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
     SetEvent(queue->ready);
 
     for (;;)
@@ -84,7 +86,7 @@ static void CALLBACK async_worker(TP_CALLBACK_INSTANCE *instance, void *ctx)
             {
                 ResetEvent(queue->empty);
                 task->proc(task);
-                heap_free(task);
+                free(task);
                 if (WaitForSingleObject(queue->cancel, 0) == WAIT_OBJECT_0)
                     goto cancel;
             }
@@ -97,7 +99,7 @@ static void CALLBACK async_worker(TP_CALLBACK_INSTANCE *instance, void *ctx)
 
 cancel:
     async_empty_queue(queue);
-    TRACE("cancelled.\n");
+    CoUninitialize();
     SetEvent(queue->ready);
 }
 
@@ -163,13 +165,14 @@ HRESULT async_queue_task(struct async_queue *queue, struct async_task *task)
     list_add_tail(&queue->tasks, &task->entry);
     LeaveCriticalSection(&queue->cs);
 
+    ResetEvent(queue->empty);
     SetEvent(queue->wait);
 
     return S_OK;
 }
 
-void async_wait_queue_empty(struct async_queue *queue, DWORD timeout)
+HRESULT async_wait_queue_empty(struct async_queue *queue, DWORD timeout)
 {
-    if (!queue->init) return;
-    WaitForSingleObject(queue->empty, timeout);
+    if (!queue->init) return WAIT_OBJECT_0;
+    return WaitForSingleObject(queue->empty, timeout);
 }

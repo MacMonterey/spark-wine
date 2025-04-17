@@ -739,7 +739,13 @@ static BOOL verify_format(LPWSTR data)
 
     while (*data)
     {
-        if (*data == '[' && *(data - 1) != '\\')
+        if (*data == '\\' && *(data + 1) == '[')
+        {
+            data += 2;
+            continue;
+        }
+
+        if (*data == '[')
             count++;
         else if (*data == ']')
             count--;
@@ -844,7 +850,6 @@ UINT MSI_FormatRecordW( MSIPACKAGE* package, MSIRECORD* record, LPWSTR buffer,
     MSIRECORD *record_deformated;
     int field_count, i;
 
-    TRACE("%p %p %p %p\n", package, record, buffer, size);
     dump_record(record);
 
     if (!(format = msi_dup_record_field( record, 0 )))

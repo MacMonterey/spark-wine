@@ -18,7 +18,6 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#include "wine/heap.h"
 #include "wine/list.h"
 
 struct async_task
@@ -42,7 +41,7 @@ HRESULT async_start_queue(struct async_queue *queue);
 void async_empty_queue(struct async_queue *queue);
 void async_cancel_queue(struct async_queue *queue);
 HRESULT async_queue_task(struct async_queue *queue, struct async_task *task);
-void async_wait_queue_empty(struct async_queue *queue, DWORD timeout);
+HRESULT async_wait_queue_empty(struct async_queue *queue, DWORD timeout);
 
 HRESULT data_key_create( IUnknown *outer, REFIID iid, void **obj );
 HRESULT file_stream_create( IUnknown *outer, REFIID iid, void **obj );
@@ -53,3 +52,14 @@ HRESULT mmaudio_out_create( IUnknown *outer, REFIID iid, void **obj );
 HRESULT token_category_create( IUnknown *outer, REFIID iid, void **obj );
 HRESULT token_enum_create( IUnknown *outer, REFIID iid, void **obj );
 HRESULT token_create( IUnknown *outer, REFIID iid, void **obj );
+
+enum type_id
+{
+    ISpeechObjectToken_tid,
+    ISpeechObjectTokens_tid,
+    ISpeechVoice_tid,
+    last_tid
+};
+
+HRESULT get_typeinfo( enum type_id tid, ITypeInfo **typeinfo );
+void release_typelib( void );

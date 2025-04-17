@@ -18,7 +18,6 @@
  *
  */
 
-#define NONAMELESSUNION
 #define CERT_REVOCATION_PARA_HAS_EXTRA_FIELDS
 
 #include <share.h>
@@ -136,11 +135,11 @@ static BOOL WINAPI CRYPT_GetUrlFromCertificateIssuer(LPCSTR pszUrlOid,
                     if (aia->rgAccDescr[i].AccessLocation.dwAltNameChoice ==
                      CERT_ALT_NAME_URL)
                     {
-                        if (aia->rgAccDescr[i].AccessLocation.u.pwszURL)
+                        if (aia->rgAccDescr[i].AccessLocation.pwszURL)
                         {
                             cUrl++;
                             bytesNeeded += sizeof(LPWSTR) +
-                             (lstrlenW(aia->rgAccDescr[i].AccessLocation.u.
+                             (lstrlenW(aia->rgAccDescr[i].AccessLocation.
                              pwszURL) + 1) * sizeof(WCHAR);
                         }
                     }
@@ -178,10 +177,10 @@ static BOOL WINAPI CRYPT_GetUrlFromCertificateIssuer(LPCSTR pszUrlOid,
                         if (aia->rgAccDescr[i].AccessLocation.dwAltNameChoice
                          == CERT_ALT_NAME_URL)
                         {
-                            if (aia->rgAccDescr[i].AccessLocation.u.pwszURL)
+                            if (aia->rgAccDescr[i].AccessLocation.pwszURL)
                             {
                                 lstrcpyW(nextUrl,
-                                 aia->rgAccDescr[i].AccessLocation.u.pwszURL);
+                                 aia->rgAccDescr[i].AccessLocation.pwszURL);
                                 pUrlArray->rgwszUrl[pUrlArray->cUrl++] =
                                  nextUrl;
                                 nextUrl += (lstrlenW(nextUrl) + 1);
@@ -237,17 +236,17 @@ static BOOL CRYPT_GetUrlFromCRLDistPointsExt(const CRYPT_DATA_BLOB *value,
             {
                 DWORD j;
                 CERT_ALT_NAME_INFO *name =
-                 &info->rgDistPoint[i].DistPointName.u.FullName;
+                 &info->rgDistPoint[i].DistPointName.FullName;
 
                 for (j = 0; j < name->cAltEntry; j++)
                     if (name->rgAltEntry[j].dwAltNameChoice ==
                      CERT_ALT_NAME_URL)
                     {
-                        if (name->rgAltEntry[j].u.pwszURL)
+                        if (name->rgAltEntry[j].pwszURL)
                         {
                             cUrl++;
                             bytesNeeded += sizeof(LPWSTR) +
-                             (lstrlenW(name->rgAltEntry[j].u.pwszURL) + 1)
+                             (lstrlenW(name->rgAltEntry[j].pwszURL) + 1)
                              * sizeof(WCHAR);
                         }
                     }
@@ -281,20 +280,20 @@ static BOOL CRYPT_GetUrlFromCRLDistPointsExt(const CRYPT_DATA_BLOB *value,
                 {
                     DWORD j;
                     CERT_ALT_NAME_INFO *name =
-                     &info->rgDistPoint[i].DistPointName.u.FullName;
+                     &info->rgDistPoint[i].DistPointName.FullName;
 
                     for (j = 0; j < name->cAltEntry; j++)
                         if (name->rgAltEntry[j].dwAltNameChoice ==
                          CERT_ALT_NAME_URL)
                         {
-                            if (name->rgAltEntry[j].u.pwszURL)
+                            if (name->rgAltEntry[j].pwszURL)
                             {
                                 lstrcpyW(nextUrl,
-                                 name->rgAltEntry[j].u.pwszURL);
+                                 name->rgAltEntry[j].pwszURL);
                                 pUrlArray->rgwszUrl[pUrlArray->cUrl++] =
                                  nextUrl;
                                 nextUrl +=
-                                 (lstrlenW(name->rgAltEntry[j].u.pwszURL) + 1);
+                                 (lstrlenW(name->rgAltEntry[j].pwszURL) + 1);
                             }
                         }
                 }
@@ -449,7 +448,7 @@ static BOOL CRYPT_GetObjectFromFile(HANDLE hFile, PCRYPT_BLOB_ARRAY pObject)
 
     if ((ret = GetFileSizeEx(hFile, &size)))
     {
-        if (size.u.HighPart)
+        if (size.HighPart)
         {
             WARN("file too big\n");
             SetLastError(ERROR_INVALID_DATA);
@@ -459,10 +458,10 @@ static BOOL CRYPT_GetObjectFromFile(HANDLE hFile, PCRYPT_BLOB_ARRAY pObject)
         {
             CRYPT_DATA_BLOB blob;
 
-            blob.pbData = CryptMemAlloc(size.u.LowPart);
+            blob.pbData = CryptMemAlloc(size.LowPart);
             if (blob.pbData)
             {
-                ret = ReadFile(hFile, blob.pbData, size.u.LowPart, &blob.cbData,
+                ret = ReadFile(hFile, blob.pbData, size.LowPart, &blob.cbData,
                  NULL);
                 if (ret)
                 {
@@ -1553,7 +1552,7 @@ static FILE *open_cached_revocation_file(const CERT_CONTEXT *cert, const CERT_RE
     if (FAILED(hr = SHGetKnownFolderPath(&FOLDERID_LocalAppDataLow, 0, NULL, &appdata_path)))
     {
         ERR("Failed to get LocalAppDataLow path, hr %#lx.\n", hr);
-        return INVALID_HANDLE_VALUE;
+        return NULL;
     }
 
     len = swprintf(path, ARRAY_SIZE(path), L"%s\\Microsoft\\CryptnetUrlCache\\Content\\", appdata_path);
@@ -1562,7 +1561,7 @@ static FILE *open_cached_revocation_file(const CERT_CONTEXT *cert, const CERT_RE
     if (len + CACHED_CERT_HASH_SIZE * 2 * sizeof(WCHAR) > ARRAY_SIZE(path) - 1)
     {
         WARN("Hash length exceeds static buffer; not caching.\n");
-        return INVALID_HANDLE_VALUE;
+        return NULL;
     }
 
     CryptAcquireContextW(&prov, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT);
@@ -1870,15 +1869,16 @@ static WCHAR *build_request_url(const WCHAR *base_url, const BYTE *data, DWORD d
     DWORD len = 0;
 
     if (!(path = build_request_path(data, data_size))) return NULL;
-
-    InternetCombineUrlW(base_url, path, NULL, &len, 0);
+    len = (wcslen(base_url) + wcslen(path) + 1) * sizeof(WCHAR);
     if (!(ret = malloc(len * sizeof(WCHAR))))
     {
         free(path);
         return NULL;
     }
-    InternetCombineUrlW(base_url, path, ret, &len, 0);
+    wcscpy(ret, base_url);
+    wcscat(ret, path);
     free(path);
+    TRACE("-> %s.\n", debugstr_w(ret));
     return ret;
 }
 
@@ -2028,11 +2028,12 @@ static DWORD handle_ocsp_response(const CERT_INFO *cert, const CERT_INFO *issuer
 static DWORD verify_cert_revocation_with_ocsp(const CERT_CONTEXT *cert, const WCHAR *base_url,
                                               const CERT_REVOCATION_PARA *revpara, FILETIME *next_update)
 {
-    HINTERNET ses, con, req = NULL;
+    HINTERNET ses = NULL, con = NULL, req = NULL;
     BYTE *request_data = NULL, *response_data = NULL;
-    DWORD size, flags, status, request_len, response_len, count, ret = CRYPT_E_REVOCATION_OFFLINE;
+    DWORD size, status, request_len, response_len, count, ret = CRYPT_E_REVOCATION_OFFLINE;
+    DWORD flags = INTERNET_FLAG_KEEP_CONNECTION;
     URL_COMPONENTSW comp;
-    WCHAR *url;
+    WCHAR *url = NULL;
 
     if (!revpara || !revpara->pIssuerCert)
     {
@@ -2043,8 +2044,11 @@ static DWORD verify_cert_revocation_with_ocsp(const CERT_CONTEXT *cert, const WC
         return CRYPT_E_REVOCATION_OFFLINE;
 
     url = build_request_url(base_url, request_data, request_len);
-    LocalFree(request_data);
-    if (!url) return CRYPT_E_REVOCATION_OFFLINE;
+    if (!url)
+    {
+        ret = CRYPT_E_REVOCATION_OFFLINE;
+        goto done;
+    }
 
     memset(&comp, 0, sizeof(comp));
     comp.dwStructSize     = sizeof(comp);
@@ -2052,31 +2056,33 @@ static DWORD verify_cert_revocation_with_ocsp(const CERT_CONTEXT *cert, const WC
     comp.dwUrlPathLength  = ~0u;
     if (!InternetCrackUrlW(url, 0, 0, &comp))
     {
-        free(url);
-        return CRYPT_E_REVOCATION_OFFLINE;
+        ret = CRYPT_E_REVOCATION_OFFLINE;
+        goto done;
     }
 
     switch (comp.nScheme)
     {
     case INTERNET_SCHEME_HTTP:
-        flags = 0;
         break;
     case INTERNET_SCHEME_HTTPS:
-        flags = INTERNET_FLAG_SECURE;
+        flags |= INTERNET_FLAG_SECURE;
         break;
     default:
         FIXME("scheme %u not supported\n", comp.nScheme);
-        free(url);
-        return ERROR_NOT_SUPPORTED;
+        ret = ERROR_NOT_SUPPORTED;
+        goto done;
     }
 
-    if (!(ses = InternetOpenW(L"CryptoAPI", 0, NULL, NULL, 0))) return GetLastError();
+    if (!(ses = InternetOpenW(L"CryptoAPI", 0, NULL, NULL, 0)))
+    {
+        ret = GetLastError();
+        goto done;
+    }
     comp.lpszHostName[comp.dwHostNameLength] = 0;
     if (!(con = InternetConnectW(ses, comp.lpszHostName, comp.nPort, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0)))
     {
-        free(url);
-        InternetCloseHandle(ses);
-        return GetLastError();
+        ret = GetLastError();
+        goto done;
     }
     comp.lpszHostName[comp.dwHostNameLength] = '/';
     if (!(req = HttpOpenRequestW(con, NULL, comp.lpszUrlPath, NULL, NULL, NULL, flags, 0)) ||
@@ -2084,13 +2090,40 @@ static DWORD verify_cert_revocation_with_ocsp(const CERT_CONTEXT *cert, const WC
 
     size = sizeof(status);
     if (!HttpQueryInfoW(req, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &size, NULL)) goto done;
-    if (status != HTTP_STATUS_OK)
+    if (status == HTTP_STATUS_OK)
     {
-        WARN("request status %lu\n", status);
+        size = sizeof(response_len);
+        if (!HttpQueryInfoW(req, HTTP_QUERY_FLAG_NUMBER | HTTP_QUERY_CONTENT_LENGTH, &response_len, &size, 0) ||
+            !response_len || !(response_data = malloc(response_len)) ||
+            !InternetReadFile(req, response_data, response_len, &count) || count != response_len) goto done;
+
+        ret = handle_ocsp_response(cert->pCertInfo, revpara->pIssuerCert->pCertInfo, response_data, response_len,
+                                   next_update);
+    }
+    if (ret == ERROR_SUCCESS || ret == CRYPT_E_REVOKED) goto done;
+
+    WARN("GET OCSP request failed, status %lu, ret %#lx, retrying with POST.\n", status, ret);
+    InternetCloseHandle(req);
+    req = NULL;
+    free(response_data);
+    response_data = NULL;
+    memset(&comp, 0, sizeof(comp));
+    comp.dwStructSize     = sizeof(comp);
+    comp.dwHostNameLength = ~0u;
+    comp.dwUrlPathLength  = ~0u;
+    if (!InternetCrackUrlW(base_url, 0, 0, &comp))
+    {
+        ret = CRYPT_E_REVOCATION_OFFLINE;
         goto done;
     }
-
-    size = sizeof(response_len);
+    flags &= ~INTERNET_FLAG_KEEP_CONNECTION;
+    if (!(req = HttpOpenRequestW(con, L"POST", comp.lpszUrlPath, NULL, NULL, NULL, flags, 0)) ||
+        !HttpSendRequestW(req, L"Content-Type: application/ocsp-request\0", -1, request_data, request_len)) goto done;
+    if (status != HTTP_STATUS_OK)
+     {
+        WARN("request status %lu.\n", status);
+        goto done;
+    }
     if (!HttpQueryInfoW(req, HTTP_QUERY_FLAG_NUMBER | HTTP_QUERY_CONTENT_LENGTH, &response_len, &size, 0) ||
         !response_len || !(response_data = malloc(response_len)) ||
         !InternetReadFile(req, response_data, response_len, &count) || count != response_len) goto done;
@@ -2099,6 +2132,7 @@ static DWORD verify_cert_revocation_with_ocsp(const CERT_CONTEXT *cert, const WC
                                next_update);
 
 done:
+    LocalFree(request_data);
     free(url);
     free(response_data);
     InternetCloseHandle(req);
@@ -2125,9 +2159,17 @@ static DWORD verify_cert_revocation_from_aia_ext(const CRYPT_DATA_BLOB *value, c
         {
             if (aia->rgAccDescr[i].AccessLocation.dwAltNameChoice == CERT_ALT_NAME_URL)
             {
-                const WCHAR *url = aia->rgAccDescr[i].AccessLocation.u.pwszURL;
+                const WCHAR *url = aia->rgAccDescr[i].AccessLocation.pwszURL;
                 TRACE("OCSP URL = %s\n", debugstr_w(url));
-                error = verify_cert_revocation_with_ocsp(cert, url, pRevPara, next_update);
+                if (dwFlags & CERT_VERIFY_CACHE_ONLY_BASED_REVOCATION)
+                {
+                    TRACE("Cache only revocation, returning CRYPT_E_REVOCATION_OFFLINE.\n");
+                    error = CRYPT_E_REVOCATION_OFFLINE;
+                }
+                else
+                {
+                    error = verify_cert_revocation_with_ocsp(cert, url, pRevPara, next_update);
+                }
             }
             else
             {

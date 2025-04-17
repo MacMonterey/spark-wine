@@ -74,9 +74,29 @@ static void init_wallpaper( const WCHAR *wallpaper )
 }
 
 /***********************************************************************
- *           DesktopWndProc
+ *           DesktopWndProcA
  */
-LRESULT WINAPI DesktopWndProc( HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam )
+LRESULT WINAPI DesktopWndProcA( HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam )
+{
+    switch (message)
+    {
+    case WM_NCCREATE:
+    case WM_NCCALCSIZE:
+    case WM_PARENTNOTIFY:
+    case WM_DISPLAYCHANGE:
+        return NtUserMessageCall( hwnd, message, wParam, lParam, 0, NtUserDesktopWindowProc, TRUE );
+
+    default:
+        if (message < WM_USER)
+            return DefWindowProcA( hwnd, message, wParam, lParam );
+        return NtUserMessageCall( hwnd, message, wParam, lParam, 0, NtUserDesktopWindowProc, TRUE );
+    }
+}
+
+/***********************************************************************
+ *           DesktopWndProcW
+ */
+LRESULT WINAPI DesktopWndProcW( HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam )
 {
     switch (message)
     {
@@ -151,15 +171,12 @@ BOOL WINAPI PaintDesktop(HDC hdc)
 }
 
 /***********************************************************************
- *           SetDeskWallPaper   (USER32.@)
- *
- * FIXME: is there a unicode version?
+ *           SetDeskWallpaper   (USER32.@)
  */
-BOOL WINAPI SetDeskWallPaper( LPCSTR filename )
+BOOL WINAPI SetDeskWallpaper( const char *filename )
 {
     return SystemParametersInfoA( SPI_SETDESKWALLPAPER, MAX_PATH, (void *)filename, SPIF_UPDATEINIFILE );
 }
-
 
 /***********************************************************************
  *           update_wallpaper

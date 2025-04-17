@@ -102,7 +102,7 @@ static const char* DUMPBITS(int x)
 
 static inline void DUMPPACKET(WTPACKET packet)
 {
-    TRACE("pkContext: %p pkStatus: 0x%x pkTime : 0x%lx pkChanged: 0x%lx pkSerialNumber: 0x%x pkCursor : %i pkButtons: %lx pkX: %li pkY: %li pkZ: %li pkNormalPressure: %i pkTangentPressure: %i pkOrientation: (%i,%i,%i) pkRotation: (%i,%i,%i)\n",
+    TRACE("pkContext: 0x%x pkStatus: 0x%x pkTime : 0x%lx pkChanged: 0x%lx pkSerialNumber: 0x%x pkCursor : %i pkButtons: %lx pkX: %li pkY: %li pkZ: %li pkNormalPressure: %i pkTangentPressure: %i pkOrientation: (%i,%i,%i) pkRotation: (%i,%i,%i)\n",
           packet.pkContext, packet.pkStatus, packet.pkTime, packet.pkChanged, packet.pkSerialNumber,
           packet.pkCursor, packet.pkButtons, packet.pkX, packet.pkY, packet.pkZ,
           packet.pkNormalPressure, packet.pkTangentPressure,
@@ -205,7 +205,7 @@ LPOPENCONTEXT AddPacketToContextQueue(LPWTPACKET packet, HWND hwnd)
 
             tgt = ptr->PacketsQueued;
 
-            packet->pkContext = ptr->handle;
+            packet->pkContext = HandleToULong(ptr->handle);
 
             /* translate packet data to the context */
             packet->pkChanged = packet->pkChanged & ptr->context.lcPktData;
@@ -296,12 +296,15 @@ static LPVOID TABLET_CopyPacketData(LPOPENCONTEXT context, LPVOID lpPkt,
                                     LPWTPACKET wtp)
 {
     LPBYTE ptr;
+    HCTX ctx;
 
     ptr = lpPkt;
     TRACE("Packet Bits %s\n",DUMPBITS(context->context.lcPktData));
 
+    ctx = ULongToHandle(wtp->pkContext);
+
     if (context->context.lcPktData & PK_CONTEXT)
-        ptr+=CopyTabletData(ptr,&wtp->pkContext,sizeof(HCTX));
+        ptr+=CopyTabletData(ptr,&ctx,sizeof(HCTX));
     if (context->context.lcPktData & PK_STATUS)
         ptr+=CopyTabletData(ptr,&wtp->pkStatus,sizeof(UINT));
     if (context->context.lcPktData & PK_TIME)
@@ -423,10 +426,10 @@ static UINT WTInfoT(UINT wCategory, UINT nIndex, LPVOID lpOutput, BOOL bUnicode)
     else if (is_string_field(wCategory, nIndex) && !bUnicode)
     {
         int size = pWTInfoW(wCategory, nIndex, NULL);
-        WCHAR *buf = HeapAlloc(GetProcessHeap(), 0, size);
+        WCHAR *buf = malloc(size);
         pWTInfoW(wCategory, nIndex, buf);
         result = WideCharToMultiByte(CP_ACP, 0, buf, size/sizeof(WCHAR), lpOutput, lpOutput ? 2*size : 0, NULL, NULL);
-        HeapFree(GetProcessHeap(), 0, buf);
+        free(buf);
     }
     else
         result =  pWTInfoW(wCategory, nIndex, lpOutput);
@@ -464,13 +467,13 @@ HCTX WINAPI WTOpenW(HWND hWnd, LPLOGCONTEXTW lpLogCtx, BOOL fEnable)
     TRACE("hWnd=%p, lpLogCtx=%p, fEnable=%u\n", hWnd, lpLogCtx, fEnable);
     DUMPCONTEXT(*lpLogCtx);
 
-    newcontext = HeapAlloc(GetProcessHeap(), 0 , sizeof(OPENCONTEXT));
+    newcontext = malloc(sizeof(OPENCONTEXT));
     newcontext->context = *lpLogCtx;
     newcontext->hwndOwner = hWnd;
     newcontext->ActiveCursor = -1;
     newcontext->QueueSize = 10;
     newcontext->PacketsQueued = 0;
-    newcontext->PacketQueue=HeapAlloc(GetProcessHeap(),0,sizeof(WTPACKET)*10);
+    newcontext->PacketQueue = malloc(sizeof(WTPACKET) * 10);
 
     EnterCriticalSection(&csTablet);
     newcontext->handle = gTopContext++;
@@ -547,8 +550,8 @@ BOOL WINAPI WTClose(HCTX hCtx)
     TABLET_PostTabletMessage(context, _WT_CTXCLOSE(context->context.lcMsgBase), (WPARAM)context->handle,
                       context->context.lcStatus,TRUE);
 
-    HeapFree(GetProcessHeap(),0,context->PacketQueue);
-    HeapFree(GetProcessHeap(),0,context);
+    free(context->PacketQueue);
+    free(context);
 
     return TRUE;
 }
@@ -1124,8 +1127,7 @@ BOOL WINAPI WTQueueSizeSet(HCTX hCtx, int nPkts)
         return FALSE;
     }
 
-    context->PacketQueue = HeapReAlloc(GetProcessHeap(), 0,
-                        context->PacketQueue, sizeof(WTPACKET)*nPkts);
+    context->PacketQueue = realloc(context->PacketQueue, sizeof(WTPACKET) * nPkts);
 
     context->QueueSize = nPkts;
     LeaveCriticalSection(&csTablet);

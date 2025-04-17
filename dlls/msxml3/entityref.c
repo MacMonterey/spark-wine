@@ -108,7 +108,7 @@ static ULONG WINAPI entityref_Release(
     if (!ref)
     {
         destroy_xmlnode(&This->node);
-        heap_free( This );
+        free(This);
     }
 
     return ref;
@@ -346,11 +346,10 @@ static HRESULT WINAPI entityref_get_nodeTypeString(
     BSTR* p)
 {
     entityref *This = impl_from_IXMLDOMEntityReference( iface );
-    static const WCHAR entityreferenceW[] = {'e','n','t','i','t','y','r','e','f','e','r','e','n','c','e',0};
 
     TRACE("(%p)->(%p)\n", This, p);
 
-    return return_bstr(entityreferenceW, p);
+    return return_bstr(L"entityreference", p);
 }
 
 static HRESULT WINAPI entityref_get_text(
@@ -578,7 +577,7 @@ IUnknown* create_doc_entity_ref( xmlNodePtr entity )
 {
     entityref *This;
 
-    This = heap_alloc( sizeof *This );
+    This = malloc(sizeof(*This));
     if ( !This )
         return NULL;
 

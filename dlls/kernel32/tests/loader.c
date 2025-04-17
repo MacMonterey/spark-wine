@@ -34,7 +34,7 @@
 /* PROCESS_ALL_ACCESS in Vista+ PSDKs is incompatible with older Windows versions */
 #define PROCESS_ALL_ACCESS_NT4 (PROCESS_ALL_ACCESS & ~0xf000)
 
-#define ALIGN_SIZE(size, alignment) (((size) + (alignment - 1)) & ~((alignment - 1)))
+#define ALIGN_SIZE(size, alignment) (((size) + ((ULONG_PTR)(alignment) - 1)) & ~(((ULONG_PTR)(alignment) - 1)))
 
 struct PROCESS_BASIC_INFORMATION_PRIVATE
 {
@@ -87,6 +87,8 @@ static BOOL (WINAPI *pIsWow64Process)(HANDLE,PBOOL);
 static BOOL (WINAPI *pWow64DisableWow64FsRedirection)(void **);
 static BOOL (WINAPI *pWow64RevertWow64FsRedirection)(void *);
 static HMODULE (WINAPI *pLoadPackagedLibrary)(LPCWSTR lpwLibFileName, DWORD Reserved);
+static NTSTATUS  (WINAPI *pLdrRegisterDllNotification)(ULONG, PLDR_DLL_NOTIFICATION_FUNCTION, void *, void **);
+static NTSTATUS  (WINAPI *pLdrUnregisterDllNotification)(void *);
 
 static PVOID RVAToAddr(DWORD_PTR rva, HMODULE module)
 {
@@ -129,8 +131,10 @@ static const IMAGE_NT_HEADERS nt_header_template =
       0x10, /* BaseOfCode, also serves as e_lfanew in the truncated MZ header */
 #ifndef _WIN64
       0, /* BaseOfData */
-#endif
       0x10000000, /* ImageBase */
+#else
+      0x123450000, /* ImageBase */
+#endif
       0, /* SectionAlignment */
       0, /* FileAlignment */
       4, /* MajorOperatingSystemVersion */
@@ -144,13 +148,13 @@ static const IMAGE_NT_HEADERS nt_header_template =
       sizeof(dos_header) + sizeof(nt_header_template), /* SizeOfHeaders */
       0, /* CheckSum */
       IMAGE_SUBSYSTEM_WINDOWS_CUI, /* Subsystem */
-      0, /* DllCharacteristics */
-      0, /* SizeOfStackReserve */
-      0, /* SizeOfStackCommit */
-      0, /* SizeOfHeapReserve */
-      0, /* SizeOfHeapCommit */
+      IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE | IMAGE_DLLCHARACTERISTICS_NX_COMPAT, /* DllCharacteristics */
+      0x100000, /* SizeOfStackReserve */
+      0x1000, /* SizeOfStackCommit */
+      0x100000, /* SizeOfHeapReserve */
+      0x1000, /* SizeOfHeapCommit */
       0, /* LoaderFlags */
-      0, /* NumberOfRvaAndSizes */
+      IMAGE_NUMBEROF_DIRECTORY_ENTRIES, /* NumberOfRvaAndSizes */
       { { 0 } } /* DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES] */
     }
 };
@@ -328,7 +332,6 @@ static DWORD create_test_dll_sections( const IMAGE_DOS_HEADER *dos_header, const
 static BOOL query_image_section( int id, const char *dll_name, const IMAGE_NT_HEADERS *nt_header,
                                  const void *section_data )
 {
-    static BOOL is_winxp;
     SECTION_BASIC_INFORMATION info;
     SECTION_IMAGE_INFORMATION image;
     const IMAGE_COR20_HEADER *cor_header = NULL;
@@ -339,8 +342,6 @@ static BOOL query_image_section( int id, const char *dll_name, const IMAGE_NT_HE
     LARGE_INTEGER map_size;
     SIZE_T max_stack, commit_stack;
     void *entry_point;
-
-    /* truncated header is not handled correctly in windows <= w2k3 */
     BOOL truncated;
 
     file = CreateFileA( dll_name, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
@@ -396,21 +397,17 @@ static BOOL query_image_section( int id, const char *dll_name, const IMAGE_NT_HE
             cor_header = section_data;
     }
     ok( (char *)image.TransferAddress == (char *)entry_point ||
-        (S(U(image)).ImageDynamicallyRelocated && LOWORD(image.TransferAddress) == LOWORD(entry_point)),
+        (image.ImageDynamicallyRelocated && LOWORD(image.TransferAddress) == LOWORD(entry_point)),
         "%u: TransferAddress wrong %p / %p (%08lx)\n", id,
         image.TransferAddress, entry_point, nt_header->OptionalHeader.AddressOfEntryPoint );
     ok( image.ZeroBits == 0, "%u: ZeroBits wrong %08lx\n", id, image.ZeroBits );
-    ok( image.MaximumStackSize == max_stack || broken(truncated),
+    ok( image.MaximumStackSize == max_stack,
         "%u: MaximumStackSize wrong %Ix / %Ix\n", id, image.MaximumStackSize, max_stack );
-    ok( image.CommittedStackSize == commit_stack || broken(truncated),
+    ok( image.CommittedStackSize == commit_stack,
         "%u: CommittedStackSize wrong %Ix / %Ix\n", id, image.CommittedStackSize, commit_stack );
-    if (truncated)
-        ok( !image.SubSystemType || broken(truncated),
-            "%u: SubSystemType wrong %08lx / 00000000\n", id, image.SubSystemType );
-    else
-        ok( image.SubSystemType == nt_header->OptionalHeader.Subsystem,
-            "%u: SubSystemType wrong %08lx / %08x\n", id,
-            image.SubSystemType, nt_header->OptionalHeader.Subsystem );
+    ok( image.SubSystemType == nt_header->OptionalHeader.Subsystem,
+        "%u: SubSystemType wrong %08lx / %08x\n", id,
+        image.SubSystemType, nt_header->OptionalHeader.Subsystem );
     ok( image.MinorSubsystemVersion == nt_header->OptionalHeader.MinorSubsystemVersion,
         "%u: MinorSubsystemVersion wrong %04x / %04x\n", id,
         image.MinorSubsystemVersion, nt_header->OptionalHeader.MinorSubsystemVersion );
@@ -427,15 +424,15 @@ static BOOL query_image_section( int id, const char *dll_name, const IMAGE_NT_HE
     ok( image.ImageCharacteristics == nt_header->FileHeader.Characteristics,
         "%u: ImageCharacteristics wrong %04x / %04x\n", id,
         image.ImageCharacteristics, nt_header->FileHeader.Characteristics );
-    ok( image.DllCharacteristics == nt_header->OptionalHeader.DllCharacteristics || broken(truncated),
+    ok( image.DllCharacteristics == nt_header->OptionalHeader.DllCharacteristics,
         "%u: DllCharacteristics wrong %04x / %04x\n", id,
         image.DllCharacteristics, nt_header->OptionalHeader.DllCharacteristics );
     ok( image.Machine == nt_header->FileHeader.Machine, "%u: Machine wrong %04x / %04x\n", id,
         image.Machine, nt_header->FileHeader.Machine );
     ok( image.LoaderFlags == (cor_header != NULL), "%u: LoaderFlags wrong %08lx\n", id, image.LoaderFlags );
-    ok( image.ImageFileSize == file_size || broken(!image.ImageFileSize), /* winxpsp1 */
+    ok( image.ImageFileSize == file_size,
         "%u: ImageFileSize wrong %08lx / %08lx\n", id, image.ImageFileSize, file_size );
-    ok( image.CheckSum == nt_header->OptionalHeader.CheckSum || broken(truncated),
+    ok( image.CheckSum == nt_header->OptionalHeader.CheckSum,
         "%u: CheckSum wrong %08lx / %08lx\n", id,
         image.CheckSum, nt_header->OptionalHeader.CheckSum );
 
@@ -455,48 +452,45 @@ static BOOL query_image_section( int id, const char *dll_name, const IMAGE_NT_HE
         (cor_header->MajorRuntimeVersion > 2 ||
          (cor_header->MajorRuntimeVersion == 2 && cor_header->MinorRuntimeVersion >= 5)))
     {
-        ok( S(U(image)).ComPlusILOnly || broken(is_winxp),
-            "%u: wrong ComPlusILOnly flags %02x\n", id, U(image).ImageFlags );
+        ok( image.ComPlusILOnly,
+            "%u: wrong ComPlusILOnly flags %02x\n", id, image.ImageFlags );
         if (nt_header->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC &&
             !(cor_header->Flags & COMIMAGE_FLAGS_32BITREQUIRED))
-            ok( S(U(image)).ComPlusNativeReady || broken(is_winxp),
-                "%u: wrong ComPlusNativeReady flags %02x\n", id, U(image).ImageFlags );
+            ok( image.ComPlusNativeReady,
+                "%u: wrong ComPlusNativeReady flags %02x\n", id, image.ImageFlags );
         else
-            ok( !S(U(image)).ComPlusNativeReady,
-                "%u: wrong ComPlusNativeReady flags %02x\n", id, U(image).ImageFlags );
+            ok( !image.ComPlusNativeReady,
+                "%u: wrong ComPlusNativeReady flags %02x\n", id, image.ImageFlags );
         if (nt_header->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC &&
             (cor_header->Flags & COMIMAGE_FLAGS_32BITPREFERRED))
-            ok( S(U(image)).ComPlusPrefer32bit ||
+            ok( image.ComPlusPrefer32bit ||
                 broken( !image.MajorOperatingSystemVersion ), /* before win10 */
-                "%u: wrong ComPlusPrefer32bit flags %02x\n", id, U(image).ImageFlags );
+                "%u: wrong ComPlusPrefer32bit flags %02x\n", id, image.ImageFlags );
         else
-            ok( !S(U(image)).ComPlusPrefer32bit, "%u: wrong ComPlusPrefer32bit flags %02x\n", id, U(image).ImageFlags );
+            ok( !image.ComPlusPrefer32bit, "%u: wrong ComPlusPrefer32bit flags %02x\n", id, image.ImageFlags );
     }
     else
     {
-        ok( !S(U(image)).ComPlusILOnly, "%u: wrong ComPlusILOnly flags %02x\n", id, U(image).ImageFlags );
-        ok( !S(U(image)).ComPlusNativeReady, "%u: wrong ComPlusNativeReady flags %02x\n", id, U(image).ImageFlags );
-        ok( !S(U(image)).ComPlusPrefer32bit, "%u: wrong ComPlusPrefer32bit flags %02x\n", id, U(image).ImageFlags );
+        ok( !image.ComPlusILOnly, "%u: wrong ComPlusILOnly flags %02x\n", id, image.ImageFlags );
+        ok( !image.ComPlusNativeReady, "%u: wrong ComPlusNativeReady flags %02x\n", id, image.ImageFlags );
+        ok( !image.ComPlusPrefer32bit, "%u: wrong ComPlusPrefer32bit flags %02x\n", id, image.ImageFlags );
     }
     if (!(nt_header->OptionalHeader.SectionAlignment % page_size))
-        ok( !S(U(image)).ImageMappedFlat, "%u: wrong ImageMappedFlat flags %02x\n", id, U(image).ImageFlags );
+        ok( !image.ImageMappedFlat, "%u: wrong ImageMappedFlat flags %02x\n", id, image.ImageFlags );
     else
-    {
-        /* winxp doesn't support any of the loader flags */
-        if (!S(U(image)).ImageMappedFlat) is_winxp = TRUE;
-        ok( S(U(image)).ImageMappedFlat || broken(is_winxp),
-        "%u: wrong ImageMappedFlat flags %02x\n", id, U(image).ImageFlags );
-    }
+        ok( image.ImageMappedFlat,
+        "%u: wrong ImageMappedFlat flags %02x\n", id, image.ImageFlags );
+
     if (!(nt_header->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE))
-        ok( !S(U(image)).ImageDynamicallyRelocated || broken( S(U(image)).ComPlusILOnly ), /* <= win7 */
-            "%u: wrong ImageDynamicallyRelocated flags %02x\n", id, U(image).ImageFlags );
-    else if (image.ImageContainsCode && !cor_header)
-        ok( S(U(image)).ImageDynamicallyRelocated || broken(is_winxp),
-            "%u: wrong ImageDynamicallyRelocated flags %02x\n", id, U(image).ImageFlags );
+        ok( !image.ImageDynamicallyRelocated || broken( image.ComPlusILOnly ), /* <= win7 */
+            "%u: wrong ImageDynamicallyRelocated flags %02x\n", id, image.ImageFlags );
+    else if (image.ImageContainsCode && !image.ImageMappedFlat && !cor_header)
+        ok( image.ImageDynamicallyRelocated,
+            "%u: wrong ImageDynamicallyRelocated flags %02x\n", id, image.ImageFlags );
     else
-        ok( !S(U(image)).ImageDynamicallyRelocated || broken(TRUE), /* <= win8 */
-            "%u: wrong ImageDynamicallyRelocated flags %02x\n", id, U(image).ImageFlags );
-    ok( !S(U(image)).BaseBelow4gb, "%u: wrong BaseBelow4gb flags %02x\n", id, U(image).ImageFlags );
+        ok( !image.ImageDynamicallyRelocated || broken(TRUE), /* <= win8 */
+            "%u: wrong ImageDynamicallyRelocated flags %02x\n", id, image.ImageFlags );
+    ok( !image.BaseBelow4gb, "%u: wrong BaseBelow4gb flags %02x\n", id, image.ImageFlags );
 
     map_size.QuadPart = (nt_header->OptionalHeader.SizeOfImage + page_size - 1) & ~(page_size - 1);
     status = pNtQuerySection( mapping, SectionBasicInformation, &info, sizeof(info), NULL );
@@ -591,8 +585,10 @@ static UINT get_com_dir_size( const IMAGE_NT_HEADERS *nt )
 {
     if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
         return ((const IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].Size;
-    else
+    else if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
         return ((const IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].Size;
+    else
+        return 0;
 }
 
 /* helper to test image section mapping */
@@ -661,6 +657,11 @@ static NTSTATUS map_image_section( const IMAGE_NT_HEADERS *nt_header, const IMAG
             {
                 ok_(__FILE__, line)( !mod, "loading succeeded\n" );
                 ok_(__FILE__, line)( GetLastError() == ERROR_BAD_EXE_FORMAT, "wrong error %lu\n", GetLastError() );
+                if (nt_header_template.FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64)
+                {
+                    wrong_machine = TRUE;
+                    expect_status = STATUS_INVALID_IMAGE_FORMAT;
+                }
             }
         }
         else
@@ -670,7 +671,6 @@ static NTSTATUS map_image_section( const IMAGE_NT_HEADERS *nt_header, const IMAG
             ok( mod != NULL || broken(il_only) || /* <= win7 */
                 broken( wrong_machine ), /* win8 */
                 "%u: loading failed err %lu\n", line, GetLastError() );
-            if (!mod && wrong_machine) expect_status = STATUS_INVALID_IMAGE_FORMAT;
         }
         if (mod) FreeLibrary( mod );
         expect_fallback = !mod;
@@ -695,15 +695,12 @@ static NTSTATUS map_image_section( const IMAGE_NT_HEADERS *nt_header, const IMAG
         else if (!lstrcmpiW( path, load_fallback_name ))
         {
             trace( "%u: loaded fallback\n", line );
-            if (!expect_status)
-                ok( expect_fallback ||
-                    /* win10 also falls back for 32-bit dll without code, even though it could be loaded */
-                    (is_win64 && !has_code &&
-                     nt_header->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC),
-                    "%u: got fallback but expected test dll\n", line );
-            else
-                ok( broken(expect_status == STATUS_INVALID_IMAGE_FORMAT), /* <= vista */
-                    "%u: got fallback but expected failure %lx\n", line, expect_status );
+            ok( !expect_status, "%u: got fallback but expected failure %lx\n", line, expect_status );
+            ok( expect_fallback ||
+                /* win10 also falls back for 32-bit dll without code, even though it could be loaded */
+                (is_win64 && !has_code &&
+                 nt_header->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC),
+                "%u: got fallback but expected test dll\n", line );
         }
         else ok( 0, "%u: got unexpected path %s instead of %s\n", line, wine_dbgstr_w(path), wine_dbgstr_w(load_test_name));
         pLdrUnloadDll( ldr_mod );
@@ -718,10 +715,11 @@ static NTSTATUS map_image_section( const IMAGE_NT_HEADERS *nt_header, const IMAG
     else
     {
         ok( ldr_status == expect_status ||
+            (wrong_machine && !expect_status && ldr_status == STATUS_INVALID_IMAGE_FORMAT) ||
             broken(il_only && !expect_status && ldr_status == STATUS_INVALID_IMAGE_FORMAT) ||
             broken(nt_header->Signature == IMAGE_OS2_SIGNATURE && ldr_status == STATUS_INVALID_IMAGE_NE_FORMAT),
             "%u: wrong status %lx/%lx\n", line, ldr_status, expect_status );
-        ok( !expect_fallback || broken(il_only) || broken(wrong_machine),
+        ok( !expect_fallback || wrong_machine || broken(il_only),
             "%u: failed with %lx expected fallback\n", line, ldr_status );
     }
 
@@ -770,7 +768,7 @@ static void test_Loader(void)
           1, sizeof(IMAGE_OPTIONAL_HEADER), 0x200, 0x200,
           sizeof(dos_header) + sizeof(nt_header_template) + sizeof(IMAGE_SECTION_HEADER) + 0x200,
           sizeof(dos_header) + sizeof(nt_header_template) + sizeof(IMAGE_SECTION_HEADER),
-          { ERROR_SUCCESS, ERROR_INVALID_ADDRESS } /* vista is more strict */
+          { ERROR_SUCCESS, ERROR_INVALID_ADDRESS, ERROR_BAD_EXE_FORMAT } /* vista is more strict */
         },
         { sizeof(dos_header),
           1, sizeof(IMAGE_OPTIONAL_HEADER), 0x200, 0x1000,
@@ -878,9 +876,9 @@ static void test_Loader(void)
         { 0x04,
           0, 0x08,
           0x04 /* also serves as e_lfanew in the truncated MZ header */, 0x04,
-          0x200000,
+          0x2000,
           0x40,
-          { ERROR_SUCCESS }
+          { ERROR_SUCCESS, ERROR_BAD_EXE_FORMAT }
         }
     };
     int i;
@@ -929,8 +927,8 @@ static void test_Loader(void)
             ok(info.BaseAddress == hlib, "%p != %p\n", info.BaseAddress, hlib);
             ok(info.AllocationBase == hlib, "%p != %p\n", info.AllocationBase, hlib);
             ok(info.AllocationProtect == PAGE_EXECUTE_WRITECOPY, "%lx != PAGE_EXECUTE_WRITECOPY\n", info.AllocationProtect);
-            ok(info.RegionSize == ALIGN_SIZE(nt_header.OptionalHeader.SizeOfImage, page_size), "got %Ix != expected %lx\n",
-               info.RegionSize, ALIGN_SIZE(nt_header.OptionalHeader.SizeOfImage, page_size));
+            ok(info.RegionSize == ALIGN_SIZE(nt_header.OptionalHeader.SizeOfImage, page_size), "got %Ix != expected %x\n",
+               info.RegionSize, (UINT)ALIGN_SIZE(nt_header.OptionalHeader.SizeOfImage, page_size));
             ok(info.State == MEM_COMMIT, "%lx != MEM_COMMIT\n", info.State);
             if (nt_header.OptionalHeader.SectionAlignment < page_size)
                 ok(info.Protect == PAGE_EXECUTE_WRITECOPY, "%lx != PAGE_EXECUTE_WRITECOPY\n", info.Protect);
@@ -964,8 +962,8 @@ static void test_Loader(void)
                 ok(info.BaseAddress == hlib, "got %p != expected %p\n", info.BaseAddress, hlib);
                 ok(info.AllocationBase == hlib, "%p != %p\n", info.AllocationBase, hlib);
                 ok(info.AllocationProtect == PAGE_EXECUTE_WRITECOPY, "%lx != PAGE_EXECUTE_WRITECOPY\n", info.AllocationProtect);
-                ok(info.RegionSize == ALIGN_SIZE(file_size, page_size), "got %Ix != expected %lx\n",
-                   info.RegionSize, ALIGN_SIZE(file_size, page_size));
+                ok(info.RegionSize == ALIGN_SIZE(file_size, page_size), "got %Ix != expected %x\n",
+                   info.RegionSize, (UINT)ALIGN_SIZE(file_size, page_size));
                 ok(info.State == MEM_COMMIT, "%lx != MEM_COMMIT\n", info.State);
                 ok(info.Protect == PAGE_READONLY, "%lx != PAGE_READONLY\n", info.Protect);
                 ok(info.Type == SEC_IMAGE, "%lx != SEC_IMAGE\n", info.Type);
@@ -990,15 +988,15 @@ static void test_Loader(void)
                 if (nt_header.OptionalHeader.SectionAlignment < page_size)
                 {
                     ok(info.BaseAddress == hlib, "got %p != expected %p\n", info.BaseAddress, hlib);
-                    ok(info.RegionSize == ALIGN_SIZE(nt_header.OptionalHeader.SizeOfImage, page_size), "got %Ix != expected %lx\n",
-                       info.RegionSize, ALIGN_SIZE(nt_header.OptionalHeader.SizeOfImage, page_size));
+                    ok(info.RegionSize == ALIGN_SIZE(nt_header.OptionalHeader.SizeOfImage, page_size), "got %Ix != expected %x\n",
+                       info.RegionSize, (UINT)ALIGN_SIZE(nt_header.OptionalHeader.SizeOfImage, page_size));
                     ok(info.Protect == PAGE_EXECUTE_WRITECOPY, "%lx != PAGE_EXECUTE_WRITECOPY\n", info.Protect);
                 }
                 else
                 {
                     ok(info.BaseAddress == (char *)hlib + section.VirtualAddress, "got %p != expected %p\n", info.BaseAddress, (char *)hlib + section.VirtualAddress);
-                    ok(info.RegionSize == ALIGN_SIZE(section.Misc.VirtualSize, page_size), "got %Ix != expected %lx\n",
-                       info.RegionSize, ALIGN_SIZE(section.Misc.VirtualSize, page_size));
+                    ok(info.RegionSize == ALIGN_SIZE(section.Misc.VirtualSize, page_size), "got %Ix != expected %x\n",
+                       info.RegionSize, (UINT)ALIGN_SIZE(section.Misc.VirtualSize, page_size));
                     ok(info.Protect == PAGE_READONLY, "%lx != PAGE_READONLY\n", info.Protect);
                 }
                 ok(info.AllocationBase == hlib, "%p != %p\n", info.AllocationBase, hlib);
@@ -1067,53 +1065,35 @@ static void test_Loader(void)
 
             SetLastError(0xdeadbeef);
             hlib_as_data_file = LoadLibraryExA(dll_name, 0, LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE);
-            if (!((ULONG_PTR)hlib_as_data_file & 3) ||  /* winxp */
-                (!hlib_as_data_file && GetLastError() == ERROR_INVALID_PARAMETER))  /* w2k3 */
-            {
-                win_skip( "LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE not supported\n" );
-                FreeLibrary(hlib_as_data_file);
-            }
-            else
-            {
-                ok(hlib_as_data_file != 0, "LoadLibraryEx error %lu\n", GetLastError());
+            ok(hlib_as_data_file != 0, "LoadLibraryEx error %lu\n", GetLastError());
 
-                SetLastError(0xdeadbeef);
-                h = CreateFileA( dll_name, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0 );
-                ok( h == INVALID_HANDLE_VALUE, "open succeeded\n" );
-                ok( GetLastError() == ERROR_SHARING_VIOLATION, "wrong error %lu\n", GetLastError() );
-                CloseHandle( h );
+            SetLastError(0xdeadbeef);
+            h = CreateFileA( dll_name, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0 );
+            ok( h == INVALID_HANDLE_VALUE, "open succeeded\n" );
+            ok( GetLastError() == ERROR_SHARING_VIOLATION, "wrong error %lu\n", GetLastError() );
+            CloseHandle( h );
 
-                SetLastError(0xdeadbeef);
-                h = CreateFileA( dll_name, GENERIC_READ | DELETE, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0 );
-                ok( h != INVALID_HANDLE_VALUE, "open failed err %lu\n", GetLastError() );
-                CloseHandle( h );
+            SetLastError(0xdeadbeef);
+            h = CreateFileA( dll_name, GENERIC_READ | DELETE, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0 );
+            ok( h != INVALID_HANDLE_VALUE, "open failed err %lu\n", GetLastError() );
+            CloseHandle( h );
 
-                SetLastError(0xdeadbeef);
-                ret = FreeLibrary(hlib_as_data_file);
-                ok(ret, "FreeLibrary error %ld\n", GetLastError());
-            }
+            SetLastError(0xdeadbeef);
+            ret = FreeLibrary(hlib_as_data_file);
+            ok(ret, "FreeLibrary error %ld\n", GetLastError());
 
             SetLastError(0xdeadbeef);
             hlib_as_data_file = LoadLibraryExA(dll_name, 0, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
-            if (!((ULONG_PTR)hlib_as_data_file & 3) ||  /* winxp */
-                (!hlib_as_data_file && GetLastError() == ERROR_INVALID_PARAMETER))  /* w2k3 */
-            {
-                win_skip( "LOAD_LIBRARY_AS_IMAGE_RESOURCE not supported\n" );
-                FreeLibrary(hlib_as_data_file);
-            }
-            else
-            {
-                ok(hlib_as_data_file != 0, "LoadLibraryEx error %lu\n", GetLastError());
-                ok(((ULONG_PTR)hlib_as_data_file & 3) == 2, "hlib_as_data_file got %p\n",
-                   hlib_as_data_file);
+            ok(hlib_as_data_file != 0, "LoadLibraryEx error %lu\n", GetLastError());
+            ok(((ULONG_PTR)hlib_as_data_file & 3) == 2, "hlib_as_data_file got %p\n",
+               hlib_as_data_file);
 
-                hlib = GetModuleHandleA(dll_name);
-                ok(!hlib, "GetModuleHandle should fail\n");
+            hlib = GetModuleHandleA(dll_name);
+            ok(!hlib, "GetModuleHandle should fail\n");
 
-                SetLastError(0xdeadbeef);
-                ret = FreeLibrary(hlib_as_data_file);
-                ok(ret, "FreeLibrary error %ld\n", GetLastError());
-            }
+            SetLastError(0xdeadbeef);
+            ret = FreeLibrary(hlib_as_data_file);
+            ok(ret, "FreeLibrary error %ld\n", GetLastError());
 
             SetLastError(0xdeadbeef);
             ret = DeleteFileA(dll_name);
@@ -1171,17 +1151,21 @@ static void test_Loader(void)
 
     nt_header.OptionalHeader.AddressOfEntryPoint = 0x1234;
     status = map_image_section( &nt_header, &section, section_data, __LINE__ );
-    ok( status == STATUS_SUCCESS, "NtCreateSection error %08lx\n", status );
+    ok( status == (nt_header.FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64 ? STATUS_INVALID_IMAGE_FORMAT : STATUS_SUCCESS),
+        "NtCreateSection error %08lx\n", status );
 
     nt_header.OptionalHeader.DllCharacteristics = IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
     status = map_image_section( &nt_header, &section, section_data, __LINE__ );
-    ok( status == STATUS_SUCCESS, "NtCreateSection error %08lx\n", status );
+    ok( status == (nt_header.FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64 ? STATUS_INVALID_IMAGE_FORMAT : STATUS_SUCCESS),
+        "NtCreateSection error %08lx\n", status );
 
     nt_header.OptionalHeader.SizeOfCode = 0x1000;
     status = map_image_section( &nt_header, &section, section_data, __LINE__ );
-    ok( status == STATUS_SUCCESS, "NtCreateSection error %08lx\n", status );
+    ok( status == (nt_header.FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64 ? STATUS_INVALID_IMAGE_FORMAT : STATUS_SUCCESS),
+        "NtCreateSection error %08lx\n", status );
+
     nt_header.OptionalHeader.SizeOfCode = 0;
-    nt_header.OptionalHeader.DllCharacteristics = IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
+    nt_header.OptionalHeader.DllCharacteristics = IMAGE_DLLCHARACTERISTICS_NX_COMPAT | IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
 
     dos_header.e_magic = 0;
     status = map_image_section( &nt_header, &section, section_data, __LINE__ );
@@ -1227,23 +1211,15 @@ static void test_Loader(void)
     nt_header.OptionalHeader.Magic = IMAGE_NT_OPTIONAL_HDR_MAGIC;
     nt_header.FileHeader.Machine = 0xdead;
     status = map_image_section( &nt_header, &section, section_data, __LINE__ );
-    ok( status == STATUS_INVALID_IMAGE_FORMAT || broken(status == STATUS_SUCCESS), /* win2k */
-        "NtCreateSection error %08lx\n", status );
+    ok( status == STATUS_INVALID_IMAGE_FORMAT, "NtCreateSection error %08lx\n", status );
 
     nt_header.FileHeader.Machine = IMAGE_FILE_MACHINE_UNKNOWN;
     status = map_image_section( &nt_header, &section, section_data, __LINE__ );
-    ok( status == STATUS_INVALID_IMAGE_FORMAT || broken(status == STATUS_SUCCESS), /* win2k */
-        "NtCreateSection error %08lx\n", status );
-
-    nt_header.FileHeader.Machine = get_alt_machine( orig_machine );
-    status = map_image_section( &nt_header, &section, section_data, __LINE__ );
-    ok( status == STATUS_INVALID_IMAGE_FORMAT || broken(status == STATUS_SUCCESS), /* win2k */
-        "NtCreateSection error %08lx\n", status );
+    ok( status == STATUS_INVALID_IMAGE_FORMAT, "NtCreateSection error %08lx\n", status );
 
     nt_header.FileHeader.Machine = get_alt_bitness_machine( orig_machine );
     status = map_image_section( &nt_header, &section, section_data, __LINE__ );
-    ok( status == STATUS_INVALID_IMAGE_FORMAT || broken(status == STATUS_SUCCESS), /* win2k */
-                  "NtCreateSection error %08lx\n", status );
+    ok( status == STATUS_INVALID_IMAGE_FORMAT, "NtCreateSection error %08lx\n", status );
 
     nt_header.FileHeader.Machine = orig_machine;
     nt_header.OptionalHeader.NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;
@@ -1256,7 +1232,7 @@ static void test_Loader(void)
     cor_header.MajorRuntimeVersion = 2;
     cor_header.MinorRuntimeVersion = 4;
     cor_header.Flags = COMIMAGE_FLAGS_ILONLY;
-    U(cor_header).EntryPointToken = 0xbeef;
+    cor_header.EntryPointToken = 0xbeef;
     status = map_image_section( &nt_header, &section, &cor_header, __LINE__ );
     ok( status == STATUS_SUCCESS, "NtCreateSection error %08lx\n", status );
 
@@ -1431,16 +1407,15 @@ static void test_Loader(void)
         status = map_image_section( (IMAGE_NT_HEADERS *)&nt32, &section, section_data, __LINE__ );
         ok( status == STATUS_INVALID_IMAGE_FORMAT, "NtCreateSection error %08lx\n", status );
 
-        switch (orig_machine)
+        if (orig_machine == IMAGE_FILE_MACHINE_AMD64)
         {
-        case IMAGE_FILE_MACHINE_AMD64: nt32.FileHeader.Machine = IMAGE_FILE_MACHINE_ARMNT; break;
-        case IMAGE_FILE_MACHINE_ARM64: nt32.FileHeader.Machine = IMAGE_FILE_MACHINE_I386; break;
+            nt32.FileHeader.Machine = IMAGE_FILE_MACHINE_ARMNT;
+            status = map_image_section( (IMAGE_NT_HEADERS *)&nt32, &section, section_data, __LINE__ );
+            ok( status == STATUS_INVALID_IMAGE_FORMAT || broken(!status) /* win8 */,
+                "NtCreateSection error %08lx\n", status );
         }
-        status = map_image_section( (IMAGE_NT_HEADERS *)&nt32, &section, section_data, __LINE__ );
-        ok( status == STATUS_INVALID_IMAGE_FORMAT || broken(!status) /* win8 */,
-            "NtCreateSection error %08lx\n", status );
 
-        nt32.FileHeader.Machine = get_alt_bitness_machine( orig_machine );
+        nt32.FileHeader.Machine = IMAGE_FILE_MACHINE_I386;
         status = map_image_section( (IMAGE_NT_HEADERS *)&nt32, &section, section_data, __LINE__ );
         ok( status == STATUS_SUCCESS, "NtCreateSection error %08lx\n", status );
 
@@ -1519,7 +1494,7 @@ static void test_filenames(void)
     nt_header.FileHeader.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER);
 
     nt_header.OptionalHeader.SectionAlignment = page_size;
-    nt_header.OptionalHeader.DllCharacteristics = IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
+    nt_header.OptionalHeader.DllCharacteristics = IMAGE_DLLCHARACTERISTICS_NX_COMPAT | IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
     nt_header.OptionalHeader.FileAlignment = page_size;
     nt_header.OptionalHeader.SizeOfHeaders = sizeof(dos_header) + sizeof(nt_header) + sizeof(IMAGE_SECTION_HEADER);
     nt_header.OptionalHeader.SizeOfImage = sizeof(dos_header) + sizeof(nt_header) + sizeof(IMAGE_SECTION_HEADER) + page_size;
@@ -1630,7 +1605,7 @@ static void test_ImportDescriptors(void)
     {
         LPCSTR module_name = RVAToAddr(import_chunk->Name, kernel32_module);
         PIMAGE_THUNK_DATA name_table = RVAToAddr(
-                U(*import_chunk).OriginalFirstThunk, kernel32_module);
+                import_chunk->OriginalFirstThunk, kernel32_module);
         PIMAGE_THUNK_DATA iat = RVAToAddr(
                 import_chunk->FirstThunk, kernel32_module);
         ok(module_name != NULL, "Imported module name should not be NULL\n");
@@ -1668,7 +1643,7 @@ static void test_image_mapping(const char *dll_name, DWORD scn_page_access, BOOL
     size = 0;
     status = pNtMapViewOfSection(hmap, GetCurrentProcess(), &addr1, 0, 0, &offset,
                                  &size, 1 /* ViewShare */, 0, PAGE_READONLY);
-    ok(status == STATUS_SUCCESS, "NtMapViewOfSection error %lx\n", status);
+    ok(NT_SUCCESS(status), "NtMapViewOfSection error %lx\n", status);
     ok(addr1 != 0, "mapped address should be valid\n");
 
     SetLastError(0xdeadbeef);
@@ -1723,9 +1698,9 @@ static void test_image_mapping(const char *dll_name, DWORD scn_page_access, BOOL
 
     SetLastError(0xdeadbeef);
     addr2 = LoadLibraryA(dll_name);
-    if (is_dll)
+    if (!addr2)
     {
-        ok(!addr2, "LoadLibrary should fail, is_dll %d\n", is_dll);
+        ok(is_dll, "LoadLibrary should fail, is_dll %d\n", is_dll);
         ok(GetLastError() == ERROR_INVALID_ADDRESS, "expected ERROR_INVALID_ADDRESS, got %ld\n", GetLastError());
     }
     else
@@ -1925,12 +1900,14 @@ static void test_section_access(void)
     };
     char buf[256];
     int i;
-    DWORD dummy, file_align;
+    DWORD dummy;
     HANDLE hfile;
     HMODULE hlib;
     char temp_path[MAX_PATH];
     char dll_name[MAX_PATH];
     SIZE_T size;
+    PEB child_peb;
+    PROCESS_BASIC_INFORMATION pbi;
     SECTION_IMAGE_INFORMATION image_info;
     MEMORY_BASIC_INFORMATION info;
     STARTUPINFOA sti;
@@ -1962,10 +1939,6 @@ static void test_section_access(void)
         ok(ret, "WriteFile error %ld\n", GetLastError());
 
         nt_header = nt_header_template;
-        nt_header.FileHeader.NumberOfSections = 1;
-        nt_header.FileHeader.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER);
-        nt_header.FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_DLL | IMAGE_FILE_RELOCS_STRIPPED;
-
         nt_header.OptionalHeader.SectionAlignment = page_size;
         nt_header.OptionalHeader.FileAlignment = 0x200;
         nt_header.OptionalHeader.SizeOfImage = sizeof(dos_header) + sizeof(nt_header) + sizeof(IMAGE_SECTION_HEADER) + page_size;
@@ -1978,31 +1951,20 @@ static void test_section_access(void)
         section.Characteristics = td[i].scn_file_access;
         SetLastError(0xdeadbeef);
 
-        nt_header.OptionalHeader.AddressOfEntryPoint = section.VirtualAddress;
-
         SetLastError(0xdeadbeef);
-        ret = WriteFile(hfile, &nt_header, sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER), &dummy, NULL);
-        ok(ret, "WriteFile error %ld\n", GetLastError());
-        SetLastError(0xdeadbeef);
-        ret = WriteFile(hfile, &nt_header.OptionalHeader, sizeof(IMAGE_OPTIONAL_HEADER), &dummy, NULL);
+        ret = WriteFile(hfile, &nt_header, sizeof(nt_header), &dummy, NULL);
         ok(ret, "WriteFile error %ld\n", GetLastError());
 
         ret = WriteFile(hfile, &section, sizeof(section), &dummy, NULL);
         ok(ret, "WriteFile error %ld\n", GetLastError());
 
-        file_align = nt_header.OptionalHeader.FileAlignment - nt_header.OptionalHeader.SizeOfHeaders;
-        assert(file_align < sizeof(filler));
-        SetLastError(0xdeadbeef);
-        ret = WriteFile(hfile, filler, file_align, &dummy, NULL);
-        ok(ret, "WriteFile error %ld\n", GetLastError());
-
         /* section data */
+        SetFilePointer( hfile, nt_header.OptionalHeader.FileAlignment, NULL, FILE_BEGIN );
         SetLastError(0xdeadbeef);
         ret = WriteFile(hfile, section_data, sizeof(section_data), &dummy, NULL);
         ok(ret, "WriteFile error %ld\n", GetLastError());
 
         CloseHandle(hfile);
-
         SetLastError(0xdeadbeef);
         hlib = LoadLibraryExA(dll_name, NULL, DONT_RESOLVE_DLL_REFERENCES);
         ok(hlib != 0, "LoadLibrary error %ld\n", GetLastError());
@@ -2043,7 +2005,7 @@ static void test_section_access(void)
         test_image_mapping(dll_name, td[i].scn_page_access, TRUE);
 
         /* reset IMAGE_FILE_DLL otherwise CreateProcess fails */
-        nt_header.FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_RELOCS_STRIPPED;
+        nt_header.FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE;
         SetLastError(0xdeadbeef);
         hfile = CreateFileA(dll_name, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, 0);
         /* LoadLibrary called on an already memory-mapped file in
@@ -2052,9 +2014,7 @@ static void test_section_access(void)
          * due to sharing violation error. Ignore it and skip the test,
          * but leave a not deletable temporary file.
          */
-        ok(hfile != INVALID_HANDLE_VALUE || broken(hfile == INVALID_HANDLE_VALUE) /* nt4 */,
-            "CreateFile error %ld\n", GetLastError());
-        if (hfile == INVALID_HANDLE_VALUE) goto nt4_is_broken;
+        ok(hfile != INVALID_HANDLE_VALUE, "CreateFile error %ld\n", GetLastError());
         SetFilePointer(hfile, sizeof(dos_header), NULL, FILE_BEGIN);
         SetLastError(0xdeadbeef);
         ret = WriteFile(hfile, &nt_header, sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER), &dummy, NULL);
@@ -2066,6 +2026,12 @@ static void test_section_access(void)
         SetLastError(0xdeadbeef);
         ret = CreateProcessA(dll_name, NULL, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &sti, &pi);
         ok(ret, "CreateProcess() error %ld\n", GetLastError());
+
+        status = pNtQueryInformationProcess( pi.hProcess, ProcessBasicInformation, &pbi, sizeof(pbi), NULL );
+        ok( !status, "ProcessBasicInformation got %lx\n", status );
+        ret = ReadProcessMemory( pi.hProcess, pbi.PebBaseAddress, &child_peb, sizeof(child_peb), NULL );
+        ok( ret, "ReadProcessMemory failed err %lu\n", GetLastError() );
+        hlib = child_peb.ImageBaseAddress;
 
         SetLastError(0xdeadbeef);
         size = VirtualQueryEx(pi.hProcess, (char *)hlib + section.VirtualAddress, &info, sizeof(info));
@@ -2110,10 +2076,7 @@ static void test_section_access(void)
 
         test_image_mapping(dll_name, td[i].scn_page_access, FALSE);
 
-nt4_is_broken:
-        SetLastError(0xdeadbeef);
-        ret = DeleteFileA(dll_name);
-        ok(ret || broken(!ret) /* nt4 */, "DeleteFile error %ld\n", GetLastError());
+        DeleteFileA(dll_name);
     }
 }
 
@@ -2162,10 +2125,13 @@ static void test_import_resolution(void)
     char temp_path[MAX_PATH];
     char dll_name[MAX_PATH];
     DWORD dummy;
-    void *expect;
+    void *expect, *tmp;
     char *str;
-    HANDLE hfile;
+    SIZE_T size;
+    HANDLE hfile, mapping;
     HMODULE mod, mod2;
+    NTSTATUS status;
+    LARGE_INTEGER offset;
     struct imports
     {
         IMAGE_IMPORT_DESCRIPTOR descr[2];
@@ -2181,10 +2147,16 @@ static void test_import_resolution(void)
         int* tls_init_fn_output;
         UCHAR tls_init_fn[64]; /* Note: Uses rip-relative address of tls_init_fn_output, don't separate */
         UCHAR entry_point_fn[16];
+        struct
+        {
+            IMAGE_BASE_RELOCATION reloc;
+            USHORT type_off[32];
+        } rel;
     } data, *ptr;
-    IMAGE_NT_HEADERS nt;
+    IMAGE_NT_HEADERS nt, *pnt;
     IMAGE_SECTION_HEADER section;
-    int test, tls_index_save;
+    SECTION_IMAGE_INFORMATION image;
+    int test, tls_index_save, nb_rel;
 #if defined(__i386__)
     static const UCHAR tls_init_code[] = {
         0xE8, 0x00, 0x00, 0x00, 0x00, /* call 1f */
@@ -2215,19 +2187,26 @@ static void test_import_resolution(void)
     static const UCHAR entry_point_code[] = { 0x00 };
 #endif
 
-    for (test = 0; test < 4; test++)
+    for (test = 0; test < 7; test++)
     {
 #define DATA_RVA(ptr) (page_size + ((char *)(ptr) - (char *)&data))
+#ifdef _WIN64
+#define ADD_RELOC(field) data.rel.type_off[nb_rel++] = (IMAGE_REL_BASED_DIR64 << 12) + offsetof( struct imports, field )
+#else
+#define ADD_RELOC(field) data.rel.type_off[nb_rel++] = (IMAGE_REL_BASED_HIGHLOW << 12) + offsetof( struct imports, field )
+#endif
+        winetest_push_context( "%u", test );
         nt = nt_header_template;
         nt.FileHeader.NumberOfSections = 1;
         nt.FileHeader.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER);
-        nt.FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_32BIT_MACHINE | IMAGE_FILE_RELOCS_STRIPPED;
-        if (test != 2) nt.FileHeader.Characteristics |= IMAGE_FILE_DLL;
+        nt.FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE;
+        if (test != 2 && test != 5) nt.FileHeader.Characteristics |= IMAGE_FILE_DLL;
         nt.OptionalHeader.SectionAlignment = page_size;
         nt.OptionalHeader.FileAlignment = 0x200;
-        nt.OptionalHeader.ImageBase = 0x12340000;
         nt.OptionalHeader.SizeOfImage = 2 * page_size;
         nt.OptionalHeader.SizeOfHeaders = nt.OptionalHeader.FileAlignment;
+        nt.OptionalHeader.DllCharacteristics = IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
+        if (test < 6) nt.OptionalHeader.DllCharacteristics |= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
         nt.OptionalHeader.NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;
         memset( nt.OptionalHeader.DataDirectory, 0, sizeof(nt.OptionalHeader.DataDirectory) );
         nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = sizeof(data.descr);
@@ -2236,17 +2215,21 @@ static void test_import_resolution(void)
         nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress = DATA_RVA(&data.tls);
 
         memset( &data, 0, sizeof(data) );
-        U(data.descr[0]).OriginalFirstThunk = DATA_RVA( data.original_thunks );
+        data.descr[0].OriginalFirstThunk = DATA_RVA( data.original_thunks );
         data.descr[0].FirstThunk = DATA_RVA( data.thunks );
         data.descr[0].Name = DATA_RVA( data.module );
         strcpy( data.module, "kernel32.dll" );
         strcpy( data.function.name, "CreateEventA" );
         data.original_thunks[0].u1.AddressOfData = DATA_RVA( &data.function );
         data.thunks[0].u1.AddressOfData = 0xdeadbeef;
+        nb_rel = 0;
 
         data.tls.StartAddressOfRawData = nt.OptionalHeader.ImageBase + DATA_RVA( data.tls_data );
+        ADD_RELOC( tls.StartAddressOfRawData );
         data.tls.EndAddressOfRawData = data.tls.StartAddressOfRawData + sizeof(data.tls_data);
+        ADD_RELOC( tls.EndAddressOfRawData );
         data.tls.AddressOfIndex = nt.OptionalHeader.ImageBase + DATA_RVA( &data.tls_index );
+        ADD_RELOC( tls.AddressOfIndex );
         strcpy( data.tls_data, "hello world" );
         data.tls_index = 9999;
         data.tls_index_hi = 9999;
@@ -2261,9 +2244,17 @@ static void test_import_resolution(void)
             tls_init_fn_output = 9999;
             data.tls_init_fn_output = &tls_init_fn_output;
             data.tls_init_fn_list[0] = nt.OptionalHeader.ImageBase + DATA_RVA(&data.tls_init_fn);
+            ADD_RELOC( tls_init_fn_list[0] );
             data.tls.AddressOfCallBacks = nt.OptionalHeader.ImageBase + DATA_RVA(&data.tls_init_fn_list);
+            ADD_RELOC( tls.AddressOfCallBacks );
             nt.OptionalHeader.AddressOfEntryPoint = DATA_RVA(&data.entry_point_fn);
         }
+
+        if (nb_rel % 2) nb_rel++;
+        data.rel.reloc.VirtualAddress = nt.OptionalHeader.SectionAlignment;
+        data.rel.reloc.SizeOfBlock = (char *)&data.rel.type_off[nb_rel] - (char *)&data.rel.reloc;
+        nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = data.rel.reloc.SizeOfBlock;
+        nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress = DATA_RVA(&data.rel);
 
         GetTempPathA(MAX_PATH, temp_path);
         GetTempFileNameA(temp_path, "ldr", 0, dll_name);
@@ -2284,7 +2275,7 @@ static void test_import_resolution(void)
         WriteFile(hfile, &nt, sizeof(nt), &dummy, NULL);
         WriteFile(hfile, &section, sizeof(section), &dummy, NULL);
 
-        SetFilePointer( hfile, section.PointerToRawData, NULL, SEEK_SET );
+        SetFilePointer( hfile, section.PointerToRawData, NULL, FILE_BEGIN );
         WriteFile(hfile, &data, sizeof(data), &dummy, NULL);
 
         CloseHandle( hfile );
@@ -2299,14 +2290,10 @@ static void test_import_resolution(void)
             expect = GetProcAddress( GetModuleHandleA( data.module ), data.function.name );
             ok( (void *)ptr->thunks[0].u1.Function == expect, "thunk %p instead of %p for %s.%s\n",
                 (void *)ptr->thunks[0].u1.Function, expect, data.module, data.function.name );
-            ok( ptr->tls_index < 32 || broken(ptr->tls_index == 9999), /* before vista */
-                "wrong tls index %d\n", ptr->tls_index );
-            if (ptr->tls_index != 9999)
-            {
-                str = ((char **)NtCurrentTeb()->ThreadLocalStoragePointer)[ptr->tls_index];
-                ok( !strcmp( str, "hello world" ), "wrong tls data '%s' at %p\n", str, str );
-                ok(ptr->tls_index_hi == 0, "TLS Index written as a short, high half: %d\n", ptr->tls_index_hi);
-            }
+            ok( ptr->tls_index < 32, "wrong tls index %d\n", ptr->tls_index );
+            str = ((char **)NtCurrentTeb()->ThreadLocalStoragePointer)[ptr->tls_index];
+            ok( !strcmp( str, "hello world" ), "wrong tls data '%s' at %p\n", str, str );
+            ok(ptr->tls_index_hi == 0, "TLS Index written as a short, high half: %d\n", ptr->tls_index_hi);
             check_tls_index(mod, ptr->tls_index != 9999);
             FreeLibrary( mod );
             break;
@@ -2345,9 +2332,8 @@ static void test_import_resolution(void)
             if (!mod) break;
             ptr = (struct imports *)((char *)mod + page_size);
             tls_index_save = ptr->tls_index;
-            ok( ptr->tls_index < 32 || broken(ptr->tls_index == 9999), /* before vista */
-                "wrong tls index %d\n", ptr->tls_index );
-            if (ptr->tls_index != 9999 && sizeof(tls_init_code) > 1)
+            ok( ptr->tls_index < 32, "wrong tls index %d\n", ptr->tls_index );
+            if (sizeof(tls_init_code) > 1)
             {
                 str = ((char **)NtCurrentTeb()->ThreadLocalStoragePointer)[ptr->tls_index];
                 ok( !strcmp( str, "hello world" ), "wrong tls data '%s' at %p\n", str, str );
@@ -2365,10 +2351,580 @@ static void test_import_resolution(void)
             if (tls_index_save != 9999 && sizeof(tls_init_code) > 1)
                 ok( tls_init_fn_output == DLL_PROCESS_DETACH,
                     "tls init function didn't run or got wrong reason: %d instead of %d\n", tls_init_fn_output, DLL_PROCESS_DETACH );
+            break;
+        case 4:  /* map with ntdll */
+        case 5:  /* map with ntdll, without IMAGE_FILE_DLL */
+        case 6:  /* map with ntdll, without IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE */
+            hfile = CreateFileA(dll_name, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0);
+            ok( hfile != INVALID_HANDLE_VALUE, "CreateFile failed err %lu\n", GetLastError() );
+            mapping = CreateFileMappingA( hfile, NULL, SEC_IMAGE | PAGE_READONLY, 0, 0, NULL );
+            CloseHandle( hfile );
+            if (test == 6 &&
+                (nt_header_template.FileHeader.Machine == IMAGE_FILE_MACHINE_ARMNT ||
+                 nt_header_template.FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64))
+            {
+                ok( !mapping, "CreateFileMappingA succeeded\n" );
+                ok( GetLastError() == ERROR_BAD_EXE_FORMAT, "wrong error %lu\n", GetLastError() );
+                break;
+            }
+            status = pNtQuerySection( mapping, SectionImageInformation, &image, sizeof(image), &size );
+            ok( !status, "NtQuerySection failed %lx\n", status );
+            ok( test == 6 ? !image.ImageDynamicallyRelocated : image.ImageDynamicallyRelocated,
+                "image flags %x\n", image.ImageFlags);
+            ok( !image.ImageContainsCode, "contains code %x\n", image.ImageContainsCode);
+            ok( mapping != 0, "CreateFileMappingA failed err %lu\n", GetLastError() );
+            /* make sure that the address is not available */
+            tmp = VirtualAlloc( (void *)nt.OptionalHeader.ImageBase, 0x10000,
+                                MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE );
+            mod = NULL;
+            size = 0;
+            offset.QuadPart = 0;
+            status = pNtMapViewOfSection( mapping, GetCurrentProcess(), (void **)&mod, 0, 0, &offset,
+                                          &size, 1 /* ViewShare */, 0, PAGE_READONLY );
+            todo_wine_if (test == 5)
+            ok( status == (test == 6 ? STATUS_IMAGE_NOT_AT_BASE : STATUS_SUCCESS),
+                "NtMapViewOfSection failed %lx\n", status );
+            ok( mod != (void *)nt.OptionalHeader.ImageBase,  "loaded at image base %p\n", mod );
+            pnt = pRtlImageNtHeader( mod );
+            ptr = (void *)((char *)mod + page_size);
+            if (test == 6)
+            {
+                ok( (void *)pnt->OptionalHeader.ImageBase != mod, "not relocated from %p\n", mod );
+                ok( (char *)ptr->tls.StartAddressOfRawData == (char *)nt.OptionalHeader.ImageBase + DATA_RVA( data.tls_data ),
+                    "tls relocated %p / %p\n", (void *)ptr->tls.StartAddressOfRawData,
+                    (char *)nt.OptionalHeader.ImageBase + DATA_RVA( data.tls_data ));
+            }
+            else todo_wine_if (test == 5)
+            {
+                ok( (void *)pnt->OptionalHeader.ImageBase == mod, "not at base %p / %p\n",
+                    (void *)pnt->OptionalHeader.ImageBase, mod );
+                ok( (char *)ptr->tls.StartAddressOfRawData == (char *)mod + DATA_RVA( data.tls_data ),
+                    "tls not relocated %p / %p\n", (void *)ptr->tls.StartAddressOfRawData,
+                    (char *)mod + DATA_RVA( data.tls_data ));
+            }
+            UnmapViewOfFile( mod );
+            CloseHandle( mapping );
+            if (tmp) VirtualFree( tmp, 0, MEM_RELEASE );
+            break;
         }
         DeleteFileA( dll_name );
+        winetest_pop_context();
 #undef DATA_RVA
     }
+}
+
+static HANDLE gen_forward_chain_testdll( char testdll_path[MAX_PATH],
+                                         const char source_dll[MAX_PATH],
+                                         BOOL is_export, BOOL is_import,
+                                         DWORD *exp_func_base_rva,
+                                         DWORD *imp_thunk_base_rva )
+{
+    DWORD text_rva = page_size;  /* assumes that the PE/COFF headers fit in a page */
+    DWORD text_size = page_size;
+    DWORD edata_rva = text_rva + text_size;
+    DWORD edata_size = page_size;
+    DWORD idata_rva = edata_rva + text_size;
+    DWORD idata_size = page_size;
+    DWORD eof_rva = idata_rva + edata_size;
+    const IMAGE_SECTION_HEADER sections[3] = {
+        {
+            .Name = ".text",
+            .Misc = { .VirtualSize = text_size },
+            .VirtualAddress   = text_rva,
+            .SizeOfRawData    = text_size,
+            .PointerToRawData = text_rva,
+            .Characteristics  = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE,
+        },
+        {
+            .Name = ".edata",
+            .Misc = { .VirtualSize = edata_size },
+            .VirtualAddress   = edata_rva,
+            .SizeOfRawData    = edata_size,
+            .PointerToRawData = edata_rva,
+            .Characteristics  = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ,
+        },
+        {
+            .Name = ".idata",
+            .Misc = { .VirtualSize = edata_size },
+            .VirtualAddress   = idata_rva,
+            .SizeOfRawData    = idata_size,
+            .PointerToRawData = idata_rva,
+            .Characteristics  = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE,
+        },
+    };
+    struct expdesc
+    {
+        const IMAGE_EXPORT_DIRECTORY dir;
+
+        DWORD functions[2];
+
+        const DWORD names[2];
+        const WORD name_ords[2];
+        const char str_forward_test_func[32];
+        const char str_forward_test_func2[32];
+
+        char dll_name[MAX_PATH];         /* dynamically populated */
+        char strpool[2][MAX_PATH + 16];  /* for names of export forwarders */
+    } expdesc = {
+        .dir = {
+            .Characteristics       = 0,
+            .TimeDateStamp         = 0x12345678,
+            .Name                  = edata_rva + offsetof(struct expdesc, dll_name),
+            .Base                  = 1,
+            .NumberOfFunctions     = ARRAY_SIZE(expdesc.functions),
+            .NumberOfNames         = ARRAY_SIZE(expdesc.names),
+            .AddressOfFunctions    = edata_rva + offsetof(struct expdesc, functions),
+            .AddressOfNames        = edata_rva + offsetof(struct expdesc, names),
+            .AddressOfNameOrdinals = edata_rva + offsetof(struct expdesc, name_ords),
+        },
+        .functions = {
+            text_rva + 0x4,  /* may be overwritten */
+            text_rva + 0x8,  /* may be overwritten */
+        },
+        .names = {
+            edata_rva + offsetof(struct expdesc, str_forward_test_func),
+            edata_rva + offsetof(struct expdesc, str_forward_test_func2),
+        },
+        .name_ords = {
+            0,
+            1,
+        },
+        .str_forward_test_func = "forward_test_func",
+        .str_forward_test_func2 = "forward_test_func2",
+    };
+    struct impdesc
+    {
+        const IMAGE_IMPORT_DESCRIPTOR descr[2];
+        const IMAGE_THUNK_DATA original_thunks[3];
+        const IMAGE_THUNK_DATA thunks[3];
+        const struct { WORD hint; char name[32]; } impname_forward_test_func;
+
+        char module[MAX_PATH];  /* dynamically populated */
+    } impdesc = {
+        .descr = {
+            {
+                .OriginalFirstThunk = idata_rva + offsetof(struct impdesc, original_thunks),
+                .TimeDateStamp      = 0,
+                .ForwarderChain     = -1,
+                .Name               = idata_rva + offsetof(struct impdesc, module),
+                .FirstThunk         = idata_rva + offsetof(struct impdesc, thunks),
+            },
+            {{ 0 }},
+        },
+        .original_thunks = {
+            {{ idata_rva + offsetof(struct impdesc, impname_forward_test_func) }},
+            {{ IMAGE_ORDINAL_FLAG | 2 }},
+            {{ 0 }},
+        },
+        .thunks = {
+            {{ idata_rva + offsetof(struct impdesc, impname_forward_test_func) }},
+            {{ IMAGE_ORDINAL_FLAG | 2 }},
+            {{ 0 }},
+        },
+        .impname_forward_test_func = { 0, "forward_test_func" },
+    };
+    IMAGE_NT_HEADERS nt_header;
+    char temp_path[MAX_PATH];
+    HANDLE file, file_w;
+    LARGE_INTEGER qpc;
+    DWORD outlen;
+    BOOL ret;
+    int res;
+
+    QueryPerformanceCounter( &qpc );
+    res = snprintf( expdesc.dll_name, ARRAY_SIZE(expdesc.dll_name),
+                    "ldr%05lx.dll", qpc.LowPart & 0xfffffUL );
+    ok( res > 0 && res < ARRAY_SIZE(expdesc.dll_name), "snprintf failed\n" );
+
+    if (source_dll)
+    {
+        const char *export_names[2] = {
+            "forward_test_func",
+            "#2",
+        };
+        const char *backslash = strrchr( source_dll, '\\' );
+        const char *dllname = backslash ? backslash + 1 : source_dll;
+        const char *dot = strrchr( dllname, '.' );
+        size_t ext_start = dot ? dot - dllname : strlen(dllname);
+        size_t i;
+
+        res = snprintf( impdesc.module, ARRAY_SIZE(impdesc.module), "%s", dllname );
+        ok( res > 0 && res < ARRAY_SIZE(impdesc.module), "snprintf() failed\n" );
+
+        for (i = 0; i < ARRAY_SIZE(export_names); i++)
+        {
+            char *buf;
+            size_t buf_size;
+
+            assert( i < ARRAY_SIZE(expdesc.strpool) );
+            buf = expdesc.strpool[i];
+            buf_size = ARRAY_SIZE(expdesc.strpool[i]);
+
+            assert( ext_start < buf_size );
+            memcpy( buf, dllname, ext_start );
+            buf += ext_start;
+            buf_size -= ext_start;
+
+            res = snprintf( buf, buf_size, ".%s", export_names[i] );
+            ok( res > 0 && res < buf_size, "snprintf() failed\n" );
+
+            assert( i < ARRAY_SIZE(expdesc.functions) );
+            expdesc.functions[i] = edata_rva + (expdesc.strpool[i] - (char *)&expdesc);
+        }
+    }
+
+    nt_header = nt_header_template;
+    nt_header.FileHeader.TimeDateStamp = 0x12345678;
+    nt_header.FileHeader.NumberOfSections = ARRAY_SIZE(sections);
+    nt_header.FileHeader.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER);
+
+    nt_header.OptionalHeader.SizeOfCode = text_size;
+    nt_header.OptionalHeader.SectionAlignment = page_size;
+    nt_header.OptionalHeader.FileAlignment = page_size;
+    nt_header.OptionalHeader.SizeOfHeaders = sizeof(dos_header) + sizeof(nt_header) + sizeof(sections);
+    nt_header.OptionalHeader.SizeOfImage = eof_rva;
+    if (is_export)
+    {
+        nt_header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress = edata_rva;
+        nt_header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size = sizeof(expdesc);
+    }
+    /* Always have an import descriptor (even if empty) just like a real DLL */
+    nt_header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = idata_rva;
+    nt_header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = is_import ? sizeof(impdesc) : sizeof(IMAGE_IMPORT_DESCRIPTOR);
+
+    ok( nt_header.OptionalHeader.SizeOfHeaders <= text_rva,
+        "headers (size %#lx) should not overlap with text area (RVA %#lx)\n",
+        nt_header.OptionalHeader.SizeOfHeaders, text_rva );
+
+    outlen = GetTempPathA( ARRAY_SIZE(temp_path), temp_path );
+    ok( outlen > 0 && outlen < ARRAY_SIZE(temp_path), "GetTempPathA() err=%lu\n", GetLastError() );
+
+    res = snprintf( testdll_path, MAX_PATH, "%s\\%s", temp_path, expdesc.dll_name );
+    ok( res > 0 && res < MAX_PATH, "snprintf failed\n" );
+
+    /* Open file handle that will be deleted on close or process termination */
+    file = CreateFileA( testdll_path,
+                        DELETE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        NULL,
+                        CREATE_NEW,
+                        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE,
+                        NULL );
+    ok( file != INVALID_HANDLE_VALUE, "CreateFile(%s) for delete returned error %lu\n",
+        wine_dbgstr_a( testdll_path ), GetLastError() );
+
+    /* Open file again with write access */
+    file_w = CreateFileA( testdll_path,
+                          GENERIC_WRITE,
+                          FILE_SHARE_READ | FILE_SHARE_DELETE,
+                          NULL,
+                          OPEN_EXISTING,
+                          FILE_ATTRIBUTE_NORMAL,
+                          NULL );
+    ok( file_w != INVALID_HANDLE_VALUE, "CreateFile(%s) for write returned error %lu\n",
+        wine_dbgstr_a( testdll_path ), GetLastError() );
+
+    ret = WriteFile( file_w, &dos_header, sizeof(dos_header), &outlen, NULL );
+    ok( ret && outlen == sizeof(dos_header), "write dos_header: err=%lu outlen=%lu\n", GetLastError(), outlen );
+
+    ret = WriteFile( file_w, &nt_header, sizeof(nt_header), &outlen, NULL );
+    ok( ret && outlen == sizeof(nt_header), "write nt_header: err=%lu outlen=%lu\n", GetLastError(), outlen );
+
+    ret = WriteFile( file_w, sections, sizeof(sections), &outlen, NULL );
+    ok( ret && outlen == sizeof(sections), "write sections: err=%lu outlen=%lu\n", GetLastError(), outlen );
+
+    if (is_export)
+    {
+        SetFilePointer( file_w, edata_rva, NULL, FILE_BEGIN );
+        ret = WriteFile( file_w, &expdesc, sizeof(expdesc), &outlen, NULL );
+        ok( ret && outlen == sizeof(expdesc), "write expdesc: err=%lu outlen=%lu\n", GetLastError(), outlen );
+    }
+
+    if (is_import)
+    {
+        SetFilePointer( file_w, idata_rva, NULL, FILE_BEGIN );
+        ret = WriteFile( file_w, &impdesc, sizeof(impdesc), &outlen, NULL );
+        ok( ret && outlen == sizeof(impdesc), "write impdesc: err=%lu outlen=%lu\n", GetLastError(), outlen );
+    }
+
+    ret = SetFilePointer( file_w, eof_rva, NULL, FILE_BEGIN );
+    ok( ret, "%lu\n", GetLastError() );
+    ret = SetEndOfFile( file_w );
+    ok( ret, "%lu\n", GetLastError() );
+
+    ret = CloseHandle( file_w );
+    ok( ret, "%lu\n", GetLastError() );
+
+    if (exp_func_base_rva)
+    {
+        *exp_func_base_rva = is_export ? edata_rva + ((char *)&expdesc.functions - (char *)&expdesc) : 0;
+    }
+
+    if (imp_thunk_base_rva)
+    {
+        *imp_thunk_base_rva = is_import ? idata_rva + ((char *)&impdesc.thunks - (char *)&impdesc) : 0;
+    }
+
+    return file;
+}
+
+struct ldr_notify_counter
+{
+    WCHAR path[MAX_PATH];
+
+    unsigned int load_count;
+    unsigned int unload_count;
+};
+
+static void CALLBACK ldr_notify_counter_callback(ULONG reason, LDR_DLL_NOTIFICATION_DATA *data, void *context)
+{
+    struct ldr_notify_counter *lnc = context;
+
+    switch (reason)
+    {
+    case LDR_DLL_NOTIFICATION_REASON_LOADED:
+        if (!wcsicmp( data->Loaded.BaseDllName->Buffer, lnc->path ))
+        {
+            lnc->load_count++;
+        }
+        break;
+
+    case LDR_DLL_NOTIFICATION_REASON_UNLOADED:
+        if (!wcsicmp( data->Unloaded.BaseDllName->Buffer, lnc->path ))
+        {
+            lnc->unload_count++;
+        }
+        break;
+    }
+}
+
+static void subtest_export_forwarder_dep_chain( size_t num_chained_export_modules,
+                                                size_t exporter_index,
+                                                BOOL test_static_import,
+                                                ULONG first_module_load_flags )
+{
+    size_t num_modules = num_chained_export_modules + !!test_static_import;
+    size_t importer_index = test_static_import ? num_modules - 1 : 0;
+    DWORD imp_thunk_base_rva, exp_func_base_rva;
+    size_t ultimate_depender_index = 0; /* latest module depending on modules earlier in chain */
+    struct ldr_notify_counter lnc;
+    char temp_paths[4][MAX_PATH];
+    HANDLE temp_files[4];
+    UINT_PTR exports[2];
+    HMODULE modules[4];
+    void *cookie;
+    BOOL res;
+    size_t i;
+
+    assert(exporter_index < num_chained_export_modules);
+    assert(num_modules > 1);
+    assert(num_modules <= ARRAY_SIZE(temp_paths));
+    assert(num_modules <= ARRAY_SIZE(temp_files));
+    assert(num_modules <= ARRAY_SIZE(modules));
+
+    if (winetest_debug > 1)
+        trace( "Generate a chain of test DLL fixtures\n" );
+
+    for (i = 0; i < num_modules; i++)
+    {
+        temp_files[i] = gen_forward_chain_testdll( temp_paths[i],
+                                                   i >= 1 ? temp_paths[i - 1] : NULL,
+                                                   i < num_chained_export_modules,
+                                                   importer_index && i == importer_index,
+                                                   i == 0 ? &exp_func_base_rva : NULL,
+                                                   i == importer_index ? &imp_thunk_base_rva : NULL );
+    }
+
+    if (first_module_load_flags & DONT_RESOLVE_DLL_REFERENCES)
+    {
+        NTSTATUS status;
+        WCHAR *basename;
+        int cres;
+
+        memset( &lnc, 0, sizeof(lnc) );
+
+        cres = MultiByteToWideChar( CP_ACP, 0, temp_paths[0], -1, lnc.path, ARRAY_SIZE(lnc.path) );
+        ok( cres >= 0, "MultiByteToWideChar returned %d (err %lu)\n", cres, GetLastError() );
+
+        basename = wcsrchr( lnc.path, L'\\' ) + 1;
+        memmove( lnc.path, basename, (char *)lnc.path + sizeof(lnc.path) - (char *)basename );
+
+        status = pLdrRegisterDllNotification( 0, ldr_notify_counter_callback, &lnc, &cookie );
+        ok( !status, "LdrRegisterDllNotification returned %#lx.\n", status );
+    }
+
+    if (winetest_debug > 1)
+        trace( "Load the entire test DLL chain\n" );
+
+    for (i = 0; i < num_modules; i++)
+    {
+        HMODULE module;
+
+        ok( !GetModuleHandleA( temp_paths[i] ), "%s already loaded\n",
+            wine_dbgstr_a( temp_paths[i] ) );
+
+        modules[i] = LoadLibraryExA( temp_paths[i], 0, i == 0 ? first_module_load_flags : 0 );
+        ok( !!modules[i], "LoadLibraryA(temp_paths[%Iu] = %s) err=%lu\n",
+            i, wine_dbgstr_a( temp_paths[i] ), GetLastError() );
+
+        if (i == importer_index)
+        {
+            /* Statically importing export forwarder introduces a load-time dependency */
+            ultimate_depender_index = max( ultimate_depender_index, importer_index );
+        }
+
+        module = GetModuleHandleA( temp_paths[i] );
+        ok( module == modules[i], "modules[%Iu] expected %p, got %p err=%lu\n",
+            i, modules[i], module, GetLastError() );
+    }
+
+    if (winetest_debug > 1)
+        trace( "Get address of exported functions from the source module\n" );
+
+    for (i = 0; i < ARRAY_SIZE(exports); i++)
+    {
+        char *mod_base = (char *)modules[0];  /* source (non-forward) DLL */
+        exports[i] = (UINT_PTR)(mod_base + ((DWORD *)(mod_base + exp_func_base_rva))[i]);
+    }
+
+    if (winetest_debug > 1)
+        trace( "Check import address table of the importer DLL, if any\n" );
+
+    if (importer_index)
+    {
+        UINT_PTR *imp_thunk_base = (UINT_PTR *)((char *)modules[importer_index] + imp_thunk_base_rva);
+        for (i = 0; i < ARRAY_SIZE(exports); i++)
+        {
+            ok( imp_thunk_base[i] == exports[i], "import thunk mismatch [%Iu]: (%#Ix, %#Ix)\n",
+                i, imp_thunk_base[i], exports[i] );
+        }
+    }
+
+    if (winetest_debug > 1)
+        trace( "Call GetProcAddress() on the exporter DLL, if any\n" );
+
+    if (exporter_index)
+    {
+        UINT_PTR proc;
+
+        proc = (UINT_PTR)GetProcAddress( modules[exporter_index], "forward_test_func" );
+        ok( proc == exports[0], "GetProcAddress mismatch [0]: (%#Ix, %#Ix)\n", proc, exports[0] );
+
+        proc = (UINT_PTR)GetProcAddress( modules[exporter_index], (LPSTR)2 );
+        ok( proc == exports[1], "GetProcAddress mismatch [1]: (%#Ix, %#Ix)\n", proc, exports[1] );
+
+        /* Dynamically importing export forwarder introduces a runtime dependency */
+        ultimate_depender_index = max( ultimate_depender_index, exporter_index );
+    }
+
+    if (first_module_load_flags & DONT_RESOLVE_DLL_REFERENCES)
+    {
+        LDR_DATA_TABLE_ENTRY *mod;
+        NTSTATUS status;
+
+        status = LdrFindEntryForAddress( modules[0], &mod );
+        ok( !status, "LdrFindEntryForAddress returned %#lx", status );
+        ok( !(mod->Flags & LDR_PROCESS_ATTACHED), "expected LDR_PROCESS_ATTACHED to be unset (Flags=%#lx)\n", mod->Flags );
+    }
+
+    if (winetest_debug > 1)
+        trace( "Unreference modules except the ultimate dependant DLL\n" );
+
+    for (i = 0; i < ultimate_depender_index; i++)
+    {
+        HMODULE module;
+
+        res = FreeLibrary( modules[i] );
+        ok( res, "FreeLibrary(modules[%Iu]) err=%lu\n", i, GetLastError() );
+
+        /* FreeLibrary() should *not* unload the DLL immediately */
+        module = GetModuleHandleA( temp_paths[i] );
+        ok( module == modules[i], "modules[%Iu] expected %p, got %p (unloaded?) err=%lu\n",
+            i, modules[i], module, GetLastError() );
+    }
+
+    if (winetest_debug > 1)
+        trace( "The ultimate dependant DLL should keep other DLLs from being unloaded\n" );
+
+    for (i = 0; i < num_modules; i++)
+    {
+        HMODULE module = GetModuleHandleA( temp_paths[i] );
+
+        ok( module == modules[i], "modules[%Iu] expected %p, got %p (unloaded?) err=%lu\n",
+            i, modules[i], module, GetLastError() );
+    }
+
+    if (winetest_debug > 1)
+        trace( "Unreference the remaining modules (including the dependant DLL)\n" );
+
+    for (i = ultimate_depender_index; i < num_modules; i++)
+    {
+        res = FreeLibrary( modules[i] );
+        ok( res, "FreeLibrary(modules[%Iu]) err=%lu\n", i, GetLastError() );
+
+        /* FreeLibrary() should unload the DLL immediately */
+        ok( !GetModuleHandleA( temp_paths[i] ), "modules[%Iu] should not be kept loaded (2)\n", i );
+    }
+
+    if (winetest_debug > 1)
+        trace( "All modules should be unloaded; the unloading process should not reload any DLL\n" );
+
+    for (i = 0; i < num_modules; i++)
+    {
+        ok( !GetModuleHandleA( temp_paths[i] ), "modules[%Iu] should not be kept loaded (3)\n", i );
+    }
+
+    if (first_module_load_flags & DONT_RESOLVE_DLL_REFERENCES)
+    {
+        NTSTATUS status;
+
+        status = pLdrUnregisterDllNotification( cookie );
+        ok( !status, "LdrUnregisterDllNotification returned %#lx.\n", status );
+
+        ok( lnc.load_count == lnc.unload_count, "got %u/%u for load/unload count of 1st module\n", lnc.load_count, lnc.unload_count );
+        ok( !lnc.load_count || broken(lnc.load_count == 1) /* win7 */, "got %u for load count of first module\n", lnc.load_count );
+    }
+
+    if (winetest_debug > 1)
+        trace( "Close and delete temp files\n" );
+
+    for (i = 0; i < num_modules; i++)
+    {
+        /* handles should be delete-on-close */
+        CloseHandle( temp_files[i] );
+    }
+}
+
+static void test_export_forwarder_dep_chain(void)
+{
+    winetest_push_context( "no import" );
+    /* export forwarder does not introduce a dependency on its own */
+    subtest_export_forwarder_dep_chain( 2, 0, FALSE, 0 );
+    winetest_pop_context();
+
+    winetest_push_context( "static import of export forwarder" );
+    subtest_export_forwarder_dep_chain( 2, 0, TRUE, 0 );
+    winetest_pop_context();
+
+    winetest_push_context( "static import of chained export forwarder" );
+    subtest_export_forwarder_dep_chain( 3, 0, TRUE, 0 );
+    winetest_pop_context();
+
+    winetest_push_context( "dynamic import of export forwarder" );
+    subtest_export_forwarder_dep_chain( 2, 1, FALSE, 0 );
+    winetest_pop_context();
+
+    winetest_push_context( "dynamic import of chained export forwarder" );
+    subtest_export_forwarder_dep_chain( 3, 2, FALSE, 0 );
+    winetest_pop_context();
+
+    winetest_push_context( "static import of dll already loaded with DONT_RESOLVE_DLL_REFERENCES" );
+    subtest_export_forwarder_dep_chain( 1, 0, TRUE, DONT_RESOLVE_DLL_REFERENCES );
+    winetest_pop_context();
+
+    winetest_push_context( "dynamic import of dll already loaded with DONT_RESOLVE_DLL_REFERENCES" );
+    subtest_export_forwarder_dep_chain( 2, 1, FALSE, DONT_RESOLVE_DLL_REFERENCES );
+    winetest_pop_context();
 }
 
 #define MAX_COUNT 10
@@ -2581,35 +3137,29 @@ static BOOL WINAPI dll_entry_point(HINSTANCE hinst, DWORD reason, LPVOID param)
         else if (test_dll_phase == 7) expected_code = 199;
         else expected_code = STILL_ACTIVE;
 
-        if (test_dll_phase == 3)
+        ret = pRtlDllShutdownInProgress();
+        if (test_dll_phase == 0 || test_dll_phase == 1 || test_dll_phase == 3)
         {
-            ret = pRtlDllShutdownInProgress();
             ok(ret, "RtlDllShutdownInProgress returned %ld\n", ret);
         }
         else
         {
-            ret = pRtlDllShutdownInProgress();
-
             /* FIXME: remove once Wine is fixed */
             todo_wine_if (!(expected_code == STILL_ACTIVE || expected_code == 196))
-                ok(!ret || broken(ret) /* before Vista */, "RtlDllShutdownInProgress returned %ld\n", ret);
+                ok(!ret, "RtlDllShutdownInProgress returned %ld\n", ret);
         }
 
         /* In the case that the process is terminating, FLS slots should still be accessible, but
          * the callback should be already run for this thread and the contents already NULL.
-         * Note that this is broken for Win2k3, which runs the callbacks *after* the DLL entry
-         * point has already run.
          */
         if (param && pFlsGetValue)
         {
             void* value;
             SetLastError(0xdeadbeef);
             value = pFlsGetValue(fls_index);
-            ok(broken(value == (void*) 0x31415) || /* Win2k3 */
-                value == NULL, "FlsGetValue returned %p, expected NULL\n", value);
+            ok(value == NULL, "FlsGetValue returned %p, expected NULL\n", value);
             ok(GetLastError() == ERROR_SUCCESS, "FlsGetValue failed with error %lu\n", GetLastError());
-            ok(broken(fls_callback_count == thread_detach_count) || /* Win2k3 */
-                fls_callback_count == thread_detach_count + 1,
+            ok(fls_callback_count == thread_detach_count + 1,
                 "wrong FLS callback count %ld, expected %d\n", fls_callback_count, thread_detach_count + 1);
         }
         if (pFlsFree)
@@ -2677,22 +3227,15 @@ static BOOL WINAPI dll_entry_point(HINSTANCE hinst, DWORD reason, LPVOID param)
         handle = CreateThread(NULL, 0, noop_thread_proc, &noop_thread_started, 0, &ret);
         if (param)
         {
-            ok(!handle || broken(handle != 0) /* before win7 */, "CreateThread should fail\n");
-            if (!handle)
-                ok(GetLastError() == ERROR_ACCESS_DENIED, "expected ERROR_ACCESS_DENIED, got %ld\n", GetLastError());
-            else
-            {
-                ret = WaitForSingleObject(handle, 1000);
-                ok(ret == WAIT_TIMEOUT, "expected WAIT_TIMEOUT, got %#lx\n", ret);
-                CloseHandle(handle);
-            }
+            ok(!handle, "CreateThread should fail\n");
+            ok(GetLastError() == ERROR_ACCESS_DENIED, "expected ERROR_ACCESS_DENIED, got %ld\n", GetLastError());
         }
         else
         {
             ok(handle != 0, "CreateThread error %ld\n", GetLastError());
             ret = WaitForSingleObject(handle, 1000);
             ok(ret == WAIT_TIMEOUT, "expected WAIT_TIMEOUT, got %#lx\n", ret);
-            ok(!noop_thread_started || broken(noop_thread_started) /* XP64 */, "thread shouldn't start yet\n");
+            ok(!noop_thread_started, "thread shouldn't start yet\n");
             CloseHandle(handle);
         }
 
@@ -2705,22 +3248,15 @@ static BOOL WINAPI dll_entry_point(HINSTANCE hinst, DWORD reason, LPVOID param)
         handle = CreateRemoteThread(process, NULL, 0, noop_thread_proc, &noop_thread_started, 0, &ret);
         if (param)
         {
-            ok(!handle || broken(handle != 0) /* before win7 */, "CreateRemoteThread should fail\n");
-            if (!handle)
-                ok(GetLastError() == ERROR_ACCESS_DENIED, "expected ERROR_ACCESS_DENIED, got %ld\n", GetLastError());
-            else
-            {
-                ret = WaitForSingleObject(handle, 1000);
-                ok(ret == WAIT_TIMEOUT, "expected WAIT_TIMEOUT, got %#lx\n", ret);
-                CloseHandle(handle);
-            }
+            ok(!handle, "CreateRemoteThread should fail\n");
+            ok(GetLastError() == ERROR_ACCESS_DENIED, "expected ERROR_ACCESS_DENIED, got %ld\n", GetLastError());
         }
         else
         {
             ok(handle != 0, "CreateRemoteThread error %ld\n", GetLastError());
             ret = WaitForSingleObject(handle, 1000);
             ok(ret == WAIT_TIMEOUT, "expected WAIT_TIMEOUT, got %#lx\n", ret);
-            ok(!noop_thread_started || broken(noop_thread_started) /* XP64 */, "thread shouldn't start yet\n");
+            ok(!noop_thread_started, "thread shouldn't start yet\n");
             CloseHandle(handle);
         }
 
@@ -2754,7 +3290,7 @@ static BOOL WINAPI dll_entry_point(HINSTANCE hinst, DWORD reason, LPVOID param)
             ok(handle != 0, "winver.exe should not be unloaded\n");
         else
         todo_wine
-            ok(!handle || broken(handle != 0) /* before win7 */, "winver.exe should be unloaded\n");
+            ok(!handle, "winver.exe should be unloaded\n");
 
         SetLastError(0xdeadbeef);
         ret = WaitForDebugEvent(&de, 0);
@@ -2826,8 +3362,6 @@ static BOOL WINAPI dll_entry_point(HINSTANCE hinst, DWORD reason, LPVOID param)
             ok(!ret, "RtlDllShutdownInProgress returned %ld\n", ret);
 
         /* FLS data should already be destroyed, if FLS is available.
-         * Note that this is broken for Win2k3, which runs the callbacks *after* the DLL entry
-         * point has already run.
          */
         if (pFlsGetValue && fls_index != FLS_OUT_OF_INDEXES)
         {
@@ -2837,8 +3371,7 @@ static BOOL WINAPI dll_entry_point(HINSTANCE hinst, DWORD reason, LPVOID param)
 
             SetLastError(0xdeadbeef);
             value = pFlsGetValue(fls_index);
-            ok(broken(value == (void*) 0x31415) || /* Win2k3 */
-                !value, "FlsGetValue returned %p, expected NULL\n", value);
+            ok(!value, "FlsGetValue returned %p, expected NULL\n", value);
             ok(GetLastError() == ERROR_SUCCESS, "FlsGetValue failed with error %lu\n", GetLastError());
 
             bret = pFlsSetValue(fls_index2, (void*) 0x31415);
@@ -2863,6 +3396,13 @@ static BOOL WINAPI dll_entry_point(HINSTANCE hinst, DWORD reason, LPVOID param)
     return TRUE;
 }
 
+static void CALLBACK ldr_notify_callback(ULONG reason, LDR_DLL_NOTIFICATION_DATA *data, void *context)
+{
+    /* If some DLL happens to be loaded during process shutdown load notification is called but never unload
+     * notification. */
+    ok(reason == LDR_DLL_NOTIFICATION_REASON_LOADED, "got reason %lu.\n", reason);
+}
+
 static void child_process(const char *dll_name, DWORD target_offset)
 {
     void *target;
@@ -2871,6 +3411,7 @@ static void child_process(const char *dll_name, DWORD target_offset)
     HMODULE hmod;
     struct PROCESS_BASIC_INFORMATION_PRIVATE pbi;
     DWORD_PTR affinity;
+    void *cookie;
 
     trace("phase %d: writing %p at %#lx\n", test_dll_phase, dll_entry_point, target_offset);
 
@@ -3017,17 +3558,11 @@ static void child_process(const char *dll_name, DWORD target_offset)
 
         SetLastError(0xdeadbeef);
         thread = CreateThread(NULL, 0, noop_thread_proc, &dummy, 0, &ret);
-        ok(!thread || broken(thread != 0) /* before win7 */, "CreateThread should fail\n");
-        if (!thread)
-            ok(GetLastError() == ERROR_ACCESS_DENIED, "expected ERROR_ACCESS_DENIED, got %ld\n", GetLastError());
-        else
-        {
-            ret = WaitForSingleObject(thread, 1000);
-            ok(ret == WAIT_OBJECT_0, "expected WAIT_OBJECT_0, got %#lx\n", ret);
-            CloseHandle(thread);
-        }
+        ok(!thread, "CreateThread should fail\n");
+        ok(GetLastError() == ERROR_ACCESS_DENIED, "expected ERROR_ACCESS_DENIED, got %ld\n", GetLastError());
 
         trace("call LdrShutdownProcess()\n");
+        pLdrRegisterDllNotification(0, ldr_notify_callback, NULL, &cookie);
         pLdrShutdownProcess();
 
         ret = pRtlDllShutdownInProgress();
@@ -3216,6 +3751,7 @@ static void test_ExitProcess(void)
     struct PROCESS_BASIC_INFORMATION_PRIVATE pbi;
     MEMORY_BASIC_INFORMATION mbi;
     DWORD_PTR affinity;
+    PROCESS_PRIORITY_CLASS ppc;
     void *addr;
     LARGE_INTEGER offset;
     SIZE_T size;
@@ -3256,10 +3792,6 @@ static void test_ExitProcess(void)
     ok(ret, "WriteFile error %ld\n", GetLastError());
 
     nt_header = nt_header_template;
-    nt_header.FileHeader.NumberOfSections = 1;
-    nt_header.FileHeader.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER);
-    nt_header.FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_DLL | IMAGE_FILE_RELOCS_STRIPPED;
-
     nt_header.OptionalHeader.AddressOfEntryPoint = 0x1000;
     nt_header.OptionalHeader.SectionAlignment = 0x1000;
     nt_header.OptionalHeader.FileAlignment = 0x200;
@@ -3429,7 +3961,7 @@ static void test_ExitProcess(void)
     ok(ret, "CreateProcess(%s) error %ld\n", cmdline, GetLastError());
     ret = WaitForSingleObject(pi.hProcess, 5000);
     todo_wine
-    ok(ret == WAIT_TIMEOUT || broken(ret == WAIT_OBJECT_0) /* XP */, "child process should fail to terminate\n");
+    ok(ret == WAIT_TIMEOUT, "child process should fail to terminate\n");
     if (ret != WAIT_OBJECT_0)
     {
         trace("terminating child process\n");
@@ -3439,7 +3971,7 @@ static void test_ExitProcess(void)
     ok(ret == WAIT_OBJECT_0, "child process failed to terminate\n");
     GetExitCodeProcess(pi.hProcess, &ret);
     todo_wine
-    ok(ret == 201 || broken(ret == 1) /* XP */, "expected exit code 201, got %lu\n", ret);
+    ok(ret == 201, "expected exit code 201, got %lu\n", ret);
     if (*child_failures)
     {
         trace("%ld failures in child process\n", *child_failures);
@@ -3559,50 +4091,52 @@ static void test_ExitProcess(void)
     affinity = 1;
     ret = pNtSetInformationProcess(pi.hProcess, ProcessAffinityMask, &affinity, sizeof(affinity));
     ok(ret == STATUS_PROCESS_IS_TERMINATING, "expected STATUS_PROCESS_IS_TERMINATING, got %#lx\n", ret);
+    ppc.Foreground = FALSE;
+    ppc.PriorityClass = PROCESS_PRIOCLASS_BELOW_NORMAL;
+    ret = pNtSetInformationProcess(pi.hProcess, ProcessPriorityClass, &ppc, sizeof(ppc));
+    ok(ret == STATUS_SUCCESS, "expected STATUS_SUCCESS, got status %#lx\n", ret);
 
     SetLastError(0xdeadbeef);
     ctx.ContextFlags = CONTEXT_INTEGER;
     ret = GetThreadContext(thread, &ctx);
-    ok(!ret || broken(ret) /* XP 64-bit */, "GetThreadContext should fail\n");
-    if (!ret)
-        ok(GetLastError() == ERROR_INVALID_PARAMETER ||
-           GetLastError() == ERROR_GEN_FAILURE /* win7 64-bit */ ||
-           GetLastError() == ERROR_INVALID_FUNCTION /* vista 64-bit */ ||
-           GetLastError() == ERROR_ACCESS_DENIED /* Win10 32-bit */,
-           "expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+    ok(!ret, "GetThreadContext should fail\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER ||
+       GetLastError() == ERROR_GEN_FAILURE /* win7 64-bit */ ||
+       GetLastError() == ERROR_INVALID_FUNCTION /* vista 64-bit */ ||
+       GetLastError() == ERROR_ACCESS_DENIED /* Win10 32-bit */,
+       "expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
     SetLastError(0xdeadbeef);
     ctx.ContextFlags = CONTEXT_INTEGER;
     ret = SetThreadContext(thread, &ctx);
-    ok(!ret || broken(ret) /* XP 64-bit */, "SetThreadContext should fail\n");
-    if (!ret)
-        ok(GetLastError() == ERROR_ACCESS_DENIED ||
-           GetLastError() == ERROR_GEN_FAILURE /* win7 64-bit */ ||
-           GetLastError() == ERROR_INVALID_FUNCTION /* vista 64-bit */,
-           "expected ERROR_ACCESS_DENIED, got %ld\n", GetLastError());
+    ok(!ret, "SetThreadContext should fail\n");
+    ok(GetLastError() == ERROR_ACCESS_DENIED ||
+       GetLastError() == ERROR_GEN_FAILURE /* win7 64-bit */ ||
+       GetLastError() == ERROR_INVALID_FUNCTION /* vista 64-bit */,
+       "expected ERROR_ACCESS_DENIED, got %ld\n", GetLastError());
     SetLastError(0xdeadbeef);
     ret = SetThreadPriority(thread, 0);
     ok(ret, "SetThreadPriority error %ld\n", GetLastError());
     CloseHandle(thread);
 
+    ret = WaitForSingleObject(pi.hThread, 1000);
+    ok(ret == WAIT_OBJECT_0, "WaitForSingleObject failed: %lx\n", ret);
     SetLastError(0xdeadbeef);
     ctx.ContextFlags = CONTEXT_INTEGER;
     ret = GetThreadContext(pi.hThread, &ctx);
-    ok(!ret || broken(ret) /* XP 64-bit */, "GetThreadContext should fail\n");
-    if (!ret)
-        ok(GetLastError() == ERROR_INVALID_PARAMETER ||
-           GetLastError() == ERROR_GEN_FAILURE /* win7 64-bit */ ||
-           GetLastError() == ERROR_INVALID_FUNCTION /* vista 64-bit */ ||
-           GetLastError() == ERROR_ACCESS_DENIED /* Win10 32-bit */,
-           "expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+    ok(!ret, "GetThreadContext should fail\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER ||
+       GetLastError() == ERROR_GEN_FAILURE /* win7 64-bit */ ||
+       GetLastError() == ERROR_INVALID_FUNCTION /* vista 64-bit */ ||
+       GetLastError() == ERROR_ACCESS_DENIED /* Win10 32-bit */,
+       "expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
     SetLastError(0xdeadbeef);
     ctx.ContextFlags = CONTEXT_INTEGER;
     ret = SetThreadContext(pi.hThread, &ctx);
-    ok(!ret || broken(ret) /* XP 64-bit */, "SetThreadContext should fail\n");
-    if (!ret)
-        ok(GetLastError() == ERROR_ACCESS_DENIED ||
-           GetLastError() == ERROR_GEN_FAILURE /* win7 64-bit */ ||
-           GetLastError() == ERROR_INVALID_FUNCTION /* vista 64-bit */,
-           "expected ERROR_ACCESS_DENIED, got %ld\n", GetLastError());
+    ok(!ret, "SetThreadContext should fail\n");
+    ok(GetLastError() == ERROR_ACCESS_DENIED ||
+       GetLastError() == ERROR_GEN_FAILURE /* win7 64-bit */ ||
+       GetLastError() == ERROR_INVALID_FUNCTION /* vista 64-bit */,
+       "expected ERROR_ACCESS_DENIED, got %ld\n", GetLastError());
     SetLastError(0xdeadbeef);
     ret = VirtualProtectEx(pi.hProcess, addr, 4096, PAGE_READWRITE, &old_prot);
     ok(!ret, "VirtualProtectEx should fail\n");
@@ -3663,8 +4197,7 @@ if (0)
       "ERROR_ACCESS_DENIED, got %ld\n", GetLastError());
 
     GetExitCodeProcess(pi.hProcess, &ret);
-    ok(ret == 198 || broken(ret != 198) /* some 32-bit XP version in a VM returns random exit code */,
-       "expected exit code 198, got %lu\n", ret);
+    ok(ret == 198, "expected exit code 198, got %lu\n", ret);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
@@ -3820,7 +4353,7 @@ static void test_ResolveDelayLoadedAPI(void)
     nt_header.OptionalHeader.SizeOfHeaders = sizeof(dos_header) + sizeof(nt_header) + 2 * sizeof(IMAGE_SECTION_HEADER);
     nt_header.OptionalHeader.NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;
     nt_header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress = 0x1000;
-    nt_header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size = 0x100;
+    nt_header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size = 2 * sizeof(idd);
 
     SetLastError(0xdeadbeef);
     ret = WriteFile(hfile, &nt_header, sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER), &dummy, NULL);
@@ -3833,8 +4366,8 @@ static void test_ResolveDelayLoadedAPI(void)
     /* sections */
     section.PointerToRawData = nt_header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress;
     section.VirtualAddress = nt_header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress;
-    section.Misc.VirtualSize = 2 * sizeof(idd);
-    section.SizeOfRawData = section.Misc.VirtualSize;
+    section.Misc.VirtualSize = 0x1000;
+    section.SizeOfRawData = 2 * sizeof(idd);
     section.Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
     SetLastError(0xdeadbeef);
     ret = WriteFile(hfile, &section, sizeof(section), &dummy, NULL);
@@ -3843,17 +4376,17 @@ static void test_ResolveDelayLoadedAPI(void)
     section.PointerToRawData = 0x2000;
     section.VirtualAddress = 0x2000;
     i = ARRAY_SIZE(td);
-    section.Misc.VirtualSize = sizeof(test_dll) + sizeof(hint) + sizeof(test_func) + sizeof(HMODULE) +
+    section.SizeOfRawData = sizeof(test_dll) + sizeof(hint) + sizeof(test_func) + sizeof(HMODULE) +
                                2 * (i + 1) * sizeof(IMAGE_THUNK_DATA);
-    ok(section.Misc.VirtualSize <= 0x1000, "Too much tests, add a new section!\n");
-    section.SizeOfRawData = section.Misc.VirtualSize;
+    ok(section.SizeOfRawData <= 0x1000, "Too much tests, add a new section!\n");
+    section.Misc.VirtualSize = 0x1000;
     section.Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
     SetLastError(0xdeadbeef);
     ret = WriteFile(hfile, &section, sizeof(section), &dummy, NULL);
     ok(ret, "WriteFile error %ld\n", GetLastError());
 
     /* fill up to delay data */
-    SetFilePointer( hfile, nt_header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress, NULL, SEEK_SET );
+    SetFilePointer( hfile, nt_header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress, NULL, FILE_BEGIN );
 
     /* delay data */
     idd.Attributes.AllAttributes = 1;
@@ -3874,7 +4407,7 @@ static void test_ResolveDelayLoadedAPI(void)
     ok(ret, "WriteFile error %ld\n", GetLastError());
 
     /* fill up to extended delay data */
-    SetFilePointer( hfile, idd.DllNameRVA, NULL, SEEK_SET );
+    SetFilePointer( hfile, idd.DllNameRVA, NULL, FILE_BEGIN );
 
     /* extended delay data */
     SetLastError(0xdeadbeef);
@@ -3889,7 +4422,7 @@ static void test_ResolveDelayLoadedAPI(void)
     ret = WriteFile(hfile, test_func, sizeof(test_func), &dummy, NULL);
     ok(ret, "WriteFile error %ld\n", GetLastError());
 
-    SetFilePointer( hfile, idd.ImportAddressTableRVA, NULL, SEEK_SET );
+    SetFilePointer( hfile, idd.ImportAddressTableRVA, NULL, FILE_BEGIN );
 
     for (i = 0; i < ARRAY_SIZE(td); i++)
     {
@@ -3922,7 +4455,7 @@ static void test_ResolveDelayLoadedAPI(void)
     ok(ret, "WriteFile error %ld\n", GetLastError());
 
     /* fill up to eof */
-    SetFilePointer( hfile, section.VirtualAddress + section.Misc.VirtualSize, NULL, SEEK_SET );
+    SetFilePointer( hfile, section.VirtualAddress + section.Misc.VirtualSize, NULL, FILE_BEGIN );
     SetEndOfFile( hfile );
     CloseHandle(hfile);
 
@@ -3961,6 +4494,9 @@ static void test_ResolveDelayLoadedAPI(void)
         for (i = 0; i < ARRAY_SIZE(td); i++)
         {
             void *ret, *load;
+
+            /* relocate thunk address by hand since we don't generate reloc records */
+            itda[i].u1.AddressOfData += (char *)hlib - (char *)nt_header.OptionalHeader.ImageBase;
 
             if (IMAGE_SNAP_BY_ORDINAL(itdn[i].u1.Ordinal))
                 load = (void *)GetProcAddress(htarget, (LPSTR)IMAGE_ORDINAL(itdn[i].u1.Ordinal));
@@ -4063,24 +4599,20 @@ static void test_wow64_redirection_for_dll(const char *libname, BOOL will_fail)
     if (!GetModuleHandleA(libname))
     {
         lib = LoadLibraryExA(libname, NULL, 0);
-        ok (broken(lib == NULL) /* Vista/2008 */ ||
-            lib != NULL, "Loading %s should succeed with WOW64 redirection disabled\n", libname);
+        ok(lib != NULL, "Loading %s should succeed with WOW64 redirection disabled\n", libname);
+        /* Win 7/2008R2 return the un-redirected path (i.e. c:\windows\system32\dwrite.dll), test loading it. */
+        GetModuleFileNameA(lib, buf, sizeof(buf));
+        FreeLibrary(lib);
+        lib = LoadLibraryExA(buf, NULL, 0);
+        ok(lib != NULL, "Loading %s from full path should succeed with WOW64 redirection disabled\n", libname);
         if (lib)
-        {
-            /* Win 7/2008R2 return the un-redirected path (i.e. c:\windows\system32\dwrite.dll), test loading it. */
-            GetModuleFileNameA(lib, buf, sizeof(buf));
             FreeLibrary(lib);
-            lib = LoadLibraryExA(buf, NULL, 0);
-            ok(lib != NULL, "Loading %s from full path should succeed with WOW64 redirection disabled\n", libname);
-            if (lib)
-                FreeLibrary(lib);
-            modname = strrchr(libname, '\\');
-            modname = modname ? modname + 1 : libname;
-            todo_wine_if(will_fail)
+        modname = strrchr(libname, '\\');
+        modname = modname ? modname + 1 : libname;
+        todo_wine_if(will_fail)
             ok(is_path_made_of(buf, system_dir, modname) ||
                /* Win7 report from syswow64 */ broken(is_path_made_of(buf, syswow_dir, modname)),
                "Unexpected loaded DLL name %s for %s\n", buf, libname);
-        }
     }
     else
     {
@@ -4153,8 +4685,8 @@ static void test_dll_file( const char *name )
         OK_FIELD( OptionalHeader.DataDirectory[i].VirtualAddress, "%lx" );
         OK_FIELD( OptionalHeader.DataDirectory[i].Size, "%lx" );
     }
-    sec = (IMAGE_SECTION_HEADER *)((char *)&nt->OptionalHeader + nt->FileHeader.SizeOfOptionalHeader);
-    sec_file = (IMAGE_SECTION_HEADER *)((char *)&nt_file->OptionalHeader + nt_file->FileHeader.SizeOfOptionalHeader);
+    sec = IMAGE_FIRST_SECTION( nt );
+    sec_file = IMAGE_FIRST_SECTION( nt_file );
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
         ok( !memcmp( sec + i, sec_file + i, sizeof(*sec) ), "%s: wrong section %d\n", name, i );
     UnmapViewOfFile( ptr );
@@ -4235,6 +4767,8 @@ START_TEST(loader)
     pRtlReleasePebLock = (void *)GetProcAddress(ntdll, "RtlReleasePebLock");
     pRtlImageDirectoryEntryToData = (void *)GetProcAddress(ntdll, "RtlImageDirectoryEntryToData");
     pRtlImageNtHeader = (void *)GetProcAddress(ntdll, "RtlImageNtHeader");
+    pLdrRegisterDllNotification = (void *)GetProcAddress(ntdll, "LdrRegisterDllNotification");
+    pLdrUnregisterDllNotification = (void *)GetProcAddress(ntdll, "LdrUnregisterDllNotification");
     pFlsAlloc = (void *)GetProcAddress(kernel32, "FlsAlloc");
     pFlsSetValue = (void *)GetProcAddress(kernel32, "FlsSetValue");
     pFlsGetValue = (void *)GetProcAddress(kernel32, "FlsGetValue");
@@ -4282,6 +4816,7 @@ START_TEST(loader)
     test_ImportDescriptors();
     test_section_access();
     test_import_resolution();
+    test_export_forwarder_dep_chain();
     test_ExitProcess();
     test_InMemoryOrderModuleList();
     test_LoadPackagedLibrary();

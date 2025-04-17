@@ -52,8 +52,6 @@
 #include <string.h>
 
 #define COBJMACROS
-#define NONAMELESSUNION
-
 #include "windef.h"
 #include "winbase.h"
 #include "winternl.h"
@@ -3780,7 +3778,7 @@ void FILEDLG95_FILENAME_FillFromSelection (HWND hwnd)
     if (FAILED(IDataObject_GetData(fodInfos->Shell.FOIDataObject, &formatetc, &medium)))
         return;
 
-    cida = GlobalLock(medium.u.hGlobal);
+    cida = GlobalLock(medium.hGlobal);
     nFileSelected = cida->cidl;
 
     /* Allocate a buffer */
@@ -3836,38 +3834,6 @@ ret:
     COMCTL32_ReleaseStgMedium(medium);
 }
 
-
-/* copied from shell32 to avoid linking to it
- * Although shell32 is already linked the behaviour of exported StrRetToStrN
- * is dependent on whether emulated OS is unicode or not.
- */
-static HRESULT COMDLG32_StrRetToStrNW (LPWSTR dest, DWORD len, LPSTRRET src, const ITEMIDLIST *pidl)
-{
-	switch (src->uType)
-	{
-	  case STRRET_WSTR:
-	    lstrcpynW(dest, src->u.pOleStr, len);
-	    CoTaskMemFree(src->u.pOleStr);
-	    break;
-
-	  case STRRET_CSTR:
-            if (!MultiByteToWideChar( CP_ACP, 0, src->u.cStr, -1, dest, len ) && len)
-                  dest[len-1] = 0;
-	    break;
-
-	  case STRRET_OFFSET:
-            if (!MultiByteToWideChar( CP_ACP, 0, ((LPCSTR)&pidl->mkid)+src->u.uOffset, -1, dest, len ) && len)
-                  dest[len-1] = 0;
-	    break;
-
-	  default:
-	    FIXME("unknown type %x!\n", src->uType);
-	    if (len) *dest = '\0';
-	    return E_FAIL;
-	}
-	return S_OK;
-}
-
 /***********************************************************************
  * FILEDLG95_FILENAME_GetFileNames
  *
@@ -3911,8 +3877,8 @@ static void COMCTL32_ReleaseStgMedium (STGMEDIUM medium)
       }
       else
       {
-        GlobalUnlock(medium.u.hGlobal);
-        GlobalFree(medium.u.hGlobal);
+        GlobalUnlock(medium.hGlobal);
+        GlobalFree(medium.hGlobal);
       }
 }
 
@@ -3938,7 +3904,7 @@ LPITEMIDLIST GetPidlFromDataObject ( IDataObject *doSelected, UINT nPidlIndex)
     /* Get the pidls from IDataObject */
     if(SUCCEEDED(IDataObject_GetData(doSelected,&formatetc,&medium)))
     {
-      LPIDA cida = GlobalLock(medium.u.hGlobal);
+      LPIDA cida = GlobalLock(medium.hGlobal);
       if(nPidlIndex <= cida->cidl)
       {
         pidl = ILClone((LPITEMIDLIST)(&((LPBYTE)cida)[cida->aoffset[nPidlIndex]]));
@@ -3967,7 +3933,7 @@ static UINT GetNumSelected( IDataObject *doSelected )
     /* Get the pidls from IDataObject */
     if(SUCCEEDED(IDataObject_GetData(doSelected,&formatetc,&medium)))
     {
-      LPIDA cida = GlobalLock(medium.u.hGlobal);
+      LPIDA cida = GlobalLock(medium.hGlobal);
       retVal = cida->cidl;
       COMCTL32_ReleaseStgMedium(medium);
       return retVal;
@@ -4007,7 +3973,7 @@ static HRESULT GetName(LPSHELLFOLDER lpsf, LPITEMIDLIST pidl,DWORD dwFlags,LPWST
   /* Get the display name of the pidl relative to the folder */
   if (SUCCEEDED(hRes = IShellFolder_GetDisplayNameOf(lpsf, pidl, dwFlags, &str)))
   {
-      return COMDLG32_StrRetToStrNW(lpstrFileName, MAX_PATH, &str, pidl);
+      return StrRetToBufW(&str, pidl, lpstrFileName, MAX_PATH);
   }
   return E_FAIL;
 }

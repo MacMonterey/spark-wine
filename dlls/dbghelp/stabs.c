@@ -718,9 +718,10 @@ static inline int stabs_pts_read_aggregate(struct ParseTypedefData* ptd,
     return 0;
 }
 
-static inline int stabs_pts_read_enum(struct ParseTypedefData* ptd, 
+static inline int stabs_pts_read_enum(struct ParseTypedefData* ptd,
                                       struct symt_enum* edt)
 {
+    VARIANT     v;
     LONG_PTR    value;
     int		idx;
 
@@ -730,7 +731,9 @@ static inline int stabs_pts_read_enum(struct ParseTypedefData* ptd,
 	PTS_ABORTIF(ptd, stabs_pts_read_id(ptd) == -1);
 	PTS_ABORTIF(ptd, stabs_pts_read_number(ptd, &value) == -1);
 	PTS_ABORTIF(ptd, *ptd->ptr++ != ',');
-	symt_add_enum_element(ptd->module, edt, ptd->buf + idx, value);
+	V_VT(&v) = VT_I4;
+	V_I4(&v) = value;
+	symt_add_enum_element(ptd->module, edt, ptd->buf + idx, &v);
 	ptd->idx = idx;
     }
     ptd->ptr++;
@@ -819,9 +822,15 @@ static int stabs_pts_read_type_def(struct ParseTypedefData* ptd, const char* typ
 	    PTS_ABORTIF(ptd, stabs_pts_read_array(ptd, &new_dt) == -1);
 	    break;
 	case 'r':
-	    PTS_ABORTIF(ptd, stabs_pts_read_range(ptd, typename, &new_dt) == -1);
-	    assert(!*stabs_find_ref(filenr1, subnr1));
-	    *stabs_find_ref(filenr1, subnr1) = new_dt;
+            {
+                struct symt**       prev_dt;
+                PTS_ABORTIF(ptd, stabs_pts_read_range(ptd, typename, &new_dt) == -1);
+
+                prev_dt = stabs_find_ref(filenr1, subnr1);
+                /* allow redefining with same base type */
+                if (*prev_dt && *prev_dt != new_dt) WARN("Multiple range def in %ls\n", ptd->module->module.ModuleName);
+                else *prev_dt = new_dt;
+            }
 	    break;
 	case 'f':
 	    PTS_ABORTIF(ptd, stabs_pts_read_type_def(ptd, NULL, &ref_dt) == -1);
@@ -853,7 +862,7 @@ static int stabs_pts_read_type_def(struct ParseTypedefData* ptd, const char* typ
                     if (udt->symt.tag != SymTagUDT)
                     {
                         ERR("Forward declaration (%p/%s) is not an aggregate (%u)\n",
-                            udt, symt_get_name(&udt->symt), udt->symt.tag);
+                            udt, debugstr_a(symt_get_name(&udt->symt)), udt->symt.tag);
                         return -1;
                     }
                     /* FIXME: we currently don't correctly construct nested C++
@@ -870,7 +879,7 @@ static int stabs_pts_read_type_def(struct ParseTypedefData* ptd, const char* typ
                     l2 = strlen(typename);
                     if (l1 > l2 || strcmp(udt->hash_elt.name, typename + l2 - l1))
                         ERR("Forward declaration name mismatch %s <> %s\n",
-                            udt->hash_elt.name, typename);
+                            debugstr_a(udt->hash_elt.name), debugstr_a(typename));
                     new_dt = &udt->symt;
                 }
                 PTS_ABORTIF(ptd, stabs_pts_read_aggregate(ptd, udt) == -1);
@@ -1484,21 +1493,24 @@ BOOL stabs_parse(struct module* module, ULONG_PTR load_offset,
             if (curr_func != NULL) pending_add_var(&pending_block, ptr, DataIsLocal, &loc);
             break;
         case N_SLINE:
-            /*
-             * This is a line number.  These are always relative to the start
-             * of the function (N_FUN), and this makes the lookup easier.
-             */
-            assert(source_idx >= 0);
-            if (curr_func != NULL)
+            if (SymGetOptions() & SYMOPT_LOAD_LINES)
             {
-                ULONG_PTR offset = n_value;
-                if (module->type == DMT_MACHO)
-                    offset -= curr_func->ranges[0].low - load_offset;
-                symt_add_func_line(module, curr_func, source_idx, 
-                                   stab_ptr->n_desc, curr_func->ranges[0].low + offset);
+                /*
+                 * This is a line number.  These are always relative to the start
+                 * of the function (N_FUN), and this makes the lookup easier.
+                 */
+                assert(source_idx >= 0);
+                if (curr_func != NULL)
+                {
+                    ULONG_PTR offset = n_value;
+                    if (module->type == DMT_MACHO)
+                        offset -= curr_func->ranges[0].low - load_offset;
+                    symt_add_func_line(module, curr_func, source_idx,
+                                       stab_ptr->n_desc, curr_func->ranges[0].low + offset);
+                }
+                else pending_add_line(&pending_func, source_idx, stab_ptr->n_desc,
+                                      n_value, load_offset);
             }
-            else pending_add_line(&pending_func, source_idx, stab_ptr->n_desc,
-                                  n_value, load_offset);
             break;
         case N_FUN:
             /*
@@ -1591,7 +1603,7 @@ BOOL stabs_parse(struct module* module, ULONG_PTR load_offset,
             /* I'm not sure this is needed, so trace it before we obsolete it */
             if (curr_func)
             {
-                FIXME("UNDF: curr_func %s\n", curr_func->hash_elt.name);
+                FIXME("UNDF: curr_func %s\n", debugstr_a(curr_func->hash_elt.name));
                 stabs_finalize_function(module, curr_func, 0); /* FIXME */
                 curr_func = NULL;
             }
@@ -1612,7 +1624,7 @@ BOOL stabs_parse(struct module* module, ULONG_PTR load_offset,
 	case N_EXCL:
             if (stabs_add_include(stabs_find_include(ptr, n_value)) < 0)
             {
-                ERR("Excluded header not found (%s,%Id)\n", ptr, (ULONG_PTR)n_value);
+                ERR("Excluded header not found (%s,%Id)\n", debugstr_a(ptr), (ULONG_PTR)n_value);
                 module_reset_debug_info(module);
                 ret = FALSE;
                 goto done;
@@ -1664,7 +1676,7 @@ BOOL stabs_parse(struct module* module, ULONG_PTR load_offset,
               stab_ptr->n_type, (ULONG_PTR)n_value, debugstr_a(strs + stab_ptr->n_strx));
     }
     module->module.SymType = SymDia;
-    module->module.CVSig = 'S' | ('T' << 8) | ('A' << 16) | ('B' << 24);
+    module->debug_format_bitmask |= DHEXT_FORMAT_STABS;
     /* FIXME: we could have a finer grain here */
     module->module.LineNumbers = TRUE;
     module->module.GlobalSymbols = TRUE;

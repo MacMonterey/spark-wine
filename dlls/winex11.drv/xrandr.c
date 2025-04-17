@@ -26,8 +26,6 @@
 
 #include "config.h"
 
-#define NONAMELESSSTRUCT
-#define NONAMELESSUNION
 #include <assert.h>
 #include <X11/Xlib.h>
 #ifdef HAVE_X11_EXTENSIONS_XRANDR_H
@@ -44,13 +42,17 @@ WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
 #ifdef SONAME_LIBXRANDR
 
-#define VK_NO_PROTOTYPES
-#define WINE_VK_HOST
-
 #include "wine/vulkan.h"
 #include "wine/vulkan_driver.h"
 
+VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDisplayKHR)
+
 static void *xrandr_handle;
+
+static VkInstance vk_instance; /* Vulkan instance for XRandR functions */
+static VkResult (*p_vkGetRandROutputDisplayEXT)( VkPhysicalDevice, Display *, RROutput, VkDisplayKHR * );
+static PFN_vkGetPhysicalDeviceProperties2KHR p_vkGetPhysicalDeviceProperties2KHR;
+static PFN_vkEnumeratePhysicalDevices p_vkEnumeratePhysicalDevices;
 
 #define MAKE_FUNCPTR(f) static typeof(f) * p##f;
 MAKE_FUNCPTR(XRRConfigCurrentConfiguration)
@@ -138,6 +140,89 @@ sym_not_found:
     return r;
 }
 
+#ifdef SONAME_LIBVULKAN
+
+static void *vulkan_handle;
+static void *(*p_vkGetInstanceProcAddr)(VkInstance, const char *);
+
+static void vulkan_init_once(void)
+{
+    static const char *extensions[] =
+    {
+        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
+        "VK_EXT_acquire_xlib_display",
+        "VK_EXT_direct_mode_display",
+        "VK_KHR_display",
+        VK_KHR_SURFACE_EXTENSION_NAME,
+    };
+    VkInstanceCreateInfo create_info =
+    {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .ppEnabledExtensionNames = extensions,
+        .enabledExtensionCount = ARRAY_SIZE(extensions),
+    };
+
+    PFN_vkDestroyInstance p_vkDestroyInstance;
+    PFN_vkCreateInstance p_vkCreateInstance;
+    VkResult vr;
+
+    if (!(vulkan_handle = dlopen( SONAME_LIBVULKAN, RTLD_NOW )))
+    {
+        ERR( "Failed to load %s\n", SONAME_LIBVULKAN );
+        return;
+    }
+
+#define LOAD_FUNCPTR( f )                                                                          \
+    if (!(p_##f = dlsym( vulkan_handle, #f )))                                                     \
+    {                                                                                              \
+        ERR( "Failed to find " #f "\n" );                                                          \
+        dlclose( vulkan_handle );                                                                  \
+        return;                                                                                    \
+    }
+
+    LOAD_FUNCPTR( vkGetInstanceProcAddr );
+#undef LOAD_FUNCPTR
+
+    p_vkCreateInstance = p_vkGetInstanceProcAddr( NULL, "vkCreateInstance" );
+    if ((vr = p_vkCreateInstance( &create_info, NULL, &vk_instance )))
+    {
+        WARN( "Failed to create a Vulkan instance, vr %d.\n", vr );
+        return;
+    }
+
+    p_vkDestroyInstance = p_vkGetInstanceProcAddr( vk_instance, "vkDestroyInstance" );
+#define LOAD_VK_FUNC(f)                                                             \
+    if (!(p_##f = (void *)p_vkGetInstanceProcAddr( vk_instance, #f )))              \
+    {                                                                               \
+        WARN("Failed to load " #f ".\n");                                           \
+        p_vkDestroyInstance( vk_instance, NULL );                                   \
+        vk_instance = NULL;                                                         \
+        return;                                                                     \
+    }
+
+    LOAD_VK_FUNC( vkEnumeratePhysicalDevices )
+    LOAD_VK_FUNC( vkGetPhysicalDeviceProperties2KHR )
+    LOAD_VK_FUNC( vkGetRandROutputDisplayEXT )
+#undef LOAD_VK_FUNC
+}
+
+#else /* SONAME_LIBVULKAN */
+
+static void vulkan_init_once(void)
+{
+    ERR( "Wine was built without Vulkan support.\n" );
+}
+
+#endif /* SONAME_LIBVULKAN */
+
+static BOOL vulkan_init(void)
+{
+    static pthread_once_t init_once = PTHREAD_ONCE_INIT;
+    pthread_once( &init_once, vulkan_init_once );
+    return !!vk_instance;
+}
+
 static int XRandRErrorHandler(Display *dpy, XErrorEvent *event, void *arg)
 {
     return 1;
@@ -154,10 +239,10 @@ static BOOL xrandr10_get_id( const WCHAR *device_name, BOOL is_primary, x11drv_s
 }
 
 static void add_xrandr10_mode( DEVMODEW *mode, DWORD depth, DWORD width, DWORD height,
-                               DWORD frequency, SizeID size_id )
+                               DWORD frequency, SizeID size_id, BOOL full )
 {
     mode->dmSize = sizeof(*mode);
-    mode->dmDriverExtra = sizeof(SizeID);
+    mode->dmDriverExtra = full ? sizeof(SizeID) : 0;
     mode->dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH |
                      DM_PELSHEIGHT | DM_DISPLAYFLAGS;
     if (frequency)
@@ -165,15 +250,15 @@ static void add_xrandr10_mode( DEVMODEW *mode, DWORD depth, DWORD width, DWORD h
         mode->dmFields |= DM_DISPLAYFREQUENCY;
         mode->dmDisplayFrequency = frequency;
     }
-    mode->u1.s2.dmDisplayOrientation = DMDO_DEFAULT;
+    mode->dmDisplayOrientation = DMDO_DEFAULT;
     mode->dmBitsPerPel = depth;
     mode->dmPelsWidth = width;
     mode->dmPelsHeight = height;
-    mode->u2.dmDisplayFlags = 0;
-    memcpy( (BYTE *)mode + sizeof(*mode), &size_id, sizeof(size_id) );
+    mode->dmDisplayFlags = 0;
+    if (full) memcpy( mode + 1, &size_id, sizeof(size_id) );
 }
 
-static BOOL xrandr10_get_modes( x11drv_settings_id id, DWORD flags, DEVMODEW **new_modes, UINT *new_mode_count )
+static BOOL xrandr10_get_modes( x11drv_settings_id id, DWORD flags, DEVMODEW **new_modes, UINT *new_mode_count, BOOL full )
 {
     INT size_idx, depth_idx, rate_idx, mode_idx = 0;
     INT size_count, rate_count, mode_count = 0;
@@ -203,24 +288,26 @@ static BOOL xrandr10_get_modes( x11drv_settings_id id, DWORD flags, DEVMODEW **n
         return FALSE;
     }
 
-    for (size_idx = 0; size_idx < size_count; ++size_idx)
+    for (size_idx = 0, mode = modes; size_idx < size_count; ++size_idx)
     {
         for (depth_idx = 0; depth_idx < DEPTH_COUNT; ++depth_idx)
         {
             rates = pXRRRates( gdi_display, DefaultScreen( gdi_display ), size_idx, &rate_count );
             if (!rate_count)
             {
-                mode = (DEVMODEW *)((BYTE *)modes + (sizeof(*mode) + sizeof(SizeID)) * mode_idx++);
                 add_xrandr10_mode( mode, depths[depth_idx], sizes[size_idx].width,
-                                   sizes[size_idx].height, 0, size_idx );
+                                   sizes[size_idx].height, 0, size_idx, full );
+                mode = NEXT_DEVMODEW( mode );
+                mode_idx++;
                 continue;
             }
 
             for (rate_idx = 0; rate_idx < rate_count; ++rate_idx)
             {
-                mode = (DEVMODEW *)((BYTE *)modes + (sizeof(*mode) + sizeof(SizeID)) * mode_idx++);
                 add_xrandr10_mode( mode, depths[depth_idx], sizes[size_idx].width,
-                                   sizes[size_idx].height, rates[rate_idx], size_idx );
+                                   sizes[size_idx].height, rates[rate_idx], size_idx, full );
+                mode = NEXT_DEVMODEW( mode );
+                mode_idx++;
             }
         }
     }
@@ -246,10 +333,10 @@ static BOOL xrandr10_get_current_mode( x11drv_settings_id id, DEVMODEW *mode )
 
     mode->dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT |
                      DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY | DM_POSITION;
-    mode->u1.s2.dmDisplayOrientation = DMDO_DEFAULT;
-    mode->u2.dmDisplayFlags = 0;
-    mode->u1.s2.dmPosition.x = 0;
-    mode->u1.s2.dmPosition.y = 0;
+    mode->dmDisplayOrientation = DMDO_DEFAULT;
+    mode->dmDisplayFlags = 0;
+    mode->dmPosition.x = 0;
+    mode->dmPosition.y = 0;
 
     if (id.id != 1)
     {
@@ -627,63 +714,39 @@ static BOOL is_crtc_primary( RECT primary, const XRRCrtcInfo *crtc )
            crtc->y + crtc->height == primary.bottom;
 }
 
-VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDisplayKHR)
-
-static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRProviderInfo *provider_info,
-                                            struct gdi_gpu *prev_gpus, int prev_gpu_count )
+struct vk_physdev_info
 {
-    static const char *extensions[] =
-    {
-        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
-        VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
-        "VK_EXT_acquire_xlib_display",
-        "VK_EXT_direct_mode_display",
-        "VK_KHR_display",
-        VK_KHR_SURFACE_EXTENSION_NAME,
-    };
-    const struct vulkan_funcs *vulkan_funcs = get_vulkan_driver( WINE_VULKAN_DRIVER_VERSION );
-    VkResult (*pvkGetRandROutputDisplayEXT)( VkPhysicalDevice, Display *, RROutput, VkDisplayKHR * );
-    PFN_vkGetPhysicalDeviceProperties2KHR pvkGetPhysicalDeviceProperties2KHR;
-    PFN_vkEnumeratePhysicalDevices pvkEnumeratePhysicalDevices;
+    VkPhysicalDevice physdev;
+    VkPhysicalDeviceProperties2 properties2;
+    VkPhysicalDeviceIDProperties id;
+};
+
+static int compare_vulkan_physical_devices( const void *v1, const void *v2 )
+{
+    static const int device_type_rank[6] = { 100, 1, 0, 2, 3, 200 };
+    const struct vk_physdev_info *d1 = v1, *d2 = v2;
+    int rank1, rank2;
+
+    rank1 = device_type_rank[ min( d1->properties2.properties.deviceType, ARRAY_SIZE(device_type_rank) - 1) ];
+    rank2 = device_type_rank[ min( d2->properties2.properties.deviceType, ARRAY_SIZE(device_type_rank) - 1) ];
+    if (rank1 != rank2) return rank1 - rank2;
+
+    return memcmp( &d1->id.deviceUUID, &d2->id.deviceUUID, sizeof(d1->id.deviceUUID) );
+}
+
+static BOOL get_gpu_properties_from_vulkan( struct x11drv_gpu *gpu, const XRRProviderInfo *provider_info,
+                                            struct x11drv_gpu *prev_gpus, int prev_gpu_count )
+{
     uint32_t device_count, device_idx, output_idx, i;
     VkPhysicalDevice *vk_physical_devices = NULL;
-    VkPhysicalDeviceProperties2 properties2;
-    VkInstanceCreateInfo create_info;
-    VkPhysicalDeviceIDProperties id;
-    VkInstance vk_instance = NULL;
+    struct vk_physdev_info *devs = NULL;
     VkDisplayKHR vk_display;
-    DWORD len;
     BOOL ret = FALSE;
     VkResult vr;
 
-    if (!vulkan_funcs)
-        goto done;
+    if (!vulkan_init()) goto done;
 
-    memset( &create_info, 0, sizeof(create_info) );
-    create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    create_info.enabledExtensionCount = ARRAY_SIZE(extensions);
-    create_info.ppEnabledExtensionNames = extensions;
-
-    vr = vulkan_funcs->p_vkCreateInstance( &create_info, NULL, &vk_instance );
-    if (vr != VK_SUCCESS)
-    {
-        WARN("Failed to create a Vulkan instance, vr %d.\n", vr);
-        goto done;
-    }
-
-#define LOAD_VK_FUNC(f)                                                             \
-    if (!(p##f = (void *)vulkan_funcs->p_vkGetInstanceProcAddr( vk_instance, #f ))) \
-    {                                                                               \
-        WARN("Failed to load " #f ".\n");                                           \
-        goto done;                                                                  \
-    }
-
-    LOAD_VK_FUNC(vkEnumeratePhysicalDevices)
-    LOAD_VK_FUNC(vkGetPhysicalDeviceProperties2KHR)
-    LOAD_VK_FUNC(vkGetRandROutputDisplayEXT)
-#undef LOAD_VK_FUNC
-
-    vr = pvkEnumeratePhysicalDevices( vk_instance, &device_count, NULL );
+    vr = p_vkEnumeratePhysicalDevices( vk_instance, &device_count, NULL );
     if (vr != VK_SUCCESS || !device_count)
     {
         WARN("No Vulkan device found, vr %d, device_count %d.\n", vr, device_count);
@@ -693,12 +756,25 @@ static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRProvid
     if (!(vk_physical_devices = calloc( device_count, sizeof(*vk_physical_devices) )))
         goto done;
 
-    vr = pvkEnumeratePhysicalDevices( vk_instance, &device_count, vk_physical_devices );
+    vr = p_vkEnumeratePhysicalDevices( vk_instance, &device_count, vk_physical_devices );
     if (vr != VK_SUCCESS)
     {
         WARN("vkEnumeratePhysicalDevices failed, vr %d.\n", vr);
         goto done;
     }
+
+    if (!(devs = calloc( device_count, sizeof(*devs) )))
+        goto done;
+
+    for (device_idx = 0; device_idx < device_count; ++device_idx)
+    {
+        devs[device_idx].physdev = vk_physical_devices[device_idx];
+        devs[device_idx].id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+        devs[device_idx].properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        devs[device_idx].properties2.pNext = &devs[device_idx].id;
+        p_vkGetPhysicalDeviceProperties2KHR( vk_physical_devices[device_idx], &devs[device_idx].properties2 );
+    }
+    qsort( devs, device_count, sizeof(*devs), compare_vulkan_physical_devices );
 
     TRACE("provider name %s.\n", debugstr_a(provider_info->name));
 
@@ -706,58 +782,48 @@ static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRProvid
     {
         for (output_idx = 0; output_idx < provider_info->noutputs; ++output_idx)
         {
-            X11DRV_expect_error( gdi_display, XRandRErrorHandler, NULL );
-            vr = pvkGetRandROutputDisplayEXT( vk_physical_devices[device_idx], gdi_display,
-                                              provider_info->outputs[output_idx], &vk_display );
-            XSync( gdi_display, FALSE );
-            if (X11DRV_check_error() || vr != VK_SUCCESS || vk_display == VK_NULL_HANDLE)
+            vr = p_vkGetRandROutputDisplayEXT( devs[device_idx].physdev, gdi_display,
+                                               provider_info->outputs[output_idx], &vk_display );
+            if (vr != VK_SUCCESS || vk_display == VK_NULL_HANDLE)
                 continue;
 
-            memset( &id, 0, sizeof(id) );
-            id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
-            properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-            properties2.pNext = &id;
-
-            pvkGetPhysicalDeviceProperties2KHR( vk_physical_devices[device_idx], &properties2 );
             for (i = 0; i < prev_gpu_count; ++i)
             {
-                if (!memcmp( &prev_gpus[i].vulkan_uuid, &id.deviceUUID, sizeof(id.deviceUUID) ))
+                if (!memcmp( &prev_gpus[i].vulkan_uuid, &devs[device_idx].id.deviceUUID, sizeof(devs[device_idx].id.deviceUUID) ))
                 {
-                    WARN( "device UUID %#x:%#x already assigned to GPU %u.\n", *((uint32_t *)id.deviceUUID + 1),
-                          *(uint32_t *)id.deviceUUID, i );
+                    WARN( "device UUID %#x:%#x already assigned to GPU %u.\n", *((uint32_t *)devs[device_idx].id.deviceUUID + 1),
+                          *(uint32_t *)devs[device_idx].id.deviceUUID, i );
                     break;
                 }
             }
             if (i < prev_gpu_count) continue;
 
-            memcpy( &gpu->vulkan_uuid, id.deviceUUID, sizeof(id.deviceUUID) );
+            memcpy( &gpu->vulkan_uuid, devs[device_idx].id.deviceUUID, sizeof(devs[device_idx].id.deviceUUID) );
 
             /* Ignore Khronos vendor IDs */
-            if (properties2.properties.vendorID < 0x10000)
+            if (devs[device_idx].properties2.properties.vendorID < 0x10000)
             {
-                gpu->vendor_id = properties2.properties.vendorID;
-                gpu->device_id = properties2.properties.deviceID;
+                gpu->pci_id.vendor = devs[device_idx].properties2.properties.vendorID;
+                gpu->pci_id.device = devs[device_idx].properties2.properties.deviceID;
             }
-            RtlUTF8ToUnicodeN( gpu->name, sizeof(gpu->name), &len, properties2.properties.deviceName,
-                               strlen( properties2.properties.deviceName ) + 1 );
+            gpu->name = strdup( devs[device_idx].properties2.properties.deviceName );
+
             ret = TRUE;
             goto done;
         }
     }
 
 done:
+    free( devs );
     free( vk_physical_devices );
-    if (vk_instance)
-        vulkan_funcs->p_vkDestroyInstance( vk_instance, NULL );
     return ret;
 }
 
 /* Get a list of GPUs reported by XRandR 1.4. Set get_properties to FALSE if GPU properties are
  * not needed to avoid unnecessary querying */
-static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_properties )
+static BOOL xrandr14_get_gpus( struct x11drv_gpu **new_gpus, int *count, BOOL get_properties )
 {
-    static const WCHAR wine_adapterW[] = {'W','i','n','e',' ','A','d','a','p','t','e','r',0};
-    struct gdi_gpu *gpus = NULL;
+    struct x11drv_gpu *gpus = NULL;
     XRRScreenResources *screen_resources = NULL;
     XRRProviderResources *provider_resources = NULL;
     XRRProviderInfo *provider_info = NULL;
@@ -765,7 +831,6 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
     INT primary_provider = -1;
     RECT primary_rect;
     BOOL ret = FALSE;
-    DWORD len;
     INT i, j;
 
     screen_resources = xrandr_get_screen_resources();
@@ -785,7 +850,7 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
     if (!provider_resources->nproviders)
     {
         WARN("XRandR implementation doesn't report any providers, faking one.\n");
-        lstrcpyW( gpus[0].name, wine_adapterW );
+        gpus[0].name = strdup( "Wine GPU" );
         *new_gpus = gpus;
         *count = 1;
         ret = TRUE;
@@ -820,8 +885,7 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
         if (get_properties)
         {
             if (!get_gpu_properties_from_vulkan( &gpus[i], provider_info, gpus, i ))
-                RtlUTF8ToUnicodeN( gpus[i].name, sizeof(gpus[i].name), &len, provider_info->name,
-                                   strlen( provider_info->name ) + 1 );
+                gpus[i].name = strdup( provider_info->name );
             /* FIXME: Add an alternate method of getting PCI IDs, for systems that don't support Vulkan */
         }
         pXRRFreeProviderInfo( provider_info );
@@ -830,7 +894,7 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
     /* Make primary GPU the first */
     if (primary_provider > 0)
     {
-        struct gdi_gpu tmp = gpus[0];
+        struct x11drv_gpu tmp = gpus[0];
         gpus[0] = gpus[primary_provider];
         gpus[primary_provider] = tmp;
     }
@@ -851,19 +915,15 @@ done:
     return ret;
 }
 
-static BOOL xrandr14_get_gpus( struct gdi_gpu **new_gpus, int *count )
+static void xrandr14_free_gpus( struct x11drv_gpu *gpus, int count )
 {
-    return xrandr14_get_gpus2( new_gpus, count, TRUE );
-}
-
-static void xrandr14_free_gpus( struct gdi_gpu *gpus )
-{
+    while (count--) free( gpus[count].name );
     free( gpus );
 }
 
-static BOOL xrandr14_get_adapters( ULONG_PTR gpu_id, struct gdi_adapter **new_adapters, int *count )
+static BOOL xrandr14_get_adapters( ULONG_PTR gpu_id, struct x11drv_adapter **new_adapters, int *count )
 {
-    struct gdi_adapter *adapters = NULL;
+    struct x11drv_adapter *adapters = NULL;
     XRRScreenResources *screen_resources = NULL;
     XRRProviderInfo *provider_info = NULL;
     XRRCrtcInfo *enum_crtc_info, *crtc_info = NULL;
@@ -997,7 +1057,7 @@ static BOOL xrandr14_get_adapters( ULONG_PTR gpu_id, struct gdi_adapter **new_ad
     /* Make primary adapter the first */
     if (primary_adapter)
     {
-        struct gdi_adapter tmp = adapters[0];
+        struct x11drv_adapter tmp = adapters[0];
         adapters[0] = adapters[primary_adapter];
         adapters[primary_adapter] = tmp;
     }
@@ -1022,7 +1082,7 @@ done:
     return ret;
 }
 
-static void xrandr14_free_adapters( struct gdi_adapter *adapters )
+static void xrandr14_free_adapters( struct x11drv_adapter *adapters )
 {
     free( adapters );
 }
@@ -1062,7 +1122,6 @@ static BOOL xrandr14_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
     /* Inactive but attached monitor, no need to check for mirrored/replica monitors */
     if (!output_info->crtc || !crtc_info->mode)
     {
-        monitors[monitor_count].state_flags = DISPLAY_DEVICE_ATTACHED;
         monitors[monitor_count].edid_len = get_edid( adapter_id, &monitors[monitor_count].edid );
         monitor_count = 1;
     }
@@ -1109,10 +1168,6 @@ static BOOL xrandr14_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
                     SetRect( &monitors[monitor_count].rc_monitor, crtc_info->x, crtc_info->y,
                              crtc_info->x + crtc_info->width, crtc_info->y + crtc_info->height );
                     monitors[monitor_count].rc_work = get_work_area( &monitors[monitor_count].rc_monitor );
-
-                    monitors[monitor_count].state_flags = DISPLAY_DEVICE_ATTACHED;
-                    if (!IsRectEmpty( &monitors[monitor_count].rc_monitor ))
-                        monitors[monitor_count].state_flags |= DISPLAY_DEVICE_ACTIVE;
 
                     if (is_crtc_primary( primary_rect, crtc_info ))
                         primary_index = monitor_count;
@@ -1188,10 +1243,7 @@ static BOOL xrandr14_device_change_handler( HWND hwnd, XEvent *event )
 
     xrandr14_invalidate_current_mode_cache();
     if (hwnd == NtUserGetDesktopWindow() && NtUserGetWindowThread( hwnd, NULL ) == GetCurrentThreadId())
-    {
-        X11DRV_DisplayDevices_Init( TRUE );
-        X11DRV_resize_desktop();
-    }
+        NtUserCallNoParam( NtUserCallNoParam_DisplayModeChanged );
     /* Update xinerama monitors for xinerama_get_fullscreen_monitors() */
     rect = get_host_primary_monitor_rect();
     xinerama_init( rect.right - rect.left, rect.bottom - rect.top );
@@ -1222,8 +1274,8 @@ static BOOL xrandr14_get_id( const WCHAR *device_name, BOOL is_primary, x11drv_s
     struct current_mode *tmp_modes, *new_current_modes = NULL;
     INT gpu_count, adapter_count, new_current_mode_count = 0;
     INT gpu_idx, adapter_idx, display_idx;
-    struct gdi_adapter *adapters;
-    struct gdi_gpu *gpus;
+    struct x11drv_adapter *adapters;
+    struct x11drv_gpu *gpus;
     WCHAR *end;
 
     /* Parse \\.\DISPLAY%d */
@@ -1235,7 +1287,7 @@ static BOOL xrandr14_get_id( const WCHAR *device_name, BOOL is_primary, x11drv_s
     pthread_mutex_lock( &xrandr_mutex );
     if (!current_modes)
     {
-        if (!xrandr14_get_gpus2( &gpus, &gpu_count, FALSE ))
+        if (!xrandr14_get_gpus( &gpus, &gpu_count, FALSE ))
         {
             pthread_mutex_unlock( &xrandr_mutex );
             return FALSE;
@@ -1262,7 +1314,7 @@ static BOOL xrandr14_get_id( const WCHAR *device_name, BOOL is_primary, x11drv_s
             new_current_mode_count += adapter_count;
             xrandr14_free_adapters( adapters );
         }
-        xrandr14_free_gpus( gpus );
+        xrandr14_free_gpus( gpus, gpu_count );
 
         if (new_current_modes)
         {
@@ -1284,10 +1336,10 @@ static BOOL xrandr14_get_id( const WCHAR *device_name, BOOL is_primary, x11drv_s
 }
 
 static void add_xrandr14_mode( DEVMODEW *mode, XRRModeInfo *info, DWORD depth, DWORD frequency,
-                               DWORD orientation )
+                               DWORD orientation, BOOL full )
 {
     mode->dmSize = sizeof(*mode);
-    mode->dmDriverExtra = sizeof(RRMode);
+    mode->dmDriverExtra = full ? sizeof(RRMode) : 0;
     mode->dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH |
                      DM_PELSHEIGHT | DM_DISPLAYFLAGS;
     if (frequency)
@@ -1305,13 +1357,13 @@ static void add_xrandr14_mode( DEVMODEW *mode, XRRModeInfo *info, DWORD depth, D
         mode->dmPelsWidth = info->height;
         mode->dmPelsHeight = info->width;
     }
-    mode->u1.s2.dmDisplayOrientation = orientation;
+    mode->dmDisplayOrientation = orientation;
     mode->dmBitsPerPel = depth;
-    mode->u2.dmDisplayFlags = 0;
-    memcpy( (BYTE *)mode + sizeof(*mode), &info->id, sizeof(info->id) );
+    mode->dmDisplayFlags = 0;
+    if (full) memcpy( mode + 1, &info->id, sizeof(info->id) );
 }
 
-static BOOL xrandr14_get_modes( x11drv_settings_id id, DWORD flags, DEVMODEW **new_modes, UINT *mode_count )
+static BOOL xrandr14_get_modes( x11drv_settings_id id, DWORD flags, DEVMODEW **new_modes, UINT *mode_count, BOOL full )
 {
     DWORD frequency, orientation, orientation_count;
     XRRScreenResources *screen_resources;
@@ -1383,7 +1435,7 @@ static BOOL xrandr14_get_modes( x11drv_settings_id id, DWORD flags, DEVMODEW **n
     if (!modes)
         goto done;
 
-    for (i = 0; i < output_info->nmode; ++i)
+    for (i = 0, mode = modes; i < output_info->nmode; ++i)
     {
         for (j = 0; j < screen_resources->nmode; ++j)
         {
@@ -1400,8 +1452,8 @@ static BOOL xrandr14_get_modes( x11drv_settings_id id, DWORD flags, DEVMODEW **n
                     if (!((1 << orientation) & rotations))
                         continue;
 
-                    mode = (DEVMODEW *)((BYTE *)modes + (sizeof(*modes) + sizeof(RRMode)) * mode_idx);
-                    add_xrandr14_mode( mode, mode_info, depths[depth_idx], frequency, orientation );
+                    add_xrandr14_mode( mode, mode_info, depths[depth_idx], frequency, orientation, full );
+                    mode = NEXT_DEVMODEW( mode );
                     ++mode_idx;
                 }
             }
@@ -1477,14 +1529,14 @@ static BOOL xrandr14_get_current_mode( x11drv_settings_id id, DEVMODEW *mode )
     {
         mode->dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT |
                          DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY | DM_POSITION;
-        mode->u1.s2.dmDisplayOrientation = DMDO_DEFAULT;
+        mode->dmDisplayOrientation = DMDO_DEFAULT;
         mode->dmBitsPerPel = 0;
         mode->dmPelsWidth = 0;
         mode->dmPelsHeight = 0;
-        mode->u2.dmDisplayFlags = 0;
+        mode->dmDisplayFlags = 0;
         mode->dmDisplayFrequency = 0;
-        mode->u1.s2.dmPosition.x = 0;
-        mode->u1.s2.dmPosition.y = 0;
+        mode->dmPosition.x = 0;
+        mode->dmPosition.y = 0;
         ret = TRUE;
         goto done;
     }
@@ -1504,16 +1556,16 @@ static BOOL xrandr14_get_current_mode( x11drv_settings_id id, DEVMODEW *mode )
 
     mode->dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT |
                      DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY | DM_POSITION;
-    mode->u1.s2.dmDisplayOrientation = get_orientation( crtc_info->rotation );
+    mode->dmDisplayOrientation = get_orientation( crtc_info->rotation );
     mode->dmBitsPerPel = screen_bpp;
     mode->dmPelsWidth = crtc_info->width;
     mode->dmPelsHeight = crtc_info->height;
-    mode->u2.dmDisplayFlags = 0;
+    mode->dmDisplayFlags = 0;
     mode->dmDisplayFrequency = get_frequency( mode_info );
     /* Convert RandR coordinates to virtual screen coordinates */
     primary = get_primary_rect( screen_resources );
-    mode->u1.s2.dmPosition.x = crtc_info->x - primary.left;
-    mode->u1.s2.dmPosition.y = crtc_info->y - primary.top;
+    mode->dmPosition.x = crtc_info->x - primary.left;
+    mode->dmPosition.y = crtc_info->y - primary.top;
     ret = TRUE;
 
 done:
@@ -1612,7 +1664,7 @@ static LONG xrandr14_set_current_mode( x11drv_settings_id id, const DEVMODEW *mo
         outputs = &output;
         output_count = 1;
     }
-    rotation = get_rotation( mode->u1.s2.dmDisplayOrientation );
+    rotation = get_rotation( mode->dmDisplayOrientation );
 
     /* According to the RandR spec, the entire CRTC must fit inside the screen.
      * Since we use the union of all enabled CRTCs to determine the necessary
@@ -1624,12 +1676,12 @@ static LONG xrandr14_set_current_mode( x11drv_settings_id id, const DEVMODEW *mo
         goto done;
 
     get_screen_size( screen_resources, &screen_width, &screen_height );
-    screen_width = max( screen_width, mode->u1.s2.dmPosition.x + mode->dmPelsWidth );
-    screen_height = max( screen_height, mode->u1.s2.dmPosition.y + mode->dmPelsHeight );
+    screen_width = max( screen_width, mode->dmPosition.x + mode->dmPelsWidth );
+    screen_height = max( screen_height, mode->dmPosition.y + mode->dmPelsHeight );
     set_screen_size( screen_width, screen_height );
 
     status = pXRRSetCrtcConfig( gdi_display, screen_resources, crtc, CurrentTime,
-                                mode->u1.s2.dmPosition.x, mode->u1.s2.dmPosition.y, rrmode,
+                                mode->dmPosition.x, mode->dmPosition.y, rrmode,
                                 rotation, outputs, output_count );
     if (status == RRSetConfigSuccess)
         ret = DISP_CHANGE_SUCCESSFUL;
@@ -1658,7 +1710,6 @@ void X11DRV_XRandR_Init(void)
 
     if (major) return; /* already initialized? */
     if (!usexrandr) return; /* disabled in config */
-    if (is_virtual_desktop()) return;
     if (!(ret = load_xrandr())) return;  /* can't load the Xrandr library */
 
     /* see if Xrandr is available */

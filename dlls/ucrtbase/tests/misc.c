@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <float.h>
+#include <inttypes.h>
 #include <io.h>
 #include <sys/stat.h>
 #include <share.h>
@@ -112,6 +113,8 @@ _ACRTIMP void *__cdecl _o_malloc(size_t);
 _se_translator_function __cdecl _set_se_translator(_se_translator_function func);
 void** __cdecl __current_exception(void);
 int* __cdecl __processing_throw(void);
+
+#define _MAX__TIME64_T     (((__time64_t)0x00000007 << 32) | 0x93406FFF)
 
 static void test__initialize_onexit_table(void)
 {
@@ -521,6 +524,7 @@ static void test__sopen_s(void)
 
 static void test_lldiv(void)
 {
+    imaxdiv_t div_res;
     lldiv_t r;
 
     r = lldiv(((LONGLONG)0x111 << 32) + 0x222, (LONGLONG)1 << 32);
@@ -534,6 +538,18 @@ static void test_lldiv(void)
     r = lldiv(((LONGLONG)0x243A5678 << 32) + 0x9ABCDEF0, (LONGLONG)0x12 << 48);
     ok(r.quot == 0x0203, "quot = %s\n", wine_dbgstr_longlong(r.quot));
     ok(r.rem == ((LONGLONG)0x00045678 << 32) + 0x9ABCDEF0, "rem = %s\n", wine_dbgstr_longlong(r.rem));
+
+    div_res = imaxdiv(((intmax_t)0x111 << 32) + 0x222, (intmax_t)1 << 32);
+    ok(div_res.quot == 0x111, "quot = %s\n", wine_dbgstr_longlong(div_res.quot));
+    ok(div_res.rem == 0x222, "rem = %s\n", wine_dbgstr_longlong(div_res.rem));
+
+    div_res = imaxdiv(((intmax_t)0x69CF0012 << 32) + 0x0033E78A, 0x30);
+    ok(div_res.quot == ((intmax_t)0x02345000 << 32) + 0x600114D2, "quot = %s\n", wine_dbgstr_longlong(div_res.quot));
+    ok(div_res.rem == 0x2A, "rem = %s\n", wine_dbgstr_longlong(div_res.rem));
+
+    div_res = imaxdiv(((intmax_t)0x243A5678 << 32) + 0x9ABCDEF0, (intmax_t)0x12 << 48);
+    ok(div_res.quot == 0x0203, "quot = %s\n", wine_dbgstr_longlong(div_res.quot));
+    ok(div_res.rem == ((intmax_t)0x00045678 << 32) + 0x9ABCDEF0, "rem = %s\n", wine_dbgstr_longlong(div_res.rem));
 }
 
 static void test_isblank(void)
@@ -1591,6 +1607,124 @@ static void test_fopen_exclusive( void )
     unlink(path);
 }
 
+#if defined(__i386__)
+#include "pshpack1.h"
+struct rewind_thunk {
+    BYTE push_esp[4]; /* push [esp+0x4] */
+    BYTE call_rewind; /* call */
+    DWORD rewind_addr; /* relative addr of rewind */
+    BYTE pop_eax; /* pop eax */
+    BYTE ret; /* ret */
+};
+#include "poppack.h"
+
+static FILE * (CDECL *test_rewind_wrapper)(FILE *fp);
+
+static void test_rewind_i386_abi(void)
+{
+    FILE *fp_in, *fp_out;
+
+    struct rewind_thunk *thunk = VirtualAlloc(NULL, sizeof(*thunk), MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+
+    thunk->push_esp[0] = 0xff;
+    thunk->push_esp[1] = 0x74;
+    thunk->push_esp[2] = 0x24;
+    thunk->push_esp[3] = 0x04;
+
+    thunk->call_rewind = 0xe8;
+    thunk->rewind_addr = (BYTE *) rewind - (BYTE *) (&thunk->rewind_addr + 1);
+
+    thunk->pop_eax = 0x58;
+    thunk->ret = 0xc3;
+
+    test_rewind_wrapper = (void *) thunk;
+
+    fp_in = fopen("rewind_abi.tst", "wb");
+    fp_out = test_rewind_wrapper(fp_in);
+    ok(fp_in == fp_out, "rewind modified the first argument in the stack\n");
+
+    fclose(fp_in);
+    unlink("rewind_abi.tst");
+}
+#endif
+
+static void test_gmtime64(void)
+{
+    struct tm *ptm, tm;
+    __time64_t t;
+    int ret;
+
+    t = -1;
+    memset(&tm, 0xcc, sizeof(tm));
+    ptm = _gmtime64(&t);
+    ok(!!ptm, "got NULL.\n");
+    ret = _gmtime64_s(&tm, &t);
+    ok(!ret, "got %d.\n", ret);
+    ok(tm.tm_year == 69 && tm.tm_hour == 23 && tm.tm_min == 59 && tm.tm_sec == 59, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    t = -43200;
+    memset(&tm, 0xcc, sizeof(tm));
+    ptm = _gmtime64(&t);
+    ok(!!ptm, "got NULL.\n");
+    ret = _gmtime64_s(&tm, &t);
+    ok(!ret, "got %d.\n", ret);
+    ok(tm.tm_year == 69 && tm.tm_hour == 12 && tm.tm_min == 0 && tm.tm_sec == 0, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    ptm = _gmtime32((__time32_t *)&t);
+    ok(!!ptm, "got NULL.\n");
+    memset(&tm, 0xcc, sizeof(tm));
+    ret = _gmtime32_s(&tm, (__time32_t *)&t);
+    ok(!ret, "got %d.\n", ret);
+    todo_wine_if(tm.tm_year == 69 && tm.tm_hour == 12)
+    ok(tm.tm_year == 70 && tm.tm_hour == -12 && tm.tm_min == 0 && tm.tm_sec == 0, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    t = -43201;
+    ptm = _gmtime64(&t);
+    ok(!ptm, "got non-NULL.\n");
+    memset(&tm, 0xcc, sizeof(tm));
+    ret = _gmtime64_s(&tm, &t);
+    ok(ret == EINVAL, "got %d.\n", ret);
+    ok(tm.tm_year == -1 && tm.tm_hour == -1 && tm.tm_min == -1 && tm.tm_sec == -1, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    ptm = _gmtime32((__time32_t *)&t);
+    ok(!ptm, "got NULL.\n");
+    memset(&tm, 0xcc, sizeof(tm));
+    ret = _gmtime32_s(&tm, (__time32_t *)&t);
+    ok(ret == EINVAL, "got %d.\n", ret);
+    ok(tm.tm_year == -1 && tm.tm_hour == -1 && tm.tm_min == -1 && tm.tm_sec == -1, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    t = _MAX__TIME64_T + 1605600;
+    memset(&tm, 0xcc, sizeof(tm));
+    ptm = _gmtime64(&t);
+    ok(!!ptm || broken(!ptm) /* before Win10 1909 */, "got NULL.\n");
+    if (!ptm)
+    {
+        win_skip("Old gmtime64 limits, skipping tests.\n");
+        return;
+    }
+    ret = _gmtime64_s(&tm, &t);
+    ok(!ret, "got %d.\n", ret);
+    ok(tm.tm_year == 1101 && tm.tm_hour == 21 && tm.tm_min == 59 && tm.tm_sec == 59, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    t = _MAX__TIME64_T + 1605601;
+    ptm = _gmtime64(&t);
+    ok(!ptm, "got non-NULL.\n");
+    memset(&tm, 0xcc, sizeof(tm));
+    ret = _gmtime64_s(&tm, &t);
+    ok(ret == EINVAL, "got %d.\n", ret);
+    ok(tm.tm_year == -1 && tm.tm_hour == -1 && tm.tm_min == -1 && tm.tm_sec == -1, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+}
+
+static void test__get_heap_handle(void)
+{
+    ok((HANDLE)_get_heap_handle() == GetProcessHeap(), "Expected _get_heap_handle() to return GetProcessHeap()\n");
+}
+
 START_TEST(misc)
 {
     int arg_c;
@@ -1633,4 +1767,9 @@ START_TEST(misc)
     test_thread_storage();
     test_fenv();
     test_fopen_exclusive();
+#if defined(__i386__)
+    test_rewind_i386_abi();
+#endif
+    test_gmtime64();
+    test__get_heap_handle();
 }

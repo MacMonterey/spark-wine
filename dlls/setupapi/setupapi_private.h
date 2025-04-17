@@ -19,6 +19,7 @@
 #ifndef __SETUPAPI_PRIVATE_H
 #define __SETUPAPI_PRIVATE_H
 
+#include <stdbool.h>
 #include <windef.h>
 #include <winuser.h>
 
@@ -45,7 +46,7 @@
 
 #define PNF_HEADER L"Wine PNF header\n"
 
-extern HINSTANCE SETUPAPI_hInstance DECLSPEC_HIDDEN;
+extern HINSTANCE SETUPAPI_hInstance;
 
 static inline char *strdupWtoA( const WCHAR *str )
 {
@@ -71,6 +72,8 @@ static inline WCHAR *strdupAtoW( const char *str )
     return ret;
 }
 
+bool array_reserve(void **elements, size_t *capacity, size_t count, size_t size);
+
 /* exported functions not in public headers */
 
 void    WINAPI MyFree( void *mem );
@@ -82,9 +85,9 @@ char *  WINAPI UnicodeToMultiByte( const WCHAR *str, UINT code_page ) __WINE_DEA
 /* string substitutions */
 
 struct inf_file;
-extern const WCHAR *DIRID_get_string( int dirid ) DECLSPEC_HIDDEN;
-extern const WCHAR *PARSER_get_inf_filename( HINF hinf ) DECLSPEC_HIDDEN;
-extern WCHAR *PARSER_get_dest_dir( INFCONTEXT *context ) DECLSPEC_HIDDEN;
+extern const WCHAR *DIRID_get_string( int dirid );
+extern const WCHAR *PARSER_get_inf_filename( HINF hinf );
+extern WCHAR *PARSER_get_dest_dir( INFCONTEXT *context );
 
 /* support for ANSI queue callback functions */
 
@@ -94,11 +97,11 @@ struct callback_WtoA_context
     PSP_FILE_CALLBACK_A orig_handler;
 };
 
-UINT CALLBACK QUEUE_callback_WtoA( void *context, UINT notification, UINT_PTR, UINT_PTR ) DECLSPEC_HIDDEN;
+UINT CALLBACK QUEUE_callback_WtoA( void *context, UINT notification, UINT_PTR, UINT_PTR );
 
-extern OSVERSIONINFOW OsVersionInfo DECLSPEC_HIDDEN;
+extern OSVERSIONINFOW OsVersionInfo;
 
-extern BOOL create_fake_dll( const WCHAR *name, const WCHAR *source ) DECLSPEC_HIDDEN;
-extern void cleanup_fake_dlls(void) DECLSPEC_HIDDEN;
+extern BOOL create_fake_dll( const WCHAR *name, const WCHAR *source );
+extern void cleanup_fake_dlls(void);
 
 #endif /* __SETUPAPI_PRIVATE_H */

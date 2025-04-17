@@ -51,7 +51,6 @@
 #include "iccvid_private.h"
 
 #include "wine/debug.h"
-#include "wine/heap.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(iccvid);
 
@@ -353,7 +352,7 @@ static cinepak_info *decode_cinepak_init(void)
     cinepak_info *cvinfo;
     int i;
 
-    cvinfo = heap_alloc( sizeof (cinepak_info) );
+    cvinfo = malloc(sizeof(cinepak_info));
     if( !cvinfo )
         return NULL;
     cvinfo->strip_num = 0;
@@ -374,10 +373,10 @@ static void free_cvinfo( cinepak_info *cvinfo )
 
     for( i=0; i<cvinfo->strip_num; i++ )
     {
-        heap_free(cvinfo->v4_codebook[i]);
-        heap_free(cvinfo->v1_codebook[i]);
+        free(cvinfo->v4_codebook[i]);
+        free(cvinfo->v1_codebook[i]);
     }
-    heap_free( cvinfo );
+    free( cvinfo );
 }
 
 typedef void (*fn_cvid_v1)(unsigned char *frm, unsigned char *limit,
@@ -481,13 +480,13 @@ static void decode_cinepak(cinepak_info *cvinfo, unsigned char *buf, int size,
 
         for(i = cvinfo->strip_num; i < frame.strips; i++)
             {
-            if((cvinfo->v4_codebook[i] = heap_alloc(sizeof(cvid_codebook) * 260)) == NULL)
+            if((cvinfo->v4_codebook[i] = malloc(sizeof(cvid_codebook) * 260)) == NULL)
                 {
                 ERR("CVID: codebook v4 alloc err\n");
                 return;
                 }
 
-            if((cvinfo->v1_codebook[i] = heap_alloc(sizeof(cvid_codebook) * 260)) == NULL)
+            if((cvinfo->v1_codebook[i] = malloc(sizeof(cvid_codebook) * 260)) == NULL)
                 {
                 ERR("CVID: codebook v1 alloc err\n");
                 return;
@@ -750,7 +749,7 @@ static void ICCVID_dump_BITMAPINFO(const BITMAPINFO * bmi)
         bmi->bmiHeader.biBitCount,
         bmi->bmiHeader.biHeight,
         bmi->bmiHeader.biWidth,
-        debugstr_an( (const char *)&bmi->bmiHeader.biCompression, 4 ) );
+        debugstr_fourcc(bmi->bmiHeader.biCompression));
 }
 
 static inline int ICCVID_CheckMask(RGBQUAD bmiColors[3], COLORREF redMask, COLORREF blueMask, COLORREF greenMask)
@@ -798,26 +797,21 @@ static LRESULT ICCVID_DecompressQuery( ICCVID_Info *info, LPBITMAPINFO in, LPBIT
         if( in->bmiHeader.biWidth != out->bmiHeader.biWidth )
             return ICERR_BADFORMAT;
 
-        switch( out->bmiHeader.biBitCount )
+        switch( out->bmiHeader.biCompression )
         {
-        case 16:
-            if ( out->bmiHeader.biCompression == BI_BITFIELDS )
-            {
-                if ( !ICCVID_CheckMask(out->bmiColors, 0x7C00, 0x03E0, 0x001F) &&
-                     !ICCVID_CheckMask(out->bmiColors, 0xF800, 0x07E0, 0x001F) )
-                {
-                    TRACE("unsupported output bit field(s) for 16-bit colors\n");
-                    return ICERR_BADFORMAT;
-                }
-            }
+        case BI_RGB:
+            if ( out->bmiHeader.biBitCount == 16 || out->bmiHeader.biBitCount == 24 || out->bmiHeader.biBitCount == 32 )
+                return ICERR_OK;
             break;
-        case 24:
-        case 32:
+        case BI_BITFIELDS:
+            if ( out->bmiHeader.biBitCount == 16 && ICCVID_CheckMask(out->bmiColors, 0x7C00, 0x03E0, 0x001F) )
+                return ICERR_OK;
+            if ( out->bmiHeader.biBitCount == 16 && ICCVID_CheckMask(out->bmiColors, 0xF800, 0x07E0, 0x001F) )
+                return ICERR_OK;
             break;
-        default:
-            TRACE("unsupported output bitcount = %d\n", out->bmiHeader.biBitCount );
-            return ICERR_BADFORMAT;
         }
+        TRACE("unsupported output format\n");
+        return ICERR_BADFORMAT;
     }
 
     return ICERR_OK;
@@ -941,7 +935,7 @@ static LRESULT ICCVID_Close( ICCVID_Info *info )
         return 0;
     if( info->cvinfo )
         free_cvinfo( info->cvinfo );
-    heap_free( info );
+    free( info );
     return 1;
 }
 
@@ -1001,7 +995,7 @@ LRESULT WINAPI ICCVID_DriverProc( DWORD_PTR dwDriverId, HDRVR hdrvr, UINT msg,
 
         if (icinfo && compare_fourcc(icinfo->fccType, ICTYPE_VIDEO)) return 0;
 
-        info = heap_alloc( sizeof (ICCVID_Info) );
+        info = malloc(sizeof(ICCVID_Info));
         if( info )
         {
             info->dwMagic = ICCVID_MAGIC;

@@ -167,6 +167,21 @@ static const WSAPROTOCOL_INFOW supported_protocols[] =
         .dwMessageSize = UINT_MAX,
         .szProtocol = L"SPX II",
     },
+    {
+        .dwServiceFlags1 = XP1_IFS_HANDLES | XP1_GRACEFUL_CLOSE | XP1_GUARANTEED_ORDER |
+                           XP1_GUARANTEED_DELIVERY,
+        .dwProviderFlags = PFL_MATCHES_PROTOCOL_ZERO,
+        .ProviderId = {0x9fc48064, 0x7298, 0x43e4, {0xb7, 0xbd, 0x18, 0x1f, 0x20, 0x89, 0x79, 0x2a}},
+        .dwCatalogEntryId = 1040,
+        .ProtocolChain.ChainLen = 1,
+        .iVersion = 2,
+        .iAddressFamily = AF_BTH,
+        .iMinSockAddr = sizeof(SOCKADDR_BTH),
+        .iMaxSockAddr = sizeof(SOCKADDR_BTH),
+        .iSocketType = SOCK_STREAM,
+        .iProtocol = BTHPROTO_RFCOMM,
+        .szProtocol = L"MSAFD RfComm [Bluetooth]",
+    },
 };
 
 DECLARE_CRITICAL_SECTION(cs_socket_list);
@@ -225,6 +240,17 @@ const char *debugstr_sockaddr( const struct sockaddr *a )
         return wine_dbg_sprintf("{ family AF_IRDA, addr %08lx, name %s }",
                                 addr,
                                 ((const SOCKADDR_IRDA *)a)->irdaServiceName);
+    }
+    case AF_BTH:
+    {
+        const SOCKADDR_BTH *addr = (SOCKADDR_BTH *)a;
+        BLUETOOTH_ADDRESS bth_addr = {0};
+
+        bth_addr.ullLong = addr->btAddr;
+        return wine_dbg_sprintf( "{ family AF_BTH, addr %02X:%02X:%02X:%02X:%02X:%02X, serviceClassId %s, port %ld }",
+                                 bth_addr.rgBytes[5], bth_addr.rgBytes[4], bth_addr.rgBytes[3], bth_addr.rgBytes[2],
+                                 bth_addr.rgBytes[1], bth_addr.rgBytes[0], wine_dbgstr_guid( &addr->serviceClassId ),
+                                 addr->port );
     }
     default:
         return wine_dbg_sprintf("{ family %d }", a->sa_family);
@@ -1147,7 +1173,13 @@ int WINAPI bind( SOCKET s, const struct sockaddr *addr, int len )
                 return -1;
             }
             break;
-
+        case AF_BTH:
+            if (len < sizeof(SOCKADDR_BTH))
+            {
+                SetLastError( WSAEFAULT );
+                return -1;
+            }
+            break;
         default:
             FIXME( "unknown protocol %u\n", addr->sa_family );
             SetLastError( WSAEAFNOSUPPORT );
@@ -1514,6 +1546,7 @@ int WINAPI getpeername( SOCKET s, struct sockaddr *addr, int *len )
 {
     IO_STATUS_BLOCK io;
     NTSTATUS status;
+    int safe_len = 0;
 
     TRACE( "socket %#Ix, addr %p, len %d\n", s, addr, len ? *len : 0 );
 
@@ -1523,14 +1556,14 @@ int WINAPI getpeername( SOCKET s, struct sockaddr *addr, int *len )
         return -1;
     }
 
-    if (!len)
-    {
-        SetLastError( WSAEFAULT );
-        return -1;
-    }
+    /* Windows checks the validity of the socket before checking len, so
+     * let wineserver do the same. Since len being NULL and *len being 0
+     * yield the same error, we can substitute in 0 if len is NULL. */
+    if (len)
+        safe_len = *len;
 
     status = NtDeviceIoControlFile( (HANDLE)s, NULL, NULL, NULL, &io,
-                                    IOCTL_AFD_WINE_GETPEERNAME, NULL, 0, addr, *len );
+                                    IOCTL_AFD_WINE_GETPEERNAME, NULL, 0, addr, safe_len );
     if (!status)
         *len = io.Information;
     SetLastError( NtStatusToWSAError( status ) );
@@ -1929,6 +1962,36 @@ int WINAPI getsockopt( SOCKET s, int level, int optname, char *optval, int *optl
             }
             *optlen = 1;
             return server_getsockopt( s, IOCTL_AFD_WINE_GET_TCP_NODELAY, optval, optlen );
+
+        case TCP_KEEPALIVE:
+            if (*optlen < sizeof(DWORD) || !optval)
+            {
+                *optlen = 0;
+                SetLastError( WSAEFAULT );
+                return SOCKET_ERROR;
+            }
+            *optlen = sizeof(DWORD);
+            return server_getsockopt( s, IOCTL_AFD_WINE_GET_TCP_KEEPALIVE, optval, optlen );
+
+        case TCP_KEEPCNT:
+            if (*optlen < sizeof(DWORD) || !optval)
+            {
+                *optlen = 0;
+                SetLastError( WSAEFAULT );
+                return SOCKET_ERROR;
+            }
+            *optlen = sizeof(DWORD);
+            return server_getsockopt( s, IOCTL_AFD_WINE_GET_TCP_KEEPCNT, optval, optlen );
+
+        case TCP_KEEPINTVL:
+            if (*optlen < sizeof(DWORD) || !optval)
+            {
+                *optlen = 0;
+                SetLastError( WSAEFAULT );
+                return SOCKET_ERROR;
+            }
+            *optlen = sizeof(DWORD);
+            return server_getsockopt( s, IOCTL_AFD_WINE_GET_TCP_KEEPINTVL, optval, optlen );
 
         default:
             FIXME( "unrecognized TCP option %#x\n", optname );
@@ -3324,6 +3387,12 @@ int WINAPI setsockopt( SOCKET s, int level, int optname, const char *optval, int
         break; /* case NSPROTO_IPX */
 
     case IPPROTO_TCP:
+        if (optlen < 0)
+        {
+            SetLastError(WSAENOBUFS);
+            return SOCKET_ERROR;
+        }
+
         switch(optname)
         {
         case TCP_NODELAY:
@@ -3334,6 +3403,33 @@ int WINAPI setsockopt( SOCKET s, int level, int optname, const char *optval, int
             }
             value = *optval;
             return server_setsockopt( s, IOCTL_AFD_WINE_SET_TCP_NODELAY, (char*)&value, sizeof(value) );
+
+        case TCP_KEEPALIVE:
+            if (optlen < sizeof(DWORD) || !optval)
+            {
+                SetLastError( WSAEFAULT );
+                return SOCKET_ERROR;
+            }
+            value = *(DWORD*)optval;
+            return server_setsockopt( s, IOCTL_AFD_WINE_SET_TCP_KEEPALIVE, (char*)&value, sizeof(value) );
+
+        case TCP_KEEPCNT:
+            if (optlen < sizeof(DWORD) || !optval)
+            {
+                SetLastError( WSAEFAULT );
+                return SOCKET_ERROR;
+            }
+            value = *(DWORD*)optval;
+            return server_setsockopt( s, IOCTL_AFD_WINE_SET_TCP_KEEPCNT, (char*)&value, sizeof(value) );
+
+        case TCP_KEEPINTVL:
+            if (optlen < sizeof(DWORD) || !optval)
+            {
+                SetLastError( WSAEFAULT );
+                return SOCKET_ERROR;
+            }
+            value = *(DWORD*)optval;
+            return server_setsockopt( s, IOCTL_AFD_WINE_SET_TCP_KEEPINTVL, (char*)&value, sizeof(value) );
 
         default:
             FIXME("Unknown IPPROTO_TCP optname 0x%08x\n", optname);
@@ -3604,10 +3700,8 @@ int WINAPI WSAEnumNetworkEvents( SOCKET s, WSAEVENT event, WSANETWORKEVENTS *ret
 
     TRACE( "socket %#Ix, event %p, events %p\n", s, event, ret_events );
 
-    ResetEvent( event );
-
     status = NtDeviceIoControlFile( (HANDLE)s, NULL, NULL, NULL, &io, IOCTL_AFD_GET_EVENTS,
-                                    NULL, 0, &params, sizeof(params) );
+                                    event, 0, &params, sizeof(params) );
     if (!status)
     {
         ret_events->lNetworkEvents = afd_poll_flag_to_win32( params.flags );
@@ -3630,7 +3724,10 @@ int WINAPI WSAEnumNetworkEvents( SOCKET s, WSAEVENT event, WSANETWORKEVENTS *ret
         if (ret_events->lNetworkEvents & FD_CLOSE)
         {
             if (!(ret_events->iErrorCode[FD_CLOSE_BIT] = NtStatusToWSAError( params.status[AFD_POLL_BIT_HUP] )))
-                ret_events->iErrorCode[FD_CLOSE_BIT] = NtStatusToWSAError( params.status[AFD_POLL_BIT_RESET] );
+            {
+                if (params.flags & AFD_POLL_RESET)
+                    ret_events->iErrorCode[FD_CLOSE_BIT] = WSAECONNABORTED;
+            }
         }
     }
     SetLastError( NtStatusToWSAError( status ) );

@@ -30,6 +30,7 @@
 #include "wmistr.h"
 #include "evntprov.h"
 #include "evntrace.h"
+#include "netevent.h"
 
 #include "wine/test.h"
 
@@ -103,24 +104,24 @@ static void test_open_close(void)
 
     SetLastError(0xdeadbeef);
     handle = OpenEventLogA(NULL, NULL);
-    ok(handle == NULL, "Didn't expect a handle\n");
+    ok(handle == NULL, "OpenEventLogA() succeeded\n");
     ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
 
     SetLastError(0xdeadbeef);
     handle = OpenEventLogA("IDontExist", NULL);
-    ok(handle == NULL, "Didn't expect a handle\n");
+    ok(handle == NULL, "OpenEventLogA(IDontExist,) succeeded\n");
     ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
 
     SetLastError(0xdeadbeef);
     handle = OpenEventLogA("IDontExist", "deadbeef");
-    ok(handle == NULL, "Didn't expect a handle\n");
+    ok(handle == NULL, "OpenEventLogA(IDontExist,deadbeef) succeeded\n");
     ok(GetLastError() == RPC_S_SERVER_UNAVAILABLE ||
        GetLastError() == RPC_S_INVALID_NET_ADDR, /* Some Vista and Win7 */
        "Expected RPC_S_SERVER_UNAVAILABLE, got %ld\n", GetLastError());
 
     /* This one opens the Application log */
     handle = OpenEventLogA(NULL, "deadbeef");
-    ok(handle != NULL, "Expected a handle : %ld\n", GetLastError());
+    ok(handle != NULL, "OpenEventLogA(deadbeef) failed : %ld\n", GetLastError());
     ret = CloseEventLog(handle);
     ok(ret, "Expected success : %ld\n", GetLastError());
     /* Close a second time */
@@ -134,11 +135,11 @@ static void test_open_close(void)
 
     /* Empty servername should be read as local server */
     handle = OpenEventLogA("", "Application");
-    ok(handle != NULL, "Expected a handle : %ld\n", GetLastError());
+    ok(handle != NULL, "OpenEventLogA('',Application) failed : %ld\n", GetLastError());
     CloseEventLog(handle);
 
     handle = OpenEventLogA(NULL, "Application");
-    ok(handle != NULL, "Expected a handle : %ld\n", GetLastError());
+    ok(handle != NULL, "OpenEventLogA(Application) failed : %ld\n", GetLastError());
     CloseEventLog(handle);
 }
 
@@ -444,14 +445,14 @@ static void test_read(void)
     todo_wine
     ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
 
-    buf = HeapAlloc(GetProcessHeap(), 0, sizeof(EVENTLOGRECORD));
+    buf = malloc(sizeof(EVENTLOGRECORD));
     SetLastError(0xdeadbeef);
     ret = ReadEventLogA(NULL, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ,
                         0, buf, sizeof(EVENTLOGRECORD), &read, &needed);
     ok(!ret, "Expected failure\n");
     todo_wine
     ok(GetLastError() == ERROR_INVALID_HANDLE, "Expected ERROR_INVALID_HANDLE, got %ld\n", GetLastError());
-    HeapFree(GetProcessHeap(), 0, buf);
+    free(buf);
 
     handle = OpenEventLogA(NULL, "Application");
     if (!handle && (GetLastError() == ERROR_ACCESS_DENIED || GetLastError() == RPC_S_SERVER_UNAVAILABLE))
@@ -462,7 +463,7 @@ static void test_read(void)
     ok(handle != NULL, "OpenEventLogA(Application) failed : %ld\n", GetLastError());
 
     /* Show that we need the proper dwFlags with a (for the rest) proper call */
-    buf = HeapAlloc(GetProcessHeap(), 0, sizeof(EVENTLOGRECORD));
+    buf = malloc(sizeof(EVENTLOGRECORD));
 
     SetLastError(0xdeadbeef);
     ret = ReadEventLogA(handle, 0, 0, buf, sizeof(EVENTLOGRECORD), &read, &needed);
@@ -503,7 +504,7 @@ static void test_read(void)
     todo_wine
     ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
 
-    HeapFree(GetProcessHeap(), 0, buf);
+    free(buf);
 
     /* First check if there are any records (in practice only on Wine: FIXME) */
     count = 0;
@@ -516,7 +517,7 @@ static void test_read(void)
     }
 
     /* Get the buffer size for the first record */
-    buf = HeapAlloc(GetProcessHeap(), 0, sizeof(EVENTLOGRECORD));
+    buf = malloc(sizeof(EVENTLOGRECORD));
     read = needed = 0xdeadbeef;
     SetLastError(0xdeadbeef);
     ret = ReadEventLogA(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ,
@@ -528,7 +529,7 @@ static void test_read(void)
 
     /* Read the first record */
     toread = needed;
-    buf = HeapReAlloc(GetProcessHeap(), 0, buf, toread);
+    buf = realloc(buf, toread);
     read = needed = 0xdeadbeef;
     SetLastError(0xdeadbeef);
     ret = ReadEventLogA(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ, 0, buf, toread, &read, &needed);
@@ -537,7 +538,7 @@ static void test_read(void)
        broken(read < toread), /* NT4 wants a buffer size way bigger than just 1 record */
        "Expected the requested size to be read\n");
     ok(needed == 0, "Expected no extra bytes to be read\n");
-    HeapFree(GetProcessHeap(), 0, buf);
+    free(buf);
 
     CloseEventLog(handle);
 }
@@ -779,11 +780,12 @@ static void test_readwrite(void)
     DWORD i;
     char *localcomputer = NULL;
     DWORD size;
+    void* buf;
 
     if (pCreateWellKnownSid)
     {
         sidsize = SECURITY_MAX_SID_SIZE;
-        user = HeapAlloc(GetProcessHeap(), 0, sidsize);
+        user = malloc(sidsize);
         SetLastError(0xdeadbeef);
         pCreateWellKnownSid(WinInteractiveSid, NULL, user, &sidsize);
         sidavailable = TRUE;
@@ -816,6 +818,7 @@ static void test_readwrite(void)
         Sleep(2000);
 
         handle = OpenEventLogA(NULL, eventlogname);
+        ok(handle != NULL, "OpenEventLogA(%s) failed : %ld\n", eventlogname, GetLastError());
         count = 0xdeadbeef;
         GetNumberOfEventLogRecords(handle, &count);
         if (count != 0)
@@ -843,12 +846,12 @@ static void test_readwrite(void)
         ok(ret, "Expected success : %ld\n", GetLastError());
 
         /* Needed to catch earlier Vista (with no ServicePack for example) */
-        buf = HeapAlloc(GetProcessHeap(), 0, sizeof(EVENTLOGRECORD));
+        buf = malloc(sizeof(EVENTLOGRECORD));
         if (!(ret = ReadEventLogA(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ,
                                   0, buf, sizeof(EVENTLOGRECORD), &read, &needed)) &&
             GetLastError() == ERROR_INSUFFICIENT_BUFFER)
         {
-            buf = HeapReAlloc(GetProcessHeap(), 0, buf, needed);
+            buf = realloc(buf, needed);
             ret = ReadEventLogA(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ,
                                 0, buf, needed, &read, &needed);
         }
@@ -862,7 +865,7 @@ static void test_readwrite(void)
             if (record->EventType == EVENTLOG_SUCCESS)
                 on_vista = TRUE;
         }
-        HeapFree(GetProcessHeap(), 0, buf);
+        free(buf);
     }
 
     /* This will clear the eventlog. The record numbering for new
@@ -879,6 +882,8 @@ static void test_readwrite(void)
     {
         DWORD oldest;
         BOOL run_sidtests = read_write[i].evt_sid & sidavailable;
+
+        winetest_push_context("%lu:%s", i, read_write[i].evt_src);
 
         /* We don't need to use RegisterEventSource to report events */
         if (i % 2)
@@ -916,9 +921,11 @@ static void test_readwrite(void)
         else
             ret = DeregisterEventSource(handle);
         ok(ret, "Expected success : %ld\n", GetLastError());
+        winetest_pop_context();
     }
 
     handle = OpenEventLogA(NULL, eventlogname);
+    ok(handle != NULL, "OpenEventLogA(%s) failed : %ld\n", eventlogname, GetLastError());
     count = 0xdeadbeef;
     ret = GetNumberOfEventLogRecords(handle, &count);
     ok(ret, "Expected success : %ld\n", GetLastError());
@@ -942,23 +949,24 @@ static void test_readwrite(void)
         size = 0;
         SetLastError(0xdeadbeef);
         pGetComputerNameExA(ComputerNameDnsFullyQualified, NULL, &size);
-        localcomputer = HeapAlloc(GetProcessHeap(), 0, size);
+        localcomputer = malloc(size);
         pGetComputerNameExA(ComputerNameDnsFullyQualified, localcomputer, &size);
     }
     else
     {
         size = MAX_COMPUTERNAME_LENGTH + 1;
-        localcomputer = HeapAlloc(GetProcessHeap(), 0, size);
+        localcomputer = malloc(size);
         GetComputerNameA(localcomputer, &size);
     }
 
     /* Read all events from our created eventlog, one by one */
     handle = OpenEventLogA(NULL, eventlogname);
-    ok(handle != NULL, "Failed to open Event Log, got %ld\n", GetLastError());
+    ok(handle != NULL, "OpenEventLogA(%s) failed : %ld\n", eventlogname, GetLastError());
     i = 0;
+    size = sizeof(EVENTLOGRECORD) + 128;
+    buf = malloc(size);
     for (;;)
     {
-        void *buf;
         DWORD read, needed;
         EVENTLOGRECORD *record;
         char *sourcename, *computername;
@@ -966,23 +974,33 @@ static void test_readwrite(void)
         char *ptr;
         BOOL run_sidtests = read_write[i].evt_sid & sidavailable;
 
-        buf = HeapAlloc(GetProcessHeap(), 0, sizeof(EVENTLOGRECORD));
+        winetest_push_context("%lu", i);
+
         SetLastError(0xdeadbeef);
         ret = ReadEventLogA(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ,
                             0, buf, sizeof(EVENTLOGRECORD), &read, &needed);
         ok(!ret, "Expected failure\n");
         if (!ret && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
         {
-            HeapFree(GetProcessHeap(), 0, buf);
             ok(GetLastError() == ERROR_HANDLE_EOF, "record %ld, got %ld\n", i, GetLastError());
+            winetest_pop_context();
             break;
         }
 
-        buf = HeapReAlloc(GetProcessHeap(), 0, buf, needed);
+        if (needed > size)
+        {
+             free(buf);
+             size = needed;
+             buf = malloc(size);
+        }
         ret = ReadEventLogA(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ,
                             0, buf, needed, &read, &needed);
         ok(ret, "Expected success: %ld\n", GetLastError());
-
+        if (!ret)
+        {
+             winetest_pop_context();
+             break;
+        }
         record = (EVENTLOGRECORD *)buf;
 
         ok(record->Length == read,
@@ -1048,14 +1066,15 @@ static void test_readwrite(void)
         ok(record->Length == *(DWORD *)((BYTE *)buf + record->Length - sizeof(DWORD)),
            "Expected the closing DWORD to contain the length of the record\n");
 
-        HeapFree(GetProcessHeap(), 0, buf);
+        winetest_pop_context();
         i++;
     }
+    free(buf);
     CloseEventLog(handle);
 
     /* Test clearing a real eventlog */
     handle = OpenEventLogA(NULL, eventlogname);
-    ok(handle != NULL, "Failed to open Event Log, got %ld\n", GetLastError());
+    ok(handle != NULL, "OpenEventLogA(%s) failed : %ld\n", eventlogname, GetLastError());
 
     SetLastError(0xdeadbeef);
     ret = ClearEventLogA(handle, NULL);
@@ -1069,8 +1088,8 @@ static void test_readwrite(void)
     CloseEventLog(handle);
 
 cleanup:
-    HeapFree(GetProcessHeap(), 0, localcomputer);
-    HeapFree(GetProcessHeap(), 0, user);
+    free(localcomputer);
+    free(user);
 }
 
 /* Before Vista:
@@ -1137,24 +1156,10 @@ static void test_autocreation(void)
     /* On Windows we also automatically get an eventlog file */
     GetSystemDirectoryA(sysdir, sizeof(sysdir));
 
-    /* NT4 - W2K3 */
     lstrcpyA(eventlogfile, sysdir);
-    lstrcatA(eventlogfile, "\\config\\");
+    lstrcatA(eventlogfile, "\\winevt\\Logs\\");
     lstrcatA(eventlogfile, eventlogname);
-    lstrcatA(eventlogfile, ".evt");
-
-    if (GetFileAttributesA(eventlogfile) == INVALID_FILE_ATTRIBUTES)
-    {
-        /* Vista+ */
-        lstrcpyA(eventlogfile, sysdir);
-        lstrcatA(eventlogfile, "\\winevt\\Logs\\");
-        lstrcatA(eventlogfile, eventlogname);
-        lstrcatA(eventlogfile, ".evtx");
-    }
-
-    todo_wine
-    ok(GetFileAttributesA(eventlogfile) != INVALID_FILE_ATTRIBUTES,
-       "Expected an eventlog file\n");
+    lstrcatA(eventlogfile, ".evtx");
 
     if (pWow64RevertWow64FsRedirection)
         pWow64RevertWow64FsRedirection(redir);
@@ -1235,7 +1240,7 @@ static void test_start_trace(void)
     LONG ret;
 
     buffersize = sizeof(EVENT_TRACE_PROPERTIES) + sizeof(sessionname) + sizeof(filepath);
-    properties = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, buffersize);
+    properties = calloc(1, buffersize);
     properties->Wnode.BufferSize = buffersize;
     properties->Wnode.Flags = WNODE_FLAG_TRACED_GUID;
     properties->LogFileMode = EVENT_TRACE_FILE_MODE_NONE;
@@ -1312,8 +1317,339 @@ static void test_start_trace(void)
     /* clean up */
     ControlTraceA(handle, sessionname, properties, EVENT_TRACE_CONTROL_STOP);
 done:
-    HeapFree(GetProcessHeap(), 0, properties);
+    free(properties);
     DeleteFileA(filepath);
+}
+
+static BOOL read_record(HANDLE handle, DWORD flags, DWORD offset, EVENTLOGRECORD **record, DWORD *size)
+{
+    DWORD read, needed;
+    BOOL ret;
+
+    SetLastError(0xdeadbeef);
+    memset(*record, 0, *size);
+    needed = 0;
+    if (!(ret = ReadEventLogW(handle, flags, offset, *record, *size, &read, &needed)) &&
+        GetLastError() == ERROR_INSUFFICIENT_BUFFER)
+    {
+        free(*record);
+        *record = malloc(needed);
+        SetLastError(0xdeadbeef);
+        memset(*record, 0, needed);
+        *size = needed;
+        ret = ReadEventLogW(handle, flags, offset, *record, *size, &read, &needed);
+    }
+
+    return ret;
+}
+
+static void test_eventlog_start(void)
+{
+    BOOL ret, found;
+    HANDLE handle, handle2;
+    EVENTLOGRECORD *record, *record2;
+    DWORD size, size2, count, count2, read, needed;
+    WCHAR *sourcename, *computername, *localcomputer;
+    char *sourcenameA, *computernameA, *localcomputerA;
+
+    /* ReadEventLogW */
+    handle = OpenEventLogW(0, L"System");
+    if (!handle && (GetLastError() == ERROR_ACCESS_DENIED || GetLastError() == RPC_S_SERVER_UNAVAILABLE))
+    {
+        win_skip( "Can't open System event log\n" );
+        return;
+    }
+    ok(handle != NULL, "OpenEventLogW(System) failed : %ld\n", GetLastError());
+    handle2 = OpenEventLogW(0, L"System");
+    todo_wine ok(handle != handle2, "Expected different handle\n");
+    CloseEventLog(handle2);
+
+    handle2 = OpenEventLogW(0, L"SYSTEM");
+    ok(!!handle2, "Expected valid handle\n");
+    CloseEventLog(handle2);
+
+    size = MAX_COMPUTERNAME_LENGTH + 1;
+    localcomputer = malloc(size * sizeof(WCHAR));
+    GetComputerNameW(localcomputer, &size);
+
+    ret = TRUE;
+    found = FALSE;
+    while (!found && ret)
+    {
+        read = needed = 0;
+        record = malloc(sizeof(EVENTLOGRECORD));
+        if (!(ret = ReadEventLogW(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_BACKWARDS_READ,
+                                  0, record, sizeof(EVENTLOGRECORD), &read, &needed)) &&
+            GetLastError() == ERROR_INSUFFICIENT_BUFFER)
+        {
+            record = realloc(record, needed);
+            ret = ReadEventLogW(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_BACKWARDS_READ,
+                                0, record, needed, &read, &needed);
+            ok(needed == 0, "Expected 0, got %ld\n", needed);
+        }
+        if (ret && record->EventID == EVENT_EventlogStarted)
+        {
+            ok(record->Length == read, "Expected %ld, got %ld\n", read, record->Length);
+            ok(record->Reserved == 0x654c664c, "Expected 0x654c664c, got %ld\n", record->Reserved);
+            ok(record->RecordNumber > 0, "Expected 1 or higher, got %ld\n", record->RecordNumber);
+            ok(record->TimeGenerated == record->TimeWritten, "Expected time values to be the same\n");
+            ok(record->EventType == EVENTLOG_INFORMATION_TYPE,
+                "Expected %d, got %d\n", EVENTLOG_INFORMATION_TYPE, record->EventType);
+            ok(record->NumStrings == 0, "Expected 0, got %d\n", record->NumStrings);
+            ok(record->EventCategory == 0, "Expected 0, got %d\n", record->EventCategory);
+            ok(record->ReservedFlags == 0, "Expected 0, got %d\n", record->ReservedFlags);
+            ok(record->ClosingRecordNumber == 0, "Expected 0, got %ld\n", record->ClosingRecordNumber);
+            ok(record->StringOffset == record->UserSidOffset, "Expected offsets to be the same\n");
+            ok(record->UserSidLength == 0, "Expected 0, got %ld\n", record->UserSidLength);
+            ok(record->DataLength == 24, "Expected 24, got %ld\n", record->DataLength);
+            ok(record->DataOffset == record->UserSidOffset, "Expected offsets to be the same\n");
+
+            sourcename = (WCHAR *)(record + 1);
+            ok(!lstrcmpW(sourcename, L"EventLog"),
+                "Expected 'EventLog', got '%ls'\n", sourcename);
+
+            computername = sourcename + sizeof("EventLog");
+            ok(!lstrcmpiW(computername, localcomputer), "Expected '%ls', got '%ls'\n",
+                localcomputer, computername);
+
+            size = sizeof(EVENTLOGRECORD) + sizeof(L"EventLog") +
+                (lstrlenW(computername) + 1) * sizeof(WCHAR);
+            size = (size + 7) & ~7;
+            ok(record->DataOffset == size ||
+                broken(record->DataOffset == size - sizeof(WCHAR)), /* win8 */
+                "Expected %ld, got %ld\n", size, record->DataOffset);
+
+            found = TRUE;
+        }
+        free(record);
+    }
+    todo_wine ok(found, "EventlogStarted event not found\n");
+    CloseEventLog(handle);
+    free(localcomputer);
+
+    /* ReadEventLogA */
+    size = MAX_COMPUTERNAME_LENGTH + 1;
+    localcomputerA = malloc(size);
+    GetComputerNameA(localcomputerA, &size);
+
+    handle = OpenEventLogA(0, "System");
+    handle2 = OpenEventLogA(0, "SYSTEM");
+    todo_wine ok(handle != handle2, "Expected different handle\n");
+    CloseEventLog(handle2);
+
+    ret = TRUE;
+    found = FALSE;
+    while (!found && ret)
+    {
+        read = needed = 0;
+        record = malloc(sizeof(EVENTLOGRECORD));
+        if (!(ret = ReadEventLogA(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_BACKWARDS_READ,
+                                  0, record, sizeof(EVENTLOGRECORD), &read, &needed)) &&
+            GetLastError() == ERROR_INSUFFICIENT_BUFFER)
+        {
+            record = realloc(record, needed);
+            ret = ReadEventLogA(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_BACKWARDS_READ,
+                                0, record, needed, &read, &needed);
+            ok(needed == 0, "Expected 0, got %ld\n", needed);
+        }
+        if (ret && record->EventID == EVENT_EventlogStarted)
+        {
+            ok(record->Length == read, "Expected %ld, got %ld\n", read, record->Length);
+            ok(record->Reserved == 0x654c664c, "Expected 0x654c664c, got %ld\n", record->Reserved);
+            ok(record->RecordNumber > 0, "Expected 1 or higher, got %ld\n", record->RecordNumber);
+            ok(record->TimeGenerated == record->TimeWritten, "Expected time values to be the same\n");
+            ok(record->EventType == EVENTLOG_INFORMATION_TYPE,
+                "Expected %d, got %d\n", EVENTLOG_INFORMATION_TYPE, record->EventType);
+            ok(record->NumStrings == 0, "Expected 0, got %d\n", record->NumStrings);
+            ok(record->EventCategory == 0, "Expected 0, got %d\n", record->EventCategory);
+            ok(record->ReservedFlags == 0, "Expected 0, got %d\n", record->ReservedFlags);
+            ok(record->ClosingRecordNumber == 0, "Expected 0, got %ld\n", record->ClosingRecordNumber);
+            ok(record->StringOffset == record->UserSidOffset, "Expected offsets to be the same\n");
+            ok(record->UserSidLength == 0, "Expected 0, got %ld\n", record->UserSidLength);
+            ok(record->DataLength == 24, "Expected 24, got %ld\n", record->DataLength);
+            ok(record->DataOffset == record->UserSidOffset, "Expected offsets to be the same\n");
+
+            sourcenameA = (char *)(record + 1);
+            ok(!strcmp(sourcenameA, "EventLog"),
+                "Expected 'EventLog', got '%s'\n", sourcenameA);
+
+            computernameA = sourcenameA + sizeof("EventLog");
+            ok(!_stricmp(computernameA, localcomputerA), "Expected '%s', got '%s'\n",
+                localcomputerA, computernameA);
+
+            size = sizeof(EVENTLOGRECORD) + sizeof("EventLog") + strlen(computernameA) + 1;
+            size = (size + 7) & ~7;
+            ok(record->DataOffset == size ||
+                broken(record->DataOffset == size - 1), /* win8 */
+                "Expected %ld, got %ld\n", size, record->DataOffset);
+
+            found = TRUE;
+        }
+        free(record);
+    }
+    todo_wine ok(found, "EventlogStarted event not found\n");
+    CloseEventLog(handle);
+    free(localcomputerA);
+
+    /* SEQUENTIAL | FORWARDS - dwRecordOffset is ignored */
+    handle = OpenEventLogW(0, L"System");
+    size = sizeof(EVENTLOGRECORD) + 128;
+    record = malloc(size);
+    todo_wine {
+    ret = read_record(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ, 100, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 1, "Expected 1, got %lu\n", record->RecordNumber);
+    ret = read_record(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ, 200, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 2, "Expected 2, got %lu\n", record->RecordNumber);
+
+    /* change direction sequentially */
+    ret = read_record(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_BACKWARDS_READ, 300, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 2, "Expected 2, got %lu\n", record->RecordNumber);
+    ret = read_record(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_BACKWARDS_READ, 400, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 1, "Expected 1, got %lu\n", record->RecordNumber);
+    }
+
+    /* changing how is an error */
+    SetLastError(0xdeadbeef);
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_BACKWARDS_READ, 0, &record, &size);
+    ok(!ret, "Expected failure\n");
+    todo_wine
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+    CloseEventLog(handle);
+
+    /* SEQUENTIAL | BACKWARDS - dwRecordOffset is ignored */
+    handle = OpenEventLogW(0, L"System");
+    count = 0xdeadbeef;
+    ret = GetNumberOfEventLogRecords(handle, &count);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    todo_wine
+    ok(count, "Zero records in log\n");
+
+    ret = read_record(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_BACKWARDS_READ, 100, &record, &size);
+    todo_wine
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == count, "Expected %lu, got %lu\n", count, record->RecordNumber);
+    ret = read_record(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_BACKWARDS_READ, 100, &record, &size);
+    todo_wine {
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == count - 1, "Expected %lu, got %lu\n", count - 1, record->RecordNumber);
+    }
+    CloseEventLog(handle);
+
+    handle = OpenEventLogW(0, L"System");
+    /* SEEK | FORWARDS */
+    /* bogus offset */
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_FORWARDS_READ, 0, &record, &size);
+    ok(!ret, "Expected failure\n");
+    todo_wine
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+
+    count = 0xdeadbeef;
+    ret = GetNumberOfEventLogRecords(handle, &count);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_FORWARDS_READ, count + 1, &record, &size);
+    ok(!ret, "Expected failure\n");
+    todo_wine
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+
+    todo_wine {
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_FORWARDS_READ, 2, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 2, "Expected 2, got %lu\n", record->RecordNumber);
+    /* skip one */
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_FORWARDS_READ, 4, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 4, "Expected 4, got %lu\n", record->RecordNumber);
+    /* seek an earlier one */
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_FORWARDS_READ, 3, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 3, "Expected 3, got %lu\n", record->RecordNumber);
+    /* change how */
+    ret = read_record(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ, 100, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 4 || broken(record->RecordNumber == 5) /* some win10 22h2 */,
+        "Expected 4, got %lu\n", record->RecordNumber);
+    /* change direction */
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_BACKWARDS_READ, 10, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 10, "Expected 10, got %lu\n", record->RecordNumber);
+    }
+    CloseEventLog(handle);
+
+    /* SEEK | BACKWARDS */
+    handle = OpenEventLogW(0, L"system");
+    /* bogus offset */
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_BACKWARDS_READ, 0, &record, &size);
+    ok(!ret, "Expected failure\n");
+    todo_wine
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", GetLastError());
+
+    todo_wine {
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_BACKWARDS_READ, 5, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 5, "Expected 5, got %lu\n", record->RecordNumber);
+    /* skip one */
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_BACKWARDS_READ, 3, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 3, "Expected 3, got %lu\n", record->RecordNumber);
+    /* seek a later one */
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_BACKWARDS_READ, 4, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 4, "Expected 4, got %lu\n", record->RecordNumber);
+    /* change how */
+    ret = read_record(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_BACKWARDS_READ, 100, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 3 || broken(record->RecordNumber == 2) /* some win10 22h2 */,
+        "Expected 3, got %lu\n", record->RecordNumber);
+    /* change direction */
+    ret = read_record(handle, EVENTLOG_SEEK_READ | EVENTLOG_FORWARDS_READ, 10, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 10, "Expected 10, got %lu\n", record->RecordNumber);
+    }
+    CloseEventLog(handle);
+
+    /* reading same log with different handles */
+    handle = OpenEventLogW(0, L"System");
+    handle2 = OpenEventLogW(0, L"SYSTEM");
+    todo_wine {
+    ret = read_record(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ, 0, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 1, "Expected 1, got %lu\n", record->RecordNumber);
+    ret = read_record(handle2, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ, 0, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(record->RecordNumber == 1, "Expected 1, got %lu\n", record->RecordNumber);
+    }
+    CloseEventLog(handle2);
+    CloseEventLog(handle);
+
+    /* using source name */
+    size2 = size;
+    record2 = malloc(size2);
+    handle = OpenEventLogW(0, L"System");
+    handle2 = OpenEventLogW(0, L"EventLog");
+    todo_wine {
+    ret = read_record(handle, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ, 0, &record, &size);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ret = read_record(handle2, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ, 0, &record2, &size2);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    }
+    ok(size == size2, "Expected %lu, got %lu\n", size, size2);
+    ok(!memcmp(record, record2, min(size, size2)), "Records miscompare\n");
+    count = 0xdeadbeef;
+    count2 = 0xdeadbeef;
+    ret = GetNumberOfEventLogRecords(handle, &count);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ret = GetNumberOfEventLogRecords(handle2, &count2);
+    ok(ret, "Expected success : %ld\n", GetLastError());
+    ok(count == count2, "Expected %lu, got %lu\n", count, count2);
+    CloseEventLog(handle2);
+    CloseEventLog(handle);
+
+    free(record2);
+    free(record);
 }
 
 START_TEST(eventlog)
@@ -1349,4 +1685,6 @@ START_TEST(eventlog)
 
     /* Trace tests */
     test_start_trace();
+
+    test_eventlog_start();
 }

@@ -42,7 +42,6 @@
  *      - get a better UI (replace the 'x' by real tick boxes in list view)
  *      - enhance visual feedback: the list is large, and it's hard to get the
  *        right line when clicking on rightmost column (trace for example)
- *      - get rid of printfs (error reporting) and use real message boxes
  *      - include the column width settings in the full column management scheme
  *      - use more global settings (like having a temporary on/off
  *        setting for a fixme:s or err:s
@@ -155,7 +154,7 @@ static int enum_channel(HANDLE hProcess, EnumChannelCB ce, void* user)
     while (ret && addr && ReadProcessMemory(hProcess, addr, &channel, sizeof(channel), NULL))
     {
         if (!channel.name[0]) break;
-        ret = ce(hProcess, addr, &channel, user);
+        if (channel.flags & (1 << __WINE_DBCL_INIT)) ret = ce(hProcess, addr, &channel, user);
         addr = (struct __wine_debug_channel *)addr + 1;
     }
     return 0;
@@ -177,10 +176,6 @@ static void DebugChannels_FillList(HWND hChannelLV)
 
 static void DebugChannels_OnCreate(HWND hwndDlg)
 {
-    static WCHAR fixmeW[] = {'F','i','x','m','e','\0'};
-    static WCHAR errW[]   = {'E','r','r','\0'};
-    static WCHAR warnW[]  = {'W','a','r','n','\0'};
-    static WCHAR traceW[] = {'T','r','a','c','e','\0'};
     HWND        hLV = GetDlgItem(hwndDlg, IDC_DEBUG_CHANNELS_LIST);
     LVCOLUMNW   lvc;
     WCHAR debug_channelW[255];
@@ -195,25 +190,25 @@ static void DebugChannels_OnCreate(HWND hwndDlg)
 
     lvc.mask = LVCF_FMT | LVCF_TEXT | LVCF_WIDTH;
     lvc.fmt = LVCFMT_CENTER;
-    lvc.pszText = fixmeW;
+    lvc.pszText = (WCHAR *)L"Fixme";
     lvc.cx = 55;
     SendMessageW(hLV, LVM_INSERTCOLUMNW, 1, (LPARAM) &lvc);
 
     lvc.mask = LVCF_FMT | LVCF_TEXT | LVCF_WIDTH;
     lvc.fmt = LVCFMT_CENTER;
-    lvc.pszText = errW;
+    lvc.pszText = (WCHAR *)L"Err";
     lvc.cx = 55;
     SendMessageW(hLV, LVM_INSERTCOLUMNW, 2, (LPARAM) &lvc);
 
     lvc.mask = LVCF_FMT | LVCF_TEXT | LVCF_WIDTH;
     lvc.fmt = LVCFMT_CENTER;
-    lvc.pszText = warnW;
+    lvc.pszText = (WCHAR *)L"Warn";
     lvc.cx = 55;
     SendMessageW(hLV, LVM_INSERTCOLUMNW, 3, (LPARAM) &lvc);
 
     lvc.mask = LVCF_FMT | LVCF_TEXT | LVCF_WIDTH;
     lvc.fmt = LVCFMT_CENTER;
-    lvc.pszText = traceW;
+    lvc.pszText = (WCHAR *)L"Trace";
     lvc.cx = 55;
     SendMessageW(hLV, LVM_INSERTCOLUMNW, 4, (LPARAM) &lvc);
 
@@ -260,7 +255,7 @@ static void DebugChannels_OnNotify(HWND hDlg, LPARAM lParam)
                     ListView_SetItemTextW(hChannelLV, lhti.iItem, lhti.iSubItem, val);
                 }
                 if (user.notdone)
-                    printf("Some channel instances weren't correctly set\n");
+                    MessageBoxA(NULL, "Some channel instances weren't correctly set", "Error", MB_OK | MB_ICONHAND);
             }
             CloseHandle(hProcess);
         }

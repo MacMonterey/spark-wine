@@ -20,9 +20,8 @@
 # define _WIN32_WINNT 0x0600    /* For InitOnceExecuteOnce(). */
 #endif
 
-#include "vkd3d_debug.h"
+#include "vkd3d_common.h"
 
-#include <assert.h>
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -31,6 +30,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <unistd.h>
 #ifdef HAVE_PTHREAD_H
 #include <pthread.h>
 #endif
@@ -40,15 +40,16 @@
 #define VKD3D_DEBUG_BUFFER_COUNT 64
 #define VKD3D_DEBUG_BUFFER_SIZE 512
 
-extern const char *vkd3d_dbg_env_name;
+extern const char *const vkd3d_dbg_env_name;
 
-static const char *debug_level_names[] =
+static const char *const debug_level_names[] =
 {
-    /* VKD3D_DBG_LEVEL_NONE  */ "none",
-    /* VKD3D_DBG_LEVEL_ERR   */ "err",
-    /* VKD3D_DBG_LEVEL_FIXME */ "fixme",
-    /* VKD3D_DBG_LEVEL_WARN  */ "warn",
-    /* VKD3D_DBG_LEVEL_TRACE */ "trace",
+    [VKD3D_DBG_LEVEL_NONE ] =   "none",
+    [VKD3D_DBG_LEVEL_MESSAGE] = "message",
+    [VKD3D_DBG_LEVEL_ERR  ] =   "err",
+    [VKD3D_DBG_LEVEL_FIXME] =   "fixme",
+    [VKD3D_DBG_LEVEL_WARN ] =   "warn",
+    [VKD3D_DBG_LEVEL_TRACE] =   "trace",
 };
 
 enum vkd3d_dbg_level vkd3d_dbg_get_level(void)
@@ -96,6 +97,17 @@ static void vkd3d_dbg_output(const char *fmt, ...)
     va_end(args);
 }
 
+#if HAVE_PTHREAD_THREADID_NP
+static uint64_t get_pthread_threadid(void)
+{
+    uint64_t thread_id;
+
+    pthread_threadid_np(NULL, &thread_id);
+
+    return thread_id;
+}
+#endif
+
 void vkd3d_dbg_printf(enum vkd3d_dbg_level level, const char *function, const char *fmt, ...)
 {
     va_list args;
@@ -103,9 +115,15 @@ void vkd3d_dbg_printf(enum vkd3d_dbg_level level, const char *function, const ch
     if (vkd3d_dbg_get_level() < level)
         return;
 
-    assert(level < ARRAY_SIZE(debug_level_names));
-
+#ifdef _WIN32
+    vkd3d_dbg_output("vkd3d:%04lx:%s:%s ", GetCurrentThreadId(), debug_level_names[level], function);
+#elif HAVE_GETTID
+    vkd3d_dbg_output("vkd3d:%u:%s:%s ", gettid(), debug_level_names[level], function);
+#elif HAVE_PTHREAD_THREADID_NP
+    vkd3d_dbg_output("vkd3d:%"PRIu64":%s:%s ", get_pthread_threadid(), debug_level_names[level], function);
+#else
     vkd3d_dbg_output("vkd3d:%s:%s ", debug_level_names[level], function);
+#endif
     va_start(args, fmt);
     vkd3d_dbg_voutput(fmt, args);
     va_end(args);
@@ -119,10 +137,10 @@ void vkd3d_dbg_set_log_callback(PFN_vkd3d_log callback)
 static char *get_buffer(void)
 {
     static char buffers[VKD3D_DEBUG_BUFFER_COUNT][VKD3D_DEBUG_BUFFER_SIZE];
-    static LONG buffer_index;
-    LONG current_index;
+    static unsigned int buffer_index;
+    unsigned int current_index;
 
-    current_index = InterlockedIncrement(&buffer_index) % ARRAY_SIZE(buffers);
+    current_index = vkd3d_atomic_increment_u32(&buffer_index) % ARRAY_SIZE(buffers);
     return buffers[current_index];
 }
 

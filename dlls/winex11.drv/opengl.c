@@ -38,6 +38,8 @@
 #include <sys/un.h>
 #endif
 
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
 #include "x11drv.h"
 #include "xcomposite.h"
 #include "winternl.h"
@@ -48,8 +50,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(wgl);
 WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
-#include "wine/wgl.h"
-#include "wine/wgl_driver.h"
+#include "wine/opengl_driver.h"
 
 typedef struct __GLXcontextRec *GLXContext;
 typedef struct __GLXFBConfigRec *GLXFBConfig;
@@ -184,7 +185,7 @@ static char wglExtensions[4096];
 static int glxVersion[2];
 static int glx_opcode;
 
-struct wgl_pixel_format
+struct glx_pixel_format
 {
     GLXFBConfig fbconfig;
     XVisualInfo *visual;
@@ -199,13 +200,12 @@ struct wgl_context
     BOOL has_been_current;
     BOOL sharing;
     BOOL gl3_context;
-    const struct wgl_pixel_format *fmt;
+    const struct glx_pixel_format *fmt;
     int numAttribs; /* This is needed for delaying wglCreateContextAttribsARB */
     int attribList[16]; /* This is needed for delaying wglCreateContextAttribsARB */
     GLXContext ctx;
     struct gl_drawable *drawables[2];
     struct gl_drawable *new_drawables[2];
-    BOOL refresh_drawables;
     struct list entry;
 };
 
@@ -222,31 +222,29 @@ struct gl_drawable
 {
     LONG                           ref;          /* reference count */
     enum dc_gl_type                type;         /* type of GL surface */
+    HWND                           hwnd;
+    RECT                           rect;         /* current size of the GL drawable */
     GLXDrawable                    drawable;     /* drawable for rendering with GL */
     Window                         window;       /* window if drawable is a GLXWindow */
+    Colormap                       colormap;     /* colormap for the client window */
     Pixmap                         pixmap;       /* base pixmap if drawable is a GLXPixmap */
-    const struct wgl_pixel_format *format;       /* pixel format for the drawable */
-    SIZE                           pixmap_size;  /* pixmap size for GLXPixmap drawables */
+    const struct glx_pixel_format *format;       /* pixel format for the drawable */
     int                            swap_interval;
     BOOL                           refresh_swap_interval;
     BOOL                           mutable_pf;
+    HDC                            hdc_src;
+    HDC                            hdc_dst;
 };
 
 struct wgl_pbuffer
 {
     struct gl_drawable *gl;
-    const struct wgl_pixel_format* fmt;
+    const struct glx_pixel_format* fmt;
     int        width;
     int        height;
-    int*       attribList;
-    int        use_render_texture; /* This is also the internal texture format */
-    int        texture_bind_target;
-    int        texture_bpp;
+    int        pixel_format;
     GLint      texture_format;
     GLuint     texture_target;
-    GLenum     texture_type;
-    GLuint     texture;
-    int        texture_level;
     GLXContext tmp_context;
     GLXContext prev_context;
     struct list entry;
@@ -267,9 +265,8 @@ static XContext gl_pbuffer_context;
 
 static struct list context_list = LIST_INIT( context_list );
 static struct list pbuffer_list = LIST_INIT( pbuffer_list );
-static struct wgl_pixel_format *pixel_formats;
+static struct glx_pixel_format *pixel_formats;
 static int nb_pixel_formats, nb_onscreen_formats;
-static BOOL use_render_texture_emulation = TRUE;
 
 /* Selects the preferred GLX swap control method for use by wglSwapIntervalEXT */
 static enum glx_swap_control_method swap_control_method = GLX_SWAP_CONTROL_NONE;
@@ -283,11 +280,6 @@ static const BOOL is_win64 = sizeof(void *) > sizeof(int);
 
 static struct opengl_funcs opengl_funcs;
 
-#define USE_GL_FUNC(name) #name,
-static const char *opengl_func_names[] = { ALL_WGL_FUNCS };
-#undef USE_GL_FUNC
-
-static void X11DRV_WineGL_LoadExtensions(void);
 static void init_pixel_formats( Display *display );
 static BOOL glxRequireVersion(int requiredVersion);
 
@@ -320,9 +312,6 @@ static void dump_PIXELFORMATDESCRIPTOR(const PIXELFORMATDESCRIPTOR *ppfd) {
 #undef TEST_AND_DUMP
   TRACE("\n");
 }
-
-#define PUSH1(attribs,att)        do { attribs[nAttribs++] = (att); } while (0)
-#define PUSH2(attribs,att,value)  do { attribs[nAttribs++] = (att); attribs[nAttribs++] = (value); } while(0)
 
 /* GLX 1.0 */
 static XVisualInfo* (*pglXChooseVisual)( Display *dpy, int screen, int *attribList );
@@ -467,9 +456,9 @@ static BOOL X11DRV_WineGL_InitOpenglInfo(void)
                         "installed correctly\n", is_win64 ? "64-bit" : "32-bit" );
         goto done;
     }
-    gl_renderer = (const char *)opengl_funcs.gl.p_glGetString(GL_RENDERER);
-    gl_version  = (const char *)opengl_funcs.gl.p_glGetString(GL_VERSION);
-    str = (const char *) opengl_funcs.gl.p_glGetString(GL_EXTENSIONS);
+    gl_renderer = (const char *)opengl_funcs.p_glGetString(GL_RENDERER);
+    gl_version  = (const char *)opengl_funcs.p_glGetString(GL_VERSION);
+    str = (const char *) opengl_funcs.p_glGetString(GL_EXTENSIONS);
     glExtensions = malloc( strlen(str) + sizeof(legacy_extensions) );
     strcpy(glExtensions, str);
     strcat(glExtensions, legacy_extensions);
@@ -536,11 +525,20 @@ done:
 }
 
 static void *opengl_handle;
+static const struct opengl_driver_funcs x11drv_driver_funcs;
 
-static void init_opengl(void)
+/**********************************************************************
+ *           X11DRV_OpenglInit
+ */
+UINT X11DRV_OpenGLInit( UINT version, struct opengl_funcs **funcs, const struct opengl_driver_funcs **driver_funcs )
 {
     int error_base, event_base;
-    unsigned int i;
+
+    if (version != WINE_OPENGL_DRIVER_VERSION)
+    {
+        ERR( "version mismatch, opengl32 wants %u but driver has %u\n", version, WINE_OPENGL_DRIVER_VERSION );
+        return STATUS_INVALID_PARAMETER;
+    }
 
     /* No need to load any other libraries as according to the ABI, libGL should be self-sufficient
        and include all dependencies */
@@ -549,21 +547,21 @@ static void init_opengl(void)
     {
         ERR( "Failed to load libGL: %s\n", dlerror() );
         ERR( "OpenGL support is disabled.\n");
-        return;
+        return STATUS_NOT_SUPPORTED;
     }
 
-    for (i = 0; i < ARRAY_SIZE( opengl_func_names ); i++)
-    {
-        if (!(((void **)&opengl_funcs.gl)[i] = dlsym( opengl_handle, opengl_func_names[i] )))
-        {
-            ERR( "%s not found in libGL, disabling OpenGL.\n", opengl_func_names[i] );
-            goto failed;
+#define USE_GL_FUNC(func) \
+        if (!(opengl_funcs.p_##func = dlsym( opengl_handle, #func ))) \
+        { \
+            ERR( "%s not found in libGL, disabling OpenGL.\n", #func ); \
+            goto failed; \
         }
-    }
+    ALL_GL_FUNCS
+#undef USE_GL_FUNC
 
     /* redirect some standard OpenGL functions */
 #define REDIRECT(func) \
-    do { p##func = opengl_funcs.gl.p_##func; opengl_funcs.gl.p_##func = w##func; } while(0)
+    do { p##func = opengl_funcs.p_##func; opengl_funcs.p_##func = w##func; } while(0)
     REDIRECT( glFinish );
     REDIRECT( glFlush );
     REDIRECT( glGetString );
@@ -715,20 +713,16 @@ static void init_opengl(void)
         pglXSwapBuffersMscOML = pglXGetProcAddressARB( (const GLubyte *)"glXSwapBuffersMscOML" );
     }
 
-    X11DRV_WineGL_LoadExtensions();
     init_pixel_formats( gdi_display );
-    return;
+
+    *funcs = &opengl_funcs;
+    *driver_funcs = &x11drv_driver_funcs;
+    return STATUS_SUCCESS;
 
 failed:
     dlclose(opengl_handle);
     opengl_handle = NULL;
-}
-
-static BOOL has_opengl(void)
-{
-    static pthread_once_t init_once = PTHREAD_ONCE_INIT;
-
-    return !pthread_once( &init_once, init_opengl );
+    return STATUS_NOT_SUPPORTED;
 }
 
 static const char *debugstr_fbconfig( GLXFBConfig fbconfig )
@@ -740,224 +734,6 @@ static const char *debugstr_fbconfig( GLXFBConfig fbconfig )
     pglXGetFBConfigAttrib( gdi_display, fbconfig, GLX_VISUAL_ID, &visual );
     pglXGetFBConfigAttrib( gdi_display, fbconfig, GLX_DRAWABLE_TYPE, &drawable );
     return wine_dbg_sprintf( "fbconfig %#x visual id %#x drawable type %#x", id, visual, drawable );
-}
-
-static int ConvertAttribWGLtoGLX(const int* iWGLAttr, int* oGLXAttr, struct wgl_pbuffer* pbuf) {
-  int nAttribs = 0;
-  unsigned cur = 0; 
-  int attr, pop;
-  int drawattrib = 0;
-  int nvfloatattrib = GLX_DONT_CARE;
-  int pixelattrib = GLX_DONT_CARE;
-
-  /* The list of WGL attributes is allowed to be NULL. We don't return here for NULL
-   * because we need to do fixups for GLX_DRAWABLE_TYPE/GLX_RENDER_TYPE/GLX_FLOAT_COMPONENTS_NV. */
-  while (iWGLAttr && 0 != iWGLAttr[cur]) {
-    attr = iWGLAttr[cur];
-    TRACE("pAttr[%d] = %x\n", cur, attr);
-    pop = iWGLAttr[++cur];
-
-    switch (attr) {
-    case WGL_AUX_BUFFERS_ARB:
-      PUSH2(oGLXAttr, GLX_AUX_BUFFERS, pop);
-      TRACE("pAttr[%d] = GLX_AUX_BUFFERS: %d\n", cur, pop);
-      break;
-    case WGL_COLOR_BITS_ARB:
-      PUSH2(oGLXAttr, GLX_BUFFER_SIZE, pop);
-      TRACE("pAttr[%d] = GLX_BUFFER_SIZE: %d\n", cur, pop);
-      break;
-    case WGL_BLUE_BITS_ARB:
-      PUSH2(oGLXAttr, GLX_BLUE_SIZE, pop);
-      TRACE("pAttr[%d] = GLX_BLUE_SIZE: %d\n", cur, pop);
-      break;
-    case WGL_RED_BITS_ARB:
-      PUSH2(oGLXAttr, GLX_RED_SIZE, pop);
-      TRACE("pAttr[%d] = GLX_RED_SIZE: %d\n", cur, pop);
-      break;
-    case WGL_GREEN_BITS_ARB:
-      PUSH2(oGLXAttr, GLX_GREEN_SIZE, pop);
-      TRACE("pAttr[%d] = GLX_GREEN_SIZE: %d\n", cur, pop);
-      break;
-    case WGL_ALPHA_BITS_ARB:
-      PUSH2(oGLXAttr, GLX_ALPHA_SIZE, pop);
-      TRACE("pAttr[%d] = GLX_ALPHA_SIZE: %d\n", cur, pop);
-      break;
-    case WGL_DEPTH_BITS_ARB:
-      PUSH2(oGLXAttr, GLX_DEPTH_SIZE, pop);
-      TRACE("pAttr[%d] = GLX_DEPTH_SIZE: %d\n", cur, pop);
-      break;
-    case WGL_STENCIL_BITS_ARB:
-      PUSH2(oGLXAttr, GLX_STENCIL_SIZE, pop);
-      TRACE("pAttr[%d] = GLX_STENCIL_SIZE: %d\n", cur, pop);
-      break;
-    case WGL_DOUBLE_BUFFER_ARB:
-      PUSH2(oGLXAttr, GLX_DOUBLEBUFFER, pop);
-      TRACE("pAttr[%d] = GLX_DOUBLEBUFFER: %d\n", cur, pop);
-      break;
-    case WGL_STEREO_ARB:
-      PUSH2(oGLXAttr, GLX_STEREO, pop);
-      TRACE("pAttr[%d] = GLX_STEREO: %d\n", cur, pop);
-      break;
-
-    case WGL_PIXEL_TYPE_ARB:
-      TRACE("pAttr[%d] = WGL_PIXEL_TYPE_ARB: %d\n", cur, pop);
-      switch (pop) {
-      case WGL_TYPE_COLORINDEX_ARB: pixelattrib = GLX_COLOR_INDEX_BIT; break ;
-      case WGL_TYPE_RGBA_ARB: pixelattrib = GLX_RGBA_BIT; break ;
-      /* This is the same as WGL_TYPE_RGBA_FLOAT_ATI but the GLX constants differ, only the ARB GLX one is widely supported so use that */
-      case WGL_TYPE_RGBA_FLOAT_ATI: pixelattrib = GLX_RGBA_FLOAT_BIT; break ;
-      case WGL_TYPE_RGBA_UNSIGNED_FLOAT_EXT: pixelattrib = GLX_RGBA_UNSIGNED_FLOAT_BIT_EXT; break ;
-      default:
-        ERR("unexpected PixelType(%x)\n", pop);	
-      }
-      break;
-
-    case WGL_SUPPORT_GDI_ARB:
-      /* This flag is set in a pixel format */
-      TRACE("pAttr[%d] = WGL_SUPPORT_GDI_ARB: %d\n", cur, pop);
-      break;
-
-    case WGL_DRAW_TO_BITMAP_ARB:
-      /* This flag is set in a pixel format */
-      TRACE("pAttr[%d] = WGL_DRAW_TO_BITMAP_ARB: %d\n", cur, pop);
-      break;
-
-    case WGL_DRAW_TO_WINDOW_ARB:
-      TRACE("pAttr[%d] = WGL_DRAW_TO_WINDOW_ARB: %d\n", cur, pop);
-      /* GLX_DRAWABLE_TYPE flags need to be OR'd together. See below. */
-      if (pop) {
-        drawattrib |= GLX_WINDOW_BIT;
-      }
-      break;
-
-    case WGL_DRAW_TO_PBUFFER_ARB:
-      TRACE("pAttr[%d] = WGL_DRAW_TO_PBUFFER_ARB: %d\n", cur, pop);
-      /* GLX_DRAWABLE_TYPE flags need to be OR'd together. See below. */
-      if (pop) {
-        drawattrib |= GLX_PBUFFER_BIT;
-      }
-      break;
-
-    case WGL_ACCELERATION_ARB:
-      /* This flag is set in a pixel format */
-      TRACE("pAttr[%d] = WGL_ACCELERATION_ARB: %d\n", cur, pop);
-      break;
-
-    case WGL_SUPPORT_OPENGL_ARB:
-      /** nothing to do, if we are here, supposing support Accelerated OpenGL */
-      TRACE("pAttr[%d] = WGL_SUPPORT_OPENGL_ARB: %d\n", cur, pop);
-      break;
-
-    case WGL_SWAP_METHOD_ARB:
-      TRACE("pAttr[%d] = WGL_SWAP_METHOD_ARB: %#x\n", cur, pop);
-      if (has_swap_method)
-      {
-          switch (pop)
-          {
-          case WGL_SWAP_EXCHANGE_ARB:
-              pop = GLX_SWAP_EXCHANGE_OML;
-              break;
-          case WGL_SWAP_COPY_ARB:
-              pop = GLX_SWAP_COPY_OML;
-              break;
-          case WGL_SWAP_UNDEFINED_ARB:
-              pop = GLX_SWAP_UNDEFINED_OML;
-              break;
-          default:
-              ERR("Unexpected swap method %#x.\n", pop);
-              pop = GLX_DONT_CARE;
-          }
-          PUSH2(oGLXAttr, GLX_SWAP_METHOD_OML, pop);
-      }
-      else
-      {
-          WARN("GLX_OML_swap_method not supported, ignoring attribute.\n");
-      }
-      break;
-
-    case WGL_PBUFFER_LARGEST_ARB:
-      PUSH2(oGLXAttr, GLX_LARGEST_PBUFFER, pop);
-      TRACE("pAttr[%d] = GLX_LARGEST_PBUFFER: %x\n", cur, pop);
-      break;
-
-    case WGL_SAMPLE_BUFFERS_ARB:
-      PUSH2(oGLXAttr, GLX_SAMPLE_BUFFERS_ARB, pop);
-      TRACE("pAttr[%d] = GLX_SAMPLE_BUFFERS_ARB: %x\n", cur, pop);
-      break;
-
-    case WGL_SAMPLES_ARB:
-      PUSH2(oGLXAttr, GLX_SAMPLES_ARB, pop);
-      TRACE("pAttr[%d] = GLX_SAMPLES_ARB: %x\n", cur, pop);
-      break;
-
-    case WGL_TEXTURE_FORMAT_ARB:
-    case WGL_TEXTURE_TARGET_ARB:
-    case WGL_MIPMAP_TEXTURE_ARB:
-      TRACE("WGL_render_texture Attributes: %x as %x\n", iWGLAttr[cur - 1], iWGLAttr[cur]);
-      if (NULL == pbuf) {
-        ERR("trying to use GLX_Pbuffer Attributes without Pbuffer (was %x)\n", iWGLAttr[cur]);
-      }
-      if (!use_render_texture_emulation) {
-        if (WGL_NO_TEXTURE_ARB != pop) {
-          ERR("trying to use WGL_render_texture Attributes without support (was %x)\n", iWGLAttr[cur]);
-          return -1; /** error: don't support it */
-        } else {
-          drawattrib |= GLX_PBUFFER_BIT;
-        }
-      }
-      break ;
-    case WGL_FLOAT_COMPONENTS_NV:
-      nvfloatattrib = pop;
-      TRACE("pAttr[%d] = WGL_FLOAT_COMPONENTS_NV: %x\n", cur, nvfloatattrib);
-      break ;
-    case WGL_BIND_TO_TEXTURE_DEPTH_NV:
-    case WGL_BIND_TO_TEXTURE_RGB_ARB:
-    case WGL_BIND_TO_TEXTURE_RGBA_ARB:
-    case WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_R_NV:
-    case WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RG_NV:
-    case WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RGB_NV:
-    case WGL_BIND_TO_TEXTURE_RECTANGLE_FLOAT_RGBA_NV:
-      /** cannot be converted, see direct handling on 
-       *   - wglGetPixelFormatAttribivARB
-       *  TODO: wglChoosePixelFormat
-       */
-      break ;
-    case WGL_FRAMEBUFFER_SRGB_CAPABLE_EXT:
-      PUSH2(oGLXAttr, GLX_FRAMEBUFFER_SRGB_CAPABLE_EXT, pop);
-      TRACE("pAttr[%d] = GLX_FRAMEBUFFER_SRGB_CAPABLE_EXT: %x\n", cur, pop);
-      break ;
-
-    case WGL_TYPE_RGBA_UNSIGNED_FLOAT_EXT:
-      PUSH2(oGLXAttr, GLX_RGBA_UNSIGNED_FLOAT_TYPE_EXT, pop);
-      TRACE("pAttr[%d] = GLX_RGBA_UNSIGNED_FLOAT_TYPE_EXT: %x\n", cur, pop);
-      break ;
-    default:
-      FIXME("unsupported %x WGL Attribute\n", attr);
-      break;
-    }
-    ++cur;
-  }
-
-  /* By default glXChooseFBConfig defaults to GLX_WINDOW_BIT. wglChoosePixelFormatARB searches through
-   * all formats. Unless drawattrib is set to a non-zero value override it with GLX_DONT_CARE, so that
-   * pixmap and pbuffer formats appear as well. */
-  if (!drawattrib) drawattrib = GLX_DONT_CARE;
-  PUSH2(oGLXAttr, GLX_DRAWABLE_TYPE, drawattrib);
-  TRACE("pAttr[?] = GLX_DRAWABLE_TYPE: %#x\n", drawattrib);
-
-  /* By default glXChooseFBConfig uses GLX_RGBA_BIT as the default value. Since wglChoosePixelFormatARB
-   * searches in all formats we have to do the same. For this reason we set GLX_RENDER_TYPE to
-   * GLX_DONT_CARE unless it is overridden. */
-  PUSH2(oGLXAttr, GLX_RENDER_TYPE, pixelattrib);
-  TRACE("pAttr[?] = GLX_RENDER_TYPE: %#x\n", pixelattrib);
-
-  /* Set GLX_FLOAT_COMPONENTS_NV all the time */
-  if (has_extension(glxExtensions, "GLX_NV_float_buffer")) {
-    PUSH2(oGLXAttr, GLX_FLOAT_COMPONENTS_NV, nvfloatattrib);
-    TRACE("pAttr[?] = GLX_FLOAT_COMPONENTS_NV: %#x\n", nvfloatattrib);
-  }
-
-  return nAttribs;
 }
 
 static int get_render_type_from_fbconfig(Display *display, GLXFBConfig fbconfig)
@@ -999,7 +775,7 @@ static BOOL check_fbconfig_bitmap_capability(Display *display, GLXFBConfig fbcon
 
 static void init_pixel_formats( Display *display )
 {
-    struct wgl_pixel_format *list;
+    struct glx_pixel_format *list;
     int size = 0, onscreen_size = 0;
     int fmt_id, nCfgs, i, run, bmp_formats;
     GLXFBConfig* cfgs;
@@ -1118,17 +894,12 @@ static inline BOOL is_onscreen_pixel_format( int format )
     return format > 0 && format <= nb_onscreen_formats;
 }
 
-static inline int pixel_format_index( const struct wgl_pixel_format *format )
-{
-    return format - pixel_formats + 1;
-}
-
 /* GLX can advertise dozens of different pixelformats including offscreen and onscreen ones.
  * In our WGL implementation we only support a subset of these formats namely the format of
  * Wine's main visual and offscreen formats (if they are available).
  * This function converts a WGL format to its corresponding GLX one.
  */
-static const struct wgl_pixel_format *get_pixel_format(Display *display, int iPixelFormat, BOOL AllowOffscreen)
+static const struct glx_pixel_format *get_pixel_format(Display *display, int iPixelFormat, BOOL AllowOffscreen)
 {
     /* Check if the pixelformat is valid. Note that it is legal to pass an invalid
      * iPixelFormat in case of probing the number of pixelformats.
@@ -1158,7 +929,8 @@ static void release_gl_drawable( struct gl_drawable *gl )
     case DC_GL_CHILD_WIN:
         TRACE( "destroying %lx drawable %lx\n", gl->window, gl->drawable );
         pglXDestroyWindow( gdi_display, gl->drawable );
-        XDestroyWindow( gdi_display, gl->window );
+        destroy_client_window( gl->hwnd, gl->window );
+        XFreeColormap( gdi_display, gl->colormap );
         break;
     case DC_GL_PIXMAP_WIN:
         TRACE( "destroying pixmap %lx drawable %lx\n", gl->pixmap, gl->drawable );
@@ -1172,6 +944,8 @@ static void release_gl_drawable( struct gl_drawable *gl )
     default:
         break;
     }
+    if (gl->hdc_src) NtGdiDeleteObjectApp( gl->hdc_src );
+    if (gl->hdc_dst) NtGdiDeleteObjectApp( gl->hdc_dst );
     free( gl );
 }
 
@@ -1201,18 +975,19 @@ static void mark_drawable_dirty( struct gl_drawable *old, struct gl_drawable *ne
 static inline void sync_context(struct wgl_context *context)
 {
     BOOL refresh = FALSE;
+    struct gl_drawable *old[2] = { NULL };
 
     pthread_mutex_lock( &context_mutex );
     if (context->new_drawables[0])
     {
-        release_gl_drawable( context->drawables[0] );
+        old[0] = context->drawables[0];
         context->drawables[0] = context->new_drawables[0];
         context->new_drawables[0] = NULL;
         refresh = TRUE;
     }
     if (context->new_drawables[1])
     {
-        release_gl_drawable( context->drawables[1] );
+        old[1] = context->drawables[1];
         context->drawables[1] = context->new_drawables[1];
         context->new_drawables[1] = NULL;
         refresh = TRUE;
@@ -1224,6 +999,8 @@ static inline void sync_context(struct wgl_context *context)
                                    context->drawables[1]->drawable, context->ctx);
         else
             pglXMakeCurrent(gdi_display, context->drawables[0]->drawable, context->ctx);
+        release_gl_drawable( old[0] );
+        release_gl_drawable( old[1] );
     }
     pthread_mutex_unlock( &context_mutex );
 }
@@ -1299,19 +1076,20 @@ static GLXContext create_glxcontext(Display *display, struct wgl_context *contex
     return ctx;
 }
 
-
 /***********************************************************************
  *              create_gl_drawable
  */
-static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct wgl_pixel_format *format, BOOL known_child,
+static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct glx_pixel_format *format, BOOL known_child,
                                                BOOL mutable_pf )
 {
+    static const WCHAR displayW[] = {'D','I','S','P','L','A','Y'};
+    UNICODE_STRING device_str = RTL_CONSTANT_STRING(displayW);
     struct gl_drawable *gl, *prev;
     XVisualInfo *visual = format->visual;
     RECT rect;
     int width, height;
 
-    NtUserGetClientRect( hwnd, &rect );
+    NtUserGetClientRect( hwnd, &rect, NtUserGetDpiForWindow( hwnd ) );
     width  = min( max( 1, rect.right ), 65535 );
     height = min( max( 1, rect.bottom ), 65535 );
 
@@ -1324,13 +1102,17 @@ static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct wgl_pixel
     gl->refresh_swap_interval = TRUE;
     gl->format = format;
     gl->ref = 1;
+    gl->hwnd = hwnd;
+    gl->rect = rect;
     gl->mutable_pf = mutable_pf;
 
-    if (!known_child && !NtUserGetWindowRelative( hwnd, GW_CHILD ) &&
-        NtUserGetAncestor( hwnd, GA_PARENT ) == NtUserGetDesktopWindow())  /* childless top-level window */
+    if (!needs_offscreen_rendering( hwnd, known_child ))
     {
         gl->type = DC_GL_WINDOW;
-        gl->window = create_client_window( hwnd, visual );
+        gl->colormap = XCreateColormap( gdi_display, get_dummy_parent(), visual->visual,
+                                        (visual->class == PseudoColor || visual->class == GrayScale ||
+                                         visual->class == DirectColor) ? AllocAll : AllocNone );
+        gl->window = create_client_window( hwnd, visual, gl->colormap );
         if (gl->window)
             gl->drawable = pglXCreateWindow( gdi_display, gl->format->fbconfig, gl->window, NULL );
         TRACE( "%p created client %lx drawable %lx\n", hwnd, gl->window, gl->drawable );
@@ -1339,12 +1121,28 @@ static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct wgl_pixel
     else if(usexcomposite)
     {
         gl->type = DC_GL_CHILD_WIN;
-        gl->window = create_client_window( hwnd, visual );
+        gl->colormap = XCreateColormap( gdi_display, get_dummy_parent(), visual->visual,
+                                        (visual->class == PseudoColor || visual->class == GrayScale ||
+                                         visual->class == DirectColor) ? AllocAll : AllocNone );
+        gl->window = create_client_window( hwnd, visual, gl->colormap );
         if (gl->window)
         {
+            struct x11drv_win_data *data;
+
             gl->drawable = pglXCreateWindow( gdi_display, gl->format->fbconfig, gl->window, NULL );
             pXCompositeRedirectWindow( gdi_display, gl->window, CompositeRedirectManual );
+
+            if ((data = get_win_data( hwnd )))
+            {
+                detach_client_window( data, gl->window );
+                release_win_data( data );
+            }
+
+            gl->hdc_dst = NtGdiOpenDCW( &device_str, NULL, NULL, 0, TRUE, NULL, NULL, NULL );
+            gl->hdc_src = NtGdiOpenDCW( &device_str, NULL, NULL, 0, TRUE, NULL, NULL, NULL );
+            set_dc_drawable( gl->hdc_src, gl->window, &gl->rect, IncludeInferiors );
         }
+
         TRACE( "%p created child %lx drawable %lx\n", hwnd, gl->window, gl->drawable );
     }
 #endif
@@ -1362,8 +1160,10 @@ static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct wgl_pixel
         {
             gl->drawable = pglXCreatePixmap( gdi_display, gl->format->fbconfig, gl->pixmap, NULL );
             if (!gl->drawable) XFreePixmap( gdi_display, gl->pixmap );
-            gl->pixmap_size.cx = width;
-            gl->pixmap_size.cy = height;
+
+            gl->hdc_dst = NtGdiOpenDCW( &device_str, NULL, NULL, 0, TRUE, NULL, NULL, NULL );
+            gl->hdc_src = NtGdiOpenDCW( &device_str, NULL, NULL, 0, TRUE, NULL, NULL, NULL );
+            set_dc_drawable( gl->hdc_src, gl->pixmap, &gl->rect, IncludeInferiors );
         }
     }
 
@@ -1384,68 +1184,73 @@ static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct wgl_pixel
     return gl;
 }
 
-
-/***********************************************************************
- *              set_win_format
- */
-static BOOL set_win_format( HWND hwnd, const struct wgl_pixel_format *format, BOOL internal )
+static BOOL x11drv_set_pixel_format( HWND hwnd, int old_format, int new_format, BOOL internal )
 {
-    struct gl_drawable *gl;
-
-    if (!format->visual) return FALSE;
-
-    if (!(gl = create_gl_drawable( hwnd, format, FALSE, internal ))) return FALSE;
-
-    TRACE( "created GL drawable %lx for win %p %s\n",
-           gl->drawable, hwnd, debugstr_fbconfig( format->fbconfig ));
-
-    XFlush( gdi_display );
-    release_gl_drawable( gl );
-
-    win32u_set_window_pixel_format( hwnd, pixel_format_index( format ), internal );
-    return TRUE;
-}
-
-
-static BOOL set_pixel_format( HDC hdc, int format, BOOL internal )
-{
-    const struct wgl_pixel_format *fmt;
-    int value;
-    HWND hwnd = NtUserWindowFromDC( hdc );
-    int prev;
-
-    TRACE("(%p,%d)\n", hdc, format);
-
-    if (!hwnd || hwnd == NtUserGetDesktopWindow())
-    {
-        WARN( "not a valid window DC %p/%p\n", hdc, hwnd );
-        return FALSE;
-    }
-
-    fmt = get_pixel_format(gdi_display, format, FALSE /* Offscreen */);
-    if (!fmt)
-    {
-        ERR( "Invalid format %d\n", format );
-        return FALSE;
-    }
-
-    pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_DRAWABLE_TYPE, &value);
-    if (!(value & GLX_WINDOW_BIT))
-    {
-        WARN( "Pixel format %d is not compatible for window rendering\n", format );
-        return FALSE;
-    }
+    const struct glx_pixel_format *fmt;
+    struct gl_drawable *old, *gl;
 
     /* Even for internal pixel format fail setting it if the app has already set a
      * different pixel format. Let wined3d create a backup GL context instead.
      * Switching pixel format involves drawable recreation and is much more expensive
      * than blitting from backup context. */
-    if ((prev = win32u_get_window_pixel_format( hwnd )))
-        return prev == format;
+    if (old_format) return old_format == new_format;
 
-    return set_win_format( hwnd, fmt, internal );
+    if (!(fmt = get_pixel_format(gdi_display, new_format, FALSE /* Offscreen */)))
+    {
+        ERR( "Invalid format %d\n", new_format );
+        return FALSE;
+    }
+
+    if (!(old = get_gl_drawable( hwnd, 0 )) || old->format != fmt)
+    {
+        if (!(gl = create_gl_drawable( hwnd, fmt, FALSE, internal )))
+        {
+            release_gl_drawable( old );
+            return FALSE;
+        }
+
+        TRACE( "created GL drawable %lx for win %p %s\n",
+               gl->drawable, hwnd, debugstr_fbconfig( fmt->fbconfig ));
+
+        if (old)
+            mark_drawable_dirty( old, gl );
+
+        XFlush( gdi_display );
+        release_gl_drawable( gl );
+    }
+
+    release_gl_drawable( old );
+    return TRUE;
 }
 
+static void update_gl_drawable_size( struct gl_drawable *gl )
+{
+    struct gl_drawable *new_gl;
+    XWindowChanges changes;
+    RECT rect;
+
+    NtUserGetClientRect( gl->hwnd, &rect, NtUserGetDpiForWindow( gl->hwnd ) );
+    if (EqualRect( &rect, &gl->rect )) return;
+
+    changes.width  = min( max( 1, rect.right ), 65535 );
+    changes.height = min( max( 1, rect.bottom ), 65535 );
+
+    switch (gl->type)
+    {
+    case DC_GL_WINDOW:
+    case DC_GL_CHILD_WIN:
+        gl->rect = rect;
+        XConfigureWindow( gdi_display, gl->window, CWWidth | CWHeight, &changes );
+        set_dc_drawable( gl->hdc_src, gl->window, &gl->rect, IncludeInferiors );
+        break;
+    case DC_GL_PIXMAP_WIN:
+        new_gl = create_gl_drawable( gl->hwnd, gl->format, TRUE, gl->mutable_pf );
+        mark_drawable_dirty( gl, new_gl );
+        release_gl_drawable( new_gl );
+    default:
+        break;
+    }
+}
 
 /***********************************************************************
  *              sync_gl_drawable
@@ -1453,13 +1258,20 @@ static BOOL set_pixel_format( HDC hdc, int format, BOOL internal )
 void sync_gl_drawable( HWND hwnd, BOOL known_child )
 {
     struct gl_drawable *old, *new;
+    BOOL is_offscreen;
 
     if (!(old = get_gl_drawable( hwnd, 0 ))) return;
 
     switch (old->type)
     {
     case DC_GL_WINDOW:
-        if (!known_child) break; /* Still a childless top-level window */
+    case DC_GL_CHILD_WIN:
+        is_offscreen = old->type == DC_GL_CHILD_WIN;
+        if (is_offscreen == needs_offscreen_rendering( hwnd, known_child ))
+        {
+            update_gl_drawable_size( old );
+            break;
+        }
         /* fall through */
     case DC_GL_PIXMAP_WIN:
         if (!(new = create_gl_drawable( hwnd, old->format, known_child, old->mutable_pf ))) break;
@@ -1504,11 +1316,6 @@ void set_gl_drawable_parent( HWND hwnd, HWND parent )
         mark_drawable_dirty( old, new );
         release_gl_drawable( new );
     }
-    else
-    {
-        destroy_gl_drawable( hwnd );
-        win32u_set_window_pixel_format( hwnd, 0, FALSE );
-    }
     release_gl_drawable( old );
 }
 
@@ -1531,183 +1338,205 @@ void destroy_gl_drawable( HWND hwnd )
 
 
 /**
- * glxdrv_DescribePixelFormat
+ * describe_pixel_format
  *
- * Get the pixel-format descriptor associated to the given id
+ * Get the wgl_pixel_format description for the given id
  */
-static int describe_pixel_format( int iPixelFormat, PIXELFORMATDESCRIPTOR *ppfd, BOOL allow_offscreen )
+static int describe_pixel_format( int iPixelFormat, struct wgl_pixel_format *pf )
 {
-  /*XVisualInfo *vis;*/
-  int value;
-  int rb,gb,bb,ab;
-  const struct wgl_pixel_format *fmt;
+    int value, drawable_type = 0, render_type = 0;
+    int rb, gb, bb, ab;
+    const struct glx_pixel_format *fmt;
 
-  if (!has_opengl()) return 0;
-
-  /* Look for the iPixelFormat in our list of supported formats. If it is supported we get the index in the FBConfig table and the number of supported formats back */
-  fmt = get_pixel_format(gdi_display, iPixelFormat, allow_offscreen);
-  if (!fmt) {
-      WARN("unexpected format %d\n", iPixelFormat);
-      return 0;
-  }
-
-  memset(ppfd, 0, sizeof(PIXELFORMATDESCRIPTOR));
-  ppfd->nSize = sizeof(PIXELFORMATDESCRIPTOR);
-  ppfd->nVersion = 1;
-
-  /* These flags are always the same... */
-  ppfd->dwFlags = PFD_SUPPORT_OPENGL;
-  /* Now the flags extracted from the Visual */
-
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_DRAWABLE_TYPE, &value);
-  if(value & GLX_WINDOW_BIT)
-      ppfd->dwFlags |= PFD_DRAW_TO_WINDOW;
-
-  /* On Windows bitmap rendering is only offered using the GDI Software renderer. We reserve some formats (see get_formats for more info)
-   * for bitmap rendering since we require indirect rendering for this. Further pixel format logs of a GeforceFX, Geforce8800GT, Radeon HD3400 and a
-   * Radeon 9000 indicated that all bitmap formats have PFD_SUPPORT_GDI. Except for 2 formats on the Radeon 9000 none of the hw accelerated formats
-   * offered the GDI bit either. */
-  ppfd->dwFlags |= fmt->dwFlags & (PFD_DRAW_TO_BITMAP | PFD_SUPPORT_GDI);
-
-  /* PFD_GENERIC_FORMAT - gdi software rendering
-   * PFD_GENERIC_ACCELERATED - some parts are accelerated by a display driver (MCD e.g. 3dfx minigl)
-   * none set - full hardware accelerated by a ICD
-   *
-   * We only set PFD_GENERIC_FORMAT on bitmap formats (see get_formats) as that's what ATI and Nvidia Windows drivers do  */
-  ppfd->dwFlags |= fmt->dwFlags & (PFD_GENERIC_FORMAT | PFD_GENERIC_ACCELERATED);
-
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_DOUBLEBUFFER, &value);
-  if (value) {
-      ppfd->dwFlags |= PFD_DOUBLEBUFFER;
-      ppfd->dwFlags &= ~PFD_SUPPORT_GDI;
-  }
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_STEREO, &value); if (value) ppfd->dwFlags |= PFD_STEREO;
-
-  /* Pixel type */
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_RENDER_TYPE, &value);
-  if (value & GLX_RGBA_BIT)
-    ppfd->iPixelType = PFD_TYPE_RGBA;
-  else
-    ppfd->iPixelType = PFD_TYPE_COLORINDEX;
-
-  /* Color bits */
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_BUFFER_SIZE, &value);
-  ppfd->cColorBits = value;
-
-  /* Red, green, blue and alpha bits / shifts */
-  if (ppfd->iPixelType == PFD_TYPE_RGBA) {
-    pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_RED_SIZE, &rb);
-    pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_GREEN_SIZE, &gb);
-    pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_BLUE_SIZE, &bb);
-    pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_ALPHA_SIZE, &ab);
-
-    ppfd->cBlueBits = bb;
-    ppfd->cBlueShift = 0;
-    ppfd->cGreenBits = gb;
-    ppfd->cGreenShift = bb;
-    ppfd->cRedBits = rb;
-    ppfd->cRedShift = gb + bb;
-    ppfd->cAlphaBits = ab;
-    if (ab)
-        ppfd->cAlphaShift = rb + gb + bb;
-    else
-        ppfd->cAlphaShift = 0;
-  } else {
-    ppfd->cRedBits = 0;
-    ppfd->cRedShift = 0;
-    ppfd->cBlueBits = 0;
-    ppfd->cBlueShift = 0;
-    ppfd->cGreenBits = 0;
-    ppfd->cGreenShift = 0;
-    ppfd->cAlphaBits = 0;
-    ppfd->cAlphaShift = 0;
-  }
-
-  /* Accum RGBA bits */
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_ACCUM_RED_SIZE, &rb);
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_ACCUM_GREEN_SIZE, &gb);
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_ACCUM_BLUE_SIZE, &bb);
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_ACCUM_ALPHA_SIZE, &ab);
-
-  ppfd->cAccumBits = rb+gb+bb+ab;
-  ppfd->cAccumRedBits = rb;
-  ppfd->cAccumGreenBits = gb;
-  ppfd->cAccumBlueBits = bb;
-  ppfd->cAccumAlphaBits = ab;
-
-  /* Aux bits */
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_AUX_BUFFERS, &value);
-  ppfd->cAuxBuffers = value;
-
-  /* Depth bits */
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_DEPTH_SIZE, &value);
-  ppfd->cDepthBits = value;
-
-  /* stencil bits */
-  pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_STENCIL_SIZE, &value);
-  ppfd->cStencilBits = value;
-
-  ppfd->iLayerType = PFD_MAIN_PLANE;
-
-  if (TRACE_ON(wgl)) {
-    dump_PIXELFORMATDESCRIPTOR(ppfd);
-  }
-
-  return nb_onscreen_formats;
-}
-
-/**
- * glxdrv_DescribePixelFormat
- *
- * Get the pixel-format descriptor associated to the given id
- */
-static int glxdrv_wglDescribePixelFormat( HDC hdc, int iPixelFormat,
-                                          UINT nBytes, PIXELFORMATDESCRIPTOR *ppfd)
-{
-  TRACE("(%p,%d,%d,%p)\n", hdc, iPixelFormat, nBytes, ppfd);
-
-  if (!ppfd) return nb_onscreen_formats;
-
-  if (nBytes < sizeof(PIXELFORMATDESCRIPTOR))
-  {
-    ERR("Wrong structure size !\n");
-    /* Should set error */
-    return 0;
-  }
-
-  return describe_pixel_format(iPixelFormat, ppfd, FALSE);
-}
-
-/***********************************************************************
- *		glxdrv_wglGetPixelFormat
- */
-static int glxdrv_wglGetPixelFormat( HDC hdc )
-{
-    struct gl_drawable *gl;
-    int ret = 0;
-    HWND hwnd;
-
-    if ((hwnd = NtUserWindowFromDC( hdc )))
-        return win32u_get_window_pixel_format( hwnd );
-
-    if ((gl = get_gl_drawable( NULL, hdc )))
+    /* Look for the iPixelFormat in our list of supported formats. If it is
+     * supported we get the index in the FBConfig table and the number of
+     * supported formats back */
+    fmt = get_pixel_format( gdi_display, iPixelFormat, TRUE /* Offscreen */);
+    if (!fmt)
     {
-        ret = pixel_format_index( gl->format );
-        /* Offscreen formats can't be used with traditional WGL calls.
-         * As has been verified on Windows GetPixelFormat doesn't fail but returns iPixelFormat=1. */
-        if (!is_onscreen_pixel_format( ret )) ret = 1;
-        release_gl_drawable( gl );
+        WARN( "unexpected format %d\n", iPixelFormat );
+        return 0;
     }
-    TRACE( "%p -> %d\n", hdc, ret );
-    return ret;
-}
 
-/***********************************************************************
- *		glxdrv_wglSetPixelFormat
- */
-static BOOL glxdrv_wglSetPixelFormat( HDC hdc, int iPixelFormat, const PIXELFORMATDESCRIPTOR *ppfd )
-{
-    return set_pixel_format(hdc, iPixelFormat, FALSE);
+    /* If we can't get basic information, there is no point continuing */
+    if (pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_DRAWABLE_TYPE, &drawable_type )) return 0;
+    if (pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_RENDER_TYPE, &render_type )) return 0;
+
+    memset( pf, 0, sizeof(*pf) );
+    pf->pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
+    pf->pfd.nVersion = 1;
+
+    /* These flags are always the same... */
+    pf->pfd.dwFlags = PFD_SUPPORT_OPENGL;
+    /* Now the flags extracted from the Visual */
+
+    if (drawable_type & GLX_WINDOW_BIT) pf->pfd.dwFlags |= PFD_DRAW_TO_WINDOW;
+
+    /* On Windows bitmap rendering is only offered using the GDI Software
+     * renderer. We reserve some formats (see get_formats for more info) for
+     * bitmap rendering since we require indirect rendering for this. Further
+     * pixel format logs of a GeforceFX, Geforce8800GT, Radeon HD3400 and a
+     * Radeon 9000 indicated that all bitmap formats have PFD_SUPPORT_GDI.
+     * Except for 2 formats on the Radeon 9000 none of the hw accelerated
+     * formats offered the GDI bit either. */
+    pf->pfd.dwFlags |= fmt->dwFlags & (PFD_DRAW_TO_BITMAP | PFD_SUPPORT_GDI);
+
+    /* PFD_GENERIC_FORMAT - gdi software rendering
+     * PFD_GENERIC_ACCELERATED - some parts are accelerated by a display driver
+     * (MCD e.g. 3dfx minigl) none set - full hardware accelerated by a ICD
+     *
+     * We only set PFD_GENERIC_FORMAT on bitmap formats (see get_formats) as
+     * that's what ATI and Nvidia Windows drivers do  */
+    pf->pfd.dwFlags |= fmt->dwFlags & (PFD_GENERIC_FORMAT | PFD_GENERIC_ACCELERATED);
+
+    if (!(pf->pfd.dwFlags & PFD_GENERIC_FORMAT)) pf->pfd.dwFlags |= PFD_SUPPORT_COMPOSITION;
+
+    pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_DOUBLEBUFFER, &value );
+    if (value)
+    {
+        pf->pfd.dwFlags |= PFD_DOUBLEBUFFER;
+        pf->pfd.dwFlags &= ~PFD_SUPPORT_GDI;
+    }
+    pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_STEREO, &value );
+    if (value) pf->pfd.dwFlags |= PFD_STEREO;
+
+    /* Pixel type */
+    if (render_type & GLX_RGBA_BIT) pf->pfd.iPixelType = PFD_TYPE_RGBA;
+    else pf->pfd.iPixelType = PFD_TYPE_COLORINDEX;
+
+    /* Color bits */
+    pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_BUFFER_SIZE, &value );
+    pf->pfd.cColorBits = value;
+
+    /* Red, green, blue and alpha bits / shifts */
+    if (pf->pfd.iPixelType == PFD_TYPE_RGBA)
+    {
+        pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_RED_SIZE, &rb );
+        pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_GREEN_SIZE, &gb );
+        pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_BLUE_SIZE, &bb );
+        pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_ALPHA_SIZE, &ab );
+
+        pf->pfd.cBlueBits = bb;
+        pf->pfd.cBlueShift = 0;
+        pf->pfd.cGreenBits = gb;
+        pf->pfd.cGreenShift = bb;
+        pf->pfd.cRedBits = rb;
+        pf->pfd.cRedShift = gb + bb;
+        pf->pfd.cAlphaBits = ab;
+        if (ab) pf->pfd.cAlphaShift = rb + gb + bb;
+        else pf->pfd.cAlphaShift = 0;
+    }
+    else
+    {
+        pf->pfd.cRedBits = 0;
+        pf->pfd.cRedShift = 0;
+        pf->pfd.cBlueBits = 0;
+        pf->pfd.cBlueShift = 0;
+        pf->pfd.cGreenBits = 0;
+        pf->pfd.cGreenShift = 0;
+        pf->pfd.cAlphaBits = 0;
+        pf->pfd.cAlphaShift = 0;
+    }
+
+    /* Accum RGBA bits */
+    pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_ACCUM_RED_SIZE, &rb );
+    pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_ACCUM_GREEN_SIZE, &gb );
+    pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_ACCUM_BLUE_SIZE, &bb );
+    pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_ACCUM_ALPHA_SIZE, &ab );
+
+    pf->pfd.cAccumBits = rb + gb + bb + ab;
+    pf->pfd.cAccumRedBits = rb;
+    pf->pfd.cAccumGreenBits = gb;
+    pf->pfd.cAccumBlueBits = bb;
+    pf->pfd.cAccumAlphaBits = ab;
+
+    /* Aux bits */
+    pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_AUX_BUFFERS, &value );
+    pf->pfd.cAuxBuffers = value;
+
+    /* Depth bits */
+    pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_DEPTH_SIZE, &value );
+    pf->pfd.cDepthBits = value;
+
+    /* stencil bits */
+    pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_STENCIL_SIZE, &value );
+    pf->pfd.cStencilBits = value;
+
+    pf->pfd.iLayerType = PFD_MAIN_PLANE;
+
+    if (!has_swap_method) pf->swap_method = WGL_SWAP_EXCHANGE_ARB;
+    else if (!pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_SWAP_METHOD_OML, &value ))
+    {
+        switch (value) {
+        case GLX_SWAP_EXCHANGE_OML: pf->swap_method = WGL_SWAP_EXCHANGE_ARB; break;
+        case GLX_SWAP_COPY_OML: pf->swap_method = WGL_SWAP_COPY_ARB; break;
+        case GLX_SWAP_UNDEFINED_OML: pf->swap_method = WGL_SWAP_UNDEFINED_ARB; break;
+        default: { ERR( "Unexpected swap method %x.\n", value ); pf->swap_method = -1; break; }
+        }
+    }
+    else pf->swap_method = -1;
+
+    if (pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_TRANSPARENT_TYPE, &value) ) pf->transparent = -1;
+    else pf->transparent = value != GLX_NONE;
+
+    if (render_type & GLX_RGBA_BIT) pf->pixel_type = WGL_TYPE_RGBA_ARB;
+    else if (render_type & GLX_COLOR_INDEX_BIT) pf->pixel_type = WGL_TYPE_COLORINDEX_ARB;
+    else if (render_type & GLX_RGBA_FLOAT_BIT) pf->pixel_type = WGL_TYPE_RGBA_FLOAT_ATI;
+    else if (render_type & GLX_RGBA_FLOAT_ATI_BIT) pf->pixel_type = WGL_TYPE_RGBA_FLOAT_ATI;
+    else if (render_type & GLX_RGBA_UNSIGNED_FLOAT_BIT_EXT) pf->pixel_type = WGL_TYPE_RGBA_UNSIGNED_FLOAT_EXT;
+    else { ERR( "unexpected RenderType(%x)\n", render_type ); pf->pixel_type = -1; }
+
+    pf->draw_to_pbuffer = (drawable_type & GLX_PBUFFER_BIT) ? GL_TRUE : GL_FALSE;
+    if (pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_MAX_PBUFFER_PIXELS, &value )) value = -1;
+    pf->max_pbuffer_pixels = value;
+    if (pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_MAX_PBUFFER_WIDTH, &value )) value = -1;
+    pf->max_pbuffer_width = value;
+    if (pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_MAX_PBUFFER_HEIGHT, &value )) value = -1;
+    pf->max_pbuffer_height = value;
+
+    if (!pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_TRANSPARENT_RED_VALUE, &value ))
+    {
+        pf->transparent_red_value_valid = GL_TRUE;
+        pf->transparent_red_value = value;
+    }
+    if (!pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_TRANSPARENT_GREEN_VALUE, &value ))
+    {
+        pf->transparent_green_value_valid = GL_TRUE;
+        pf->transparent_green_value = value;
+    }
+    if (!pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_TRANSPARENT_BLUE_VALUE, &value ))
+    {
+        pf->transparent_blue_value_valid = GL_TRUE;
+        pf->transparent_blue_value = value;
+    }
+    if (!pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_TRANSPARENT_ALPHA_VALUE, &value ))
+    {
+        pf->transparent_alpha_value_valid = GL_TRUE;
+        pf->transparent_alpha_value = value;
+    }
+    if (!pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_TRANSPARENT_INDEX_VALUE, &value ))
+    {
+        pf->transparent_index_value_valid = GL_TRUE;
+        pf->transparent_index_value = value;
+    }
+
+    if (pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_SAMPLE_BUFFERS_ARB, &value )) value = -1;
+    pf->sample_buffers = value;
+    if (pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_SAMPLES_ARB, &value )) value = -1;
+    pf->samples = value;
+
+    if (pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_FRAMEBUFFER_SRGB_CAPABLE_EXT, &value )) value = -1;
+    pf->framebuffer_srgb_capable = value;
+
+    pf->bind_to_texture_rgb = pf->bind_to_texture_rgba = render_type != GLX_COLOR_INDEX_BIT && (drawable_type & GLX_PBUFFER_BIT);
+    pf->bind_to_texture_rectangle_rgb = pf->bind_to_texture_rectangle_rgba = GL_FALSE;
+
+    if (pglXGetFBConfigAttrib( gdi_display, fmt->fbconfig, GLX_FLOAT_COMPONENTS_NV, &value )) value = -1;
+    pf->float_components = value;
+
+    if (TRACE_ON(wgl)) dump_PIXELFORMATDESCRIPTOR( &pf->pfd );
+
+    return nb_onscreen_formats;
 }
 
 /***********************************************************************
@@ -1854,7 +1683,6 @@ static BOOL glxdrv_wglMakeCurrent(HDC hdc, struct wgl_context *ctx)
             ctx->has_been_current = TRUE;
             ctx->hdc = hdc;
             set_context_drawables( ctx, gl, gl );
-            ctx->refresh_drawables = FALSE;
             pthread_mutex_unlock( &context_mutex );
             goto done;
         }
@@ -1899,7 +1727,6 @@ static BOOL X11DRV_wglMakeContextCurrentARB( HDC draw_hdc, HDC read_hdc, struct 
             ctx->has_been_current = TRUE;
             ctx->hdc = draw_hdc;
             set_context_drawables( ctx, draw_gl, read_gl );
-            ctx->refresh_drawables = FALSE;
             NtCurrentTeb()->glContext = ctx;
             pthread_mutex_unlock( &context_mutex );
             goto done;
@@ -1962,58 +1789,78 @@ static BOOL glxdrv_wglShareLists(struct wgl_context *org, struct wgl_context *de
     return TRUE;
 }
 
-static void wglFinish(void)
+static void present_gl_drawable( HWND hwnd, HDC hdc, struct gl_drawable *gl, BOOL flush, BOOL gl_finish )
 {
-    struct x11drv_escape_flush_gl_drawable escape;
-    struct gl_drawable *gl;
-    struct wgl_context *ctx = NtCurrentTeb()->glContext;
+    HWND toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
+    struct x11drv_win_data *data;
+    Drawable window, drawable;
+    RECT rect_dst, rect;
+    HRGN region;
 
-    escape.code = X11DRV_FLUSH_GL_DRAWABLE;
-    escape.gl_drawable = 0;
-    escape.flush = FALSE;
-
-    if ((gl = get_gl_drawable( NtUserWindowFromDC( ctx->hdc ), 0 )))
+    if (!gl) return;
+    switch (gl->type)
     {
-        switch (gl->type)
-        {
-        case DC_GL_PIXMAP_WIN: escape.gl_drawable = gl->pixmap; break;
-        case DC_GL_CHILD_WIN:  escape.gl_drawable = gl->window; break;
-        default: break;
-        }
-        sync_context(ctx);
-        release_gl_drawable( gl );
+    case DC_GL_PIXMAP_WIN: drawable = gl->pixmap; break;
+    case DC_GL_CHILD_WIN: drawable = gl->window; break;
+    default: drawable = 0; break;
+    }
+    if (!drawable) return;
+    window = get_dc_drawable( hdc, &rect );
+    region = get_dc_monitor_region( hwnd, hdc );
+
+    if (gl_finish) pglFinish();
+    if (flush) XFlush( gdi_display );
+
+    NtUserGetClientRect( hwnd, &rect_dst, NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI ) );
+    NtUserMapWindowPoints( hwnd, toplevel, (POINT *)&rect_dst, 2, NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI ) );
+
+    if ((data = get_win_data( toplevel )))
+    {
+        OffsetRect( &rect_dst, data->rects.client.left - data->rects.visible.left,
+                    data->rects.client.top - data->rects.visible.top );
+        release_win_data( data );
     }
 
-    pglFinish();
-    if (escape.gl_drawable)
-        NtGdiExtEscape( ctx->hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );
+    if (get_dc_drawable( gl->hdc_dst, &rect ) != window || !EqualRect( &rect, &rect_dst ))
+        set_dc_drawable( gl->hdc_dst, window, &rect_dst, IncludeInferiors );
+    if (region) NtGdiExtSelectClipRgn( gl->hdc_dst, region, RGN_COPY );
+
+    NtGdiStretchBlt( gl->hdc_dst, 0, 0, rect_dst.right - rect_dst.left, rect_dst.bottom - rect_dst.top,
+                     gl->hdc_src, 0, 0, gl->rect.right, gl->rect.bottom, SRCCOPY, 0 );
+
+    if (region) NtGdiDeleteObjectApp( region );
+}
+
+static void wglFinish(void)
+{
+    struct gl_drawable *gl;
+    struct wgl_context *ctx = NtCurrentTeb()->glContext;
+    HWND hwnd = NtUserWindowFromDC( ctx->hdc );
+
+    if (!(gl = get_gl_drawable( hwnd, 0 ))) pglFinish();
+    else
+    {
+        sync_context(ctx);
+        pglFinish();
+        present_gl_drawable( hwnd, ctx->hdc, gl, TRUE, FALSE );
+        release_gl_drawable( gl );
+    }
 }
 
 static void wglFlush(void)
 {
-    struct x11drv_escape_flush_gl_drawable escape;
     struct gl_drawable *gl;
     struct wgl_context *ctx = NtCurrentTeb()->glContext;
+    HWND hwnd = NtUserWindowFromDC( ctx->hdc );
 
-    escape.code = X11DRV_FLUSH_GL_DRAWABLE;
-    escape.gl_drawable = 0;
-    escape.flush = FALSE;
-
-    if ((gl = get_gl_drawable( NtUserWindowFromDC( ctx->hdc ), 0 )))
+    if (!(gl = get_gl_drawable( hwnd, 0 ))) pglFlush();
+    else
     {
-        switch (gl->type)
-        {
-        case DC_GL_PIXMAP_WIN: escape.gl_drawable = gl->pixmap; break;
-        case DC_GL_CHILD_WIN:  escape.gl_drawable = gl->window; break;
-        default: break;
-        }
         sync_context(ctx);
+        pglFlush();
+        present_gl_drawable( hwnd, ctx->hdc, gl, TRUE, TRUE );
         release_gl_drawable( gl );
     }
-
-    pglFlush();
-    if (escape.gl_drawable)
-        NtGdiExtEscape( ctx->hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );
 }
 
 static const GLubyte *wglGetString(GLenum name)
@@ -2123,209 +1970,163 @@ static struct wgl_context *X11DRV_wglCreateContextAttribsARB( HDC hdc, struct wg
 }
 
 /**
- * X11DRV_wglGetExtensionsStringARB
- *
- * WGL_ARB_extensions_string: wglGetExtensionsStringARB
- */
-static const char *X11DRV_wglGetExtensionsStringARB(HDC hdc)
-{
-    TRACE("() returning \"%s\"\n", wglExtensions);
-    return wglExtensions;
-}
-
-/**
  * X11DRV_wglCreatePbufferARB
  *
  * WGL_ARB_pbuffer: wglCreatePbufferARB
  */
-static struct wgl_pbuffer *X11DRV_wglCreatePbufferARB( HDC hdc, int iPixelFormat, int iWidth, int iHeight,
-                                                       const int *piAttribList )
+static struct wgl_pbuffer *X11DRV_wglCreatePbufferARB( HDC hdc, int format, int width, int height,
+                                                       const int *attribs )
 {
-    struct wgl_pbuffer* object;
-    const struct wgl_pixel_format *fmt;
-    int attribs[256];
-    int nAttribs = 0;
+    int glx_attribs[256], count = 0, value;
+    const struct glx_pixel_format *fmt;
+    struct wgl_pbuffer *object;
 
-    TRACE("(%p, %d, %d, %d, %p)\n", hdc, iPixelFormat, iWidth, iHeight, piAttribList);
+    TRACE( "(%p, %d, %d, %d, %p)\n", hdc, format, width, height, attribs );
 
     /* Convert the WGL pixelformat to a GLX format, if it fails then the format is invalid */
-    fmt = get_pixel_format(gdi_display, iPixelFormat, TRUE /* Offscreen */);
-    if(!fmt) {
-        ERR("(%p): invalid pixel format %d\n", hdc, iPixelFormat);
-        RtlSetLastWin32Error(ERROR_INVALID_PIXEL_FORMAT);
+    if (!(fmt = get_pixel_format( gdi_display, format, TRUE /* Offscreen */ )))
+    {
+        ERR( "(%p): invalid pixel format %d\n", hdc, format );
+        RtlSetLastWin32Error( ERROR_INVALID_PIXEL_FORMAT );
         return NULL;
     }
 
-    object = calloc( 1, sizeof(*object) );
-    if (NULL == object) {
-        RtlSetLastWin32Error(ERROR_NO_SYSTEM_RESOURCES);
+    if (!(object = calloc( 1, sizeof(*object) )))
+    {
+        RtlSetLastWin32Error( ERROR_NO_SYSTEM_RESOURCES );
         return NULL;
     }
-    object->width = iWidth;
-    object->height = iHeight;
+    object->width = width;
+    object->height = height;
+    object->pixel_format = format;
     object->fmt = fmt;
 
-    PUSH2(attribs, GLX_PBUFFER_WIDTH,  iWidth);
-    PUSH2(attribs, GLX_PBUFFER_HEIGHT, iHeight); 
-    while (piAttribList && 0 != *piAttribList) {
-        int attr_v;
-        switch (*piAttribList) {
-            case WGL_PBUFFER_LARGEST_ARB: {
-                ++piAttribList;
-                attr_v = *piAttribList;
-                TRACE("WGL_LARGEST_PBUFFER_ARB = %d\n", attr_v);
-                PUSH2(attribs, GLX_LARGEST_PBUFFER, attr_v);
+    glx_attribs[count++] = GLX_PBUFFER_WIDTH;
+    glx_attribs[count++] = width;
+    glx_attribs[count++] = GLX_PBUFFER_HEIGHT;
+    glx_attribs[count++] = height;
+
+    while (attribs && 0 != *attribs)
+    {
+        switch (*attribs)
+        {
+        case WGL_PBUFFER_LARGEST_ARB:
+            ++attribs;
+            value = *attribs;
+            TRACE( "WGL_LARGEST_PBUFFER_ARB = %d\n", value );
+            glx_attribs[count++] = GLX_LARGEST_PBUFFER;
+            glx_attribs[count++] = value;
+            break;
+
+        case WGL_TEXTURE_FORMAT_ARB:
+            ++attribs;
+            value = *attribs;
+            TRACE( "WGL_render_texture Attribute: WGL_TEXTURE_FORMAT_ARB as %x\n", value );
+            switch (value)
+            {
+            case WGL_NO_TEXTURE_ARB:
+                object->texture_format = 0;
                 break;
-            }
-
-            case WGL_TEXTURE_FORMAT_ARB: {
-                ++piAttribList;
-                attr_v = *piAttribList;
-                TRACE("WGL_render_texture Attribute: WGL_TEXTURE_FORMAT_ARB as %x\n", attr_v);
-                if (WGL_NO_TEXTURE_ARB == attr_v) {
-                    object->use_render_texture = 0;
-                } else {
-                    if (!use_render_texture_emulation) {
-                        RtlSetLastWin32Error(ERROR_INVALID_DATA);
-                        goto create_failed;
-                    }
-                    switch (attr_v) {
-                        case WGL_TEXTURE_RGB_ARB:
-                            object->use_render_texture = GL_RGB;
-                            object->texture_bpp = 3;
-                            object->texture_format = GL_RGB;
-                            object->texture_type = GL_UNSIGNED_BYTE;
-                            break;
-                        case WGL_TEXTURE_RGBA_ARB:
-                            object->use_render_texture = GL_RGBA;
-                            object->texture_bpp = 4;
-                            object->texture_format = GL_RGBA;
-                            object->texture_type = GL_UNSIGNED_BYTE;
-                            break;
-
-                        /* WGL_FLOAT_COMPONENTS_NV */
-                        case WGL_TEXTURE_FLOAT_R_NV:
-                            object->use_render_texture = GL_FLOAT_R_NV;
-                            object->texture_bpp = 4;
-                            object->texture_format = GL_RED;
-                            object->texture_type = GL_FLOAT;
-                            break;
-                        case WGL_TEXTURE_FLOAT_RG_NV:
-                            object->use_render_texture = GL_FLOAT_RG_NV;
-                            object->texture_bpp = 8;
-                            object->texture_format = GL_LUMINANCE_ALPHA;
-                            object->texture_type = GL_FLOAT;
-                            break;
-                        case WGL_TEXTURE_FLOAT_RGB_NV:
-                            object->use_render_texture = GL_FLOAT_RGB_NV;
-                            object->texture_bpp = 12;
-                            object->texture_format = GL_RGB;
-                            object->texture_type = GL_FLOAT;
-                            break;
-                        case WGL_TEXTURE_FLOAT_RGBA_NV:
-                            object->use_render_texture = GL_FLOAT_RGBA_NV;
-                            object->texture_bpp = 16;
-                            object->texture_format = GL_RGBA;
-                            object->texture_type = GL_FLOAT;
-                            break;
-                        default:
-                            ERR("Unknown texture format: %x\n", attr_v);
-                            RtlSetLastWin32Error(ERROR_INVALID_DATA);
-                            goto create_failed;
-                    }
-                }
+            case WGL_TEXTURE_RGB_ARB:
+                object->texture_format = GL_RGB;
                 break;
-            }
-
-            case WGL_TEXTURE_TARGET_ARB: {
-                ++piAttribList;
-                attr_v = *piAttribList;
-                TRACE("WGL_render_texture Attribute: WGL_TEXTURE_TARGET_ARB as %x\n", attr_v);
-                if (WGL_NO_TEXTURE_ARB == attr_v) {
-                    object->texture_target = 0;
-                } else {
-                    if (!use_render_texture_emulation) {
-                        RtlSetLastWin32Error(ERROR_INVALID_DATA);
-                        goto create_failed;
-                    }
-                    switch (attr_v) {
-                        case WGL_TEXTURE_CUBE_MAP_ARB: {
-                            if (iWidth != iHeight) {
-                                RtlSetLastWin32Error(ERROR_INVALID_DATA);
-                                goto create_failed;
-                            }
-                            object->texture_target = GL_TEXTURE_CUBE_MAP;
-                            object->texture_bind_target = GL_TEXTURE_BINDING_CUBE_MAP;
-                           break;
-                        }
-                        case WGL_TEXTURE_1D_ARB: {
-                            if (1 != iHeight) {
-                                RtlSetLastWin32Error(ERROR_INVALID_DATA);
-                                goto create_failed;
-                            }
-                            object->texture_target = GL_TEXTURE_1D;
-                            object->texture_bind_target = GL_TEXTURE_BINDING_1D;
-                            break;
-                        }
-                        case WGL_TEXTURE_2D_ARB: {
-                            object->texture_target = GL_TEXTURE_2D;
-                            object->texture_bind_target = GL_TEXTURE_BINDING_2D;
-                            break;
-                        }
-                        case WGL_TEXTURE_RECTANGLE_NV: {
-                            object->texture_target = GL_TEXTURE_RECTANGLE_NV;
-                            object->texture_bind_target = GL_TEXTURE_BINDING_RECTANGLE_NV;
-                            break;
-                        }
-                        default:
-                            ERR("Unknown texture target: %x\n", attr_v);
-                            RtlSetLastWin32Error(ERROR_INVALID_DATA);
-                            goto create_failed;
-                    }
-                }
+            case WGL_TEXTURE_RGBA_ARB:
+                object->texture_format = GL_RGBA;
                 break;
+            /* WGL_FLOAT_COMPONENTS_NV */
+            case WGL_TEXTURE_FLOAT_R_NV:
+                object->texture_format = GL_FLOAT_R_NV;
+                break;
+            case WGL_TEXTURE_FLOAT_RG_NV:
+                object->texture_format = GL_FLOAT_RG_NV;
+                break;
+            case WGL_TEXTURE_FLOAT_RGB_NV:
+                object->texture_format = GL_FLOAT_RGB_NV;
+                break;
+            case WGL_TEXTURE_FLOAT_RGBA_NV:
+                object->texture_format = GL_FLOAT_RGBA_NV;
+                break;
+            default:
+                ERR( "Unknown texture format: %x\n", value );
+                RtlSetLastWin32Error( ERROR_INVALID_DATA );
+                goto create_failed;
             }
+            break;
 
-            case WGL_MIPMAP_TEXTURE_ARB: {
-                ++piAttribList;
-                attr_v = *piAttribList;
-                TRACE("WGL_render_texture Attribute: WGL_MIPMAP_TEXTURE_ARB as %x\n", attr_v);
-                if (!use_render_texture_emulation) {
-                    RtlSetLastWin32Error(ERROR_INVALID_DATA);
+        case WGL_TEXTURE_TARGET_ARB:
+            ++attribs;
+            value = *attribs;
+            TRACE( "WGL_render_texture Attribute: WGL_TEXTURE_TARGET_ARB as %x\n", value );
+            switch (value)
+            {
+            case WGL_NO_TEXTURE_ARB:
+                object->texture_target = 0;
+                break;
+            case WGL_TEXTURE_CUBE_MAP_ARB:
+                if (width != height)
+                {
+                    RtlSetLastWin32Error( ERROR_INVALID_DATA );
                     goto create_failed;
                 }
+                object->texture_target = GL_TEXTURE_CUBE_MAP;
                 break;
+            case WGL_TEXTURE_1D_ARB:
+                if (1 != height)
+                {
+                    RtlSetLastWin32Error( ERROR_INVALID_DATA );
+                    goto create_failed;
+                }
+                object->texture_target = GL_TEXTURE_1D;
+                break;
+            case WGL_TEXTURE_2D_ARB:
+                object->texture_target = GL_TEXTURE_2D;
+                break;
+            case WGL_TEXTURE_RECTANGLE_NV:
+                object->texture_target = GL_TEXTURE_RECTANGLE_NV;
+                break;
+            default:
+                ERR( "Unknown texture target: %x\n", value );
+                RtlSetLastWin32Error( ERROR_INVALID_DATA );
+                goto create_failed;
             }
-        }
-        ++piAttribList;
-    }
+            break;
 
-    PUSH1(attribs, None);
+        case WGL_MIPMAP_TEXTURE_ARB:
+            ++attribs;
+            value = *attribs;
+            TRACE( "WGL_render_texture Attribute: WGL_MIPMAP_TEXTURE_ARB as %x\n", value );
+            break;
+        }
+        ++attribs;
+    }
+    glx_attribs[count++] = 0;
+
     if (!(object->gl = calloc( 1, sizeof(*object->gl) )))
     {
-        RtlSetLastWin32Error(ERROR_NO_SYSTEM_RESOURCES);
+        RtlSetLastWin32Error( ERROR_NO_SYSTEM_RESOURCES );
         goto create_failed;
     }
     object->gl->type = DC_GL_PBUFFER;
     object->gl->format = object->fmt;
     object->gl->ref = 1;
 
-    object->gl->drawable = pglXCreatePbuffer(gdi_display, fmt->fbconfig, attribs);
-    TRACE("new Pbuffer drawable as %p (%lx)\n", object->gl, object->gl->drawable);
-    if (!object->gl->drawable) {
+    object->gl->drawable = pglXCreatePbuffer( gdi_display, fmt->fbconfig, glx_attribs );
+    TRACE( "new Pbuffer drawable as %p (%lx)\n", object->gl, object->gl->drawable );
+    if (!object->gl->drawable)
+    {
         free( object->gl );
-        RtlSetLastWin32Error(ERROR_NO_SYSTEM_RESOURCES);
+        RtlSetLastWin32Error( ERROR_NO_SYSTEM_RESOURCES );
         goto create_failed; /* unexpected error */
     }
     pthread_mutex_lock( &context_mutex );
     list_add_head( &pbuffer_list, &object->entry );
     pthread_mutex_unlock( &context_mutex );
-    TRACE("->(%p)\n", object);
+    TRACE( "->(%p)\n", object );
     return object;
 
 create_failed:
     free( object );
-    TRACE("->(FAILED)\n");
+    TRACE( "->(FAILED)\n" );
     return NULL;
 }
 
@@ -2373,8 +2174,10 @@ static HDC X11DRV_wglGetPbufferDCARB( struct wgl_pbuffer *object )
     escape.drawable = object->gl->drawable;
     escape.mode = IncludeInferiors;
     SetRect( &escape.dc_rect, 0, 0, object->width, object->height );
+    escape.visual = default_visual;
     NtGdiExtEscape( hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );
 
+    NtGdiSetPixelFormat( hdc, object->pixel_format );
     TRACE( "(%p)->(%p)\n", object, hdc );
     return hdc;
 }
@@ -2384,85 +2187,59 @@ static HDC X11DRV_wglGetPbufferDCARB( struct wgl_pbuffer *object )
  *
  * WGL_ARB_pbuffer: wglQueryPbufferARB
  */
-static BOOL X11DRV_wglQueryPbufferARB( struct wgl_pbuffer *object, int iAttribute, int *piValue )
+static BOOL X11DRV_wglQueryPbufferARB( struct wgl_pbuffer *object, int attrib, int *value )
 {
-    TRACE("(%p, 0x%x, %p)\n", object, iAttribute, piValue);
+    TRACE( "(%p, 0x%x, %p)\n", object, attrib, value );
 
-    switch (iAttribute) {
-        case WGL_PBUFFER_WIDTH_ARB:
-            pglXQueryDrawable(gdi_display, object->gl->drawable, GLX_WIDTH, (unsigned int*) piValue);
-            break;
-        case WGL_PBUFFER_HEIGHT_ARB:
-            pglXQueryDrawable(gdi_display, object->gl->drawable, GLX_HEIGHT, (unsigned int*) piValue);
-            break;
+    switch (attrib)
+    {
+    case WGL_PBUFFER_WIDTH_ARB:
+        pglXQueryDrawable( gdi_display, object->gl->drawable, GLX_WIDTH, (unsigned int *)value );
+        break;
+    case WGL_PBUFFER_HEIGHT_ARB:
+        pglXQueryDrawable( gdi_display, object->gl->drawable, GLX_HEIGHT, (unsigned int *)value );
+        break;
 
-        case WGL_PBUFFER_LOST_ARB:
-            /* GLX Pbuffers cannot be lost by default. We can support this by
-             * setting GLX_PRESERVED_CONTENTS to False and using glXSelectEvent
-             * to receive pixel buffer clobber events, however that may or may
-             * not give any benefit */
-            *piValue = GL_FALSE;
-            break;
+    case WGL_PBUFFER_LOST_ARB:
+        /* GLX Pbuffers cannot be lost by default. We can support this by
+         * setting GLX_PRESERVED_CONTENTS to False and using glXSelectEvent
+         * to receive pixel buffer clobber events, however that may or may
+         * not give any benefit */
+        *value = GL_FALSE;
+        break;
 
-        case WGL_TEXTURE_FORMAT_ARB:
-            if (!object->use_render_texture) {
-                *piValue = WGL_NO_TEXTURE_ARB;
-            } else {
-                if (!use_render_texture_emulation) {
-                    RtlSetLastWin32Error(ERROR_INVALID_HANDLE);
-                    return GL_FALSE;
-                }
-                switch(object->use_render_texture) {
-                    case GL_RGB:
-                        *piValue = WGL_TEXTURE_RGB_ARB;
-                        break;
-                    case GL_RGBA:
-                        *piValue = WGL_TEXTURE_RGBA_ARB;
-                        break;
-                    /* WGL_FLOAT_COMPONENTS_NV */
-                    case GL_FLOAT_R_NV:
-                        *piValue = WGL_TEXTURE_FLOAT_R_NV;
-                        break;
-                    case GL_FLOAT_RG_NV:
-                        *piValue = WGL_TEXTURE_FLOAT_RG_NV;
-                        break;
-                    case GL_FLOAT_RGB_NV:
-                        *piValue = WGL_TEXTURE_FLOAT_RGB_NV;
-                        break;
-                    case GL_FLOAT_RGBA_NV:
-                        *piValue = WGL_TEXTURE_FLOAT_RGBA_NV;
-                        break;
-                    default:
-                        ERR("Unknown texture format: %x\n", object->use_render_texture);
-                }
-            }
-            break;
+    case WGL_TEXTURE_FORMAT_ARB:
+        switch (object->texture_format)
+        {
+        case 0: *value = WGL_NO_TEXTURE_ARB; break;
+        case GL_RGB: *value = WGL_TEXTURE_RGB_ARB; break;
+        case GL_RGBA: *value = WGL_TEXTURE_RGBA_ARB; break;
+        /* WGL_FLOAT_COMPONENTS_NV */
+        case GL_FLOAT_R_NV: *value = WGL_TEXTURE_FLOAT_R_NV; break;
+        case GL_FLOAT_RG_NV: *value = WGL_TEXTURE_FLOAT_RG_NV; break;
+        case GL_FLOAT_RGB_NV: *value = WGL_TEXTURE_FLOAT_RGB_NV; break;
+        case GL_FLOAT_RGBA_NV: *value = WGL_TEXTURE_FLOAT_RGBA_NV; break;
+        default: ERR( "Unknown texture format: %x\n", object->texture_format );
+        }
+        break;
 
-        case WGL_TEXTURE_TARGET_ARB:
-            if (!object->texture_target){
-                *piValue = WGL_NO_TEXTURE_ARB;
-            } else {
-                if (!use_render_texture_emulation) {
-                    RtlSetLastWin32Error(ERROR_INVALID_DATA);
-                    return GL_FALSE;
-                }
-                switch (object->texture_target) {
-                    case GL_TEXTURE_1D:       *piValue = WGL_TEXTURE_1D_ARB; break;
-                    case GL_TEXTURE_2D:       *piValue = WGL_TEXTURE_2D_ARB; break;
-                    case GL_TEXTURE_CUBE_MAP: *piValue = WGL_TEXTURE_CUBE_MAP_ARB; break;
-                    case GL_TEXTURE_RECTANGLE_NV: *piValue = WGL_TEXTURE_RECTANGLE_NV; break;
-                }
-            }
-            break;
+    case WGL_TEXTURE_TARGET_ARB:
+        switch (object->texture_target)
+        {
+        case 0: *value = WGL_NO_TEXTURE_ARB; break;
+        case GL_TEXTURE_1D: *value = WGL_TEXTURE_1D_ARB; break;
+        case GL_TEXTURE_2D: *value = WGL_TEXTURE_2D_ARB; break;
+        case GL_TEXTURE_CUBE_MAP: *value = WGL_TEXTURE_CUBE_MAP_ARB; break;
+        case GL_TEXTURE_RECTANGLE_NV: *value = WGL_TEXTURE_RECTANGLE_NV; break;
+        }
+        break;
 
-        case WGL_MIPMAP_TEXTURE_ARB:
-            *piValue = GL_FALSE; /** don't support that */
-            FIXME("unsupported WGL_ARB_render_texture attribute query for 0x%x\n", iAttribute);
-            break;
+    case WGL_MIPMAP_TEXTURE_ARB:
+        *value = GL_FALSE; /** don't support that */
+        FIXME( "unsupported WGL_ARB_render_texture attribute query for 0x%x\n", attrib );
+        break;
 
-        default:
-            FIXME("unexpected attribute %x\n", iAttribute);
-            break;
+    default: FIXME( "unexpected attribute %x\n", attrib ); break;
     }
 
     return GL_TRUE;
@@ -2500,479 +2277,27 @@ static int X11DRV_wglReleasePbufferDCARB( struct wgl_pbuffer *object, HDC hdc )
  */
 static BOOL X11DRV_wglSetPbufferAttribARB( struct wgl_pbuffer *object, const int *piAttribList )
 {
-    GLboolean ret = GL_FALSE;
-
     WARN("(%p, %p): alpha-testing, report any problem\n", object, piAttribList);
 
-    if (!object->use_render_texture) {
-        RtlSetLastWin32Error(ERROR_INVALID_HANDLE);
-        return GL_FALSE;
-    }
-    if (use_render_texture_emulation) {
-        return GL_TRUE;
-    }
-    return ret;
-}
-
-struct choose_pixel_format_arb_format
-{
-    int format;
-    int original_index;
-    PIXELFORMATDESCRIPTOR pfd;
-    int depth, stencil;
-};
-
-static int compare_formats(const void *a, const void *b)
-{
-    /* Order formats so that onscreen formats go first. Then, if no depth bits requested,
-     * prioritize formats with smaller depth within the original sort order with respect to
-     * other attributes. */
-    const struct choose_pixel_format_arb_format *fmt_a = a, *fmt_b = b;
-    BOOL offscreen_a, offscreen_b;
-
-    offscreen_a = fmt_a->format > nb_onscreen_formats;
-    offscreen_b = fmt_b->format > nb_onscreen_formats;
-
-    if (offscreen_a != offscreen_b)
-        return offscreen_a - offscreen_b;
-    if (memcmp(&fmt_a->pfd, &fmt_b->pfd, sizeof(fmt_a->pfd)))
-        return fmt_a->original_index - fmt_b->original_index;
-    if (fmt_a->depth != fmt_b->depth)
-        return fmt_a->depth - fmt_b->depth;
-    if (fmt_a->stencil != fmt_b->stencil)
-        return fmt_a->stencil - fmt_b->stencil;
-
-    return fmt_a->original_index - fmt_b->original_index;
-}
-
-/**
- * X11DRV_wglChoosePixelFormatARB
- *
- * WGL_ARB_pixel_format: wglChoosePixelFormatARB
- */
-static BOOL X11DRV_wglChoosePixelFormatARB( HDC hdc, const int *piAttribIList, const FLOAT *pfAttribFList,
-                                            UINT nMaxFormats, int *piFormats, UINT *nNumFormats )
-{
-    struct choose_pixel_format_arb_format *formats;
-    int it, i, format_count;
-    BYTE depth_bits = 0;
-    GLXFBConfig* cfgs;
-    DWORD dwFlags = 0;
-    int attribs[256];
-    int nAttribs = 0;
-    int nCfgs = 0;
-    int fmt_id;
-
-    TRACE("(%p, %p, %p, %d, %p, %p): hackish\n", hdc, piAttribIList, pfAttribFList, nMaxFormats, piFormats, nNumFormats);
-    if (NULL != pfAttribFList) {
-        FIXME("unused pfAttribFList\n");
-    }
-
-    nAttribs = ConvertAttribWGLtoGLX(piAttribIList, attribs, NULL);
-    if (-1 == nAttribs) {
-        WARN("Cannot convert WGL to GLX attributes\n");
-        return GL_FALSE;
-    }
-    PUSH1(attribs, None);
-
-    /* There is no 1:1 mapping between GLX and WGL formats because we duplicate some GLX formats for bitmap rendering (see get_formats).
-     * Flags like PFD_SUPPORT_GDI, PFD_DRAW_TO_BITMAP and others are a property of the pixel format. We don't query these attributes
-     * using glXChooseFBConfig but we filter the result of glXChooseFBConfig later on.
-     */
-    for(i=0; piAttribIList[i] != 0; i+=2)
+    if (!object->texture_format)
     {
-        switch(piAttribIList[i])
-        {
-            case WGL_DRAW_TO_BITMAP_ARB:
-                if(piAttribIList[i+1])
-                    dwFlags |= PFD_DRAW_TO_BITMAP;
-                break;
-            case WGL_ACCELERATION_ARB:
-                switch(piAttribIList[i+1])
-                {
-                    case WGL_NO_ACCELERATION_ARB:
-                        dwFlags |= PFD_GENERIC_FORMAT;
-                        break;
-                    case WGL_GENERIC_ACCELERATION_ARB:
-                        dwFlags |= PFD_GENERIC_ACCELERATED;
-                        break;
-                    case WGL_FULL_ACCELERATION_ARB:
-                        /* Nothing to do */
-                        break;
-                }
-                break;
-            case WGL_SUPPORT_GDI_ARB:
-                if(piAttribIList[i+1])
-                    dwFlags |= PFD_SUPPORT_GDI;
-                break;
-            case WGL_DEPTH_BITS_ARB:
-                depth_bits = piAttribIList[i+1];
-                break;
-
-        }
-    }
-
-    /* Search for FB configurations matching the requirements in attribs */
-    cfgs = pglXChooseFBConfig(gdi_display, DefaultScreen(gdi_display), attribs, &nCfgs);
-    if (NULL == cfgs) {
-        WARN("Compatible Pixel Format not found\n");
+        RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
         return GL_FALSE;
     }
-
-    if (!(formats = malloc( nCfgs * sizeof(*formats) )))
-    {
-        ERR("No memory.\n");
-        XFree(cfgs);
-        return GL_FALSE;
-    }
-
-    format_count = 0;
-    for (it = 0; it < nCfgs; ++it)
-    {
-        struct choose_pixel_format_arb_format *format;
-
-        if (pglXGetFBConfigAttrib(gdi_display, cfgs[it], GLX_FBCONFIG_ID, &fmt_id))
-        {
-            ERR("Failed to retrieve FBCONFIG_ID from GLXFBConfig, expect problems.\n");
-            continue;
-        }
-
-        for (i = 0; i < nb_pixel_formats; ++i)
-            if (pixel_formats[i].fmt_id == fmt_id)
-                break;
-
-        if (i == nb_pixel_formats)
-            continue;
-        if ((pixel_formats[i].dwFlags & dwFlags) != dwFlags)
-            continue;
-
-        format = &formats[format_count];
-        format->format = i + 1;
-        format->original_index = it;
-
-        memset(&format->pfd, 0, sizeof(format->pfd));
-        if (!describe_pixel_format(format->format, &format->pfd, TRUE))
-            ERR("describe_pixel_format failed, format %d.\n", format->format);
-
-        format->depth = format->pfd.cDepthBits;
-        format->stencil = format->pfd.cStencilBits;
-        if (!depth_bits && !(format->pfd.dwFlags & PFD_GENERIC_FORMAT))
-        {
-            format->pfd.cDepthBits = 0;
-            format->pfd.cStencilBits = 0;
-        }
-
-        ++format_count;
-    }
-
-    qsort(formats, format_count, sizeof(*formats), compare_formats);
-
-    *nNumFormats = min(nMaxFormats, format_count);
-    for (i = 0; i < *nNumFormats; ++i)
-        piFormats[i] = formats[i].format;
-
-    free( formats );
-    XFree(cfgs);
     return GL_TRUE;
 }
 
-/**
- * X11DRV_wglGetPixelFormatAttribivARB
- *
- * WGL_ARB_pixel_format: wglGetPixelFormatAttribivARB
- */
-static BOOL X11DRV_wglGetPixelFormatAttribivARB( HDC hdc, int iPixelFormat, int iLayerPlane,
-                                                 UINT nAttributes, const int *piAttributes, int *piValues )
+static GLenum binding_from_target( GLenum target )
 {
-    UINT i;
-    const struct wgl_pixel_format *fmt;
-    int hTest;
-    int tmp;
-    int curGLXAttr = 0;
-
-    TRACE("(%p, %d, %d, %d, %p, %p)\n", hdc, iPixelFormat, iLayerPlane, nAttributes, piAttributes, piValues);
-
-    if (0 < iLayerPlane) {
-        FIXME("unsupported iLayerPlane(%d) > 0, returns FALSE\n", iLayerPlane);
-        return GL_FALSE;
+    switch (target)
+    {
+    case GL_TEXTURE_CUBE_MAP: return GL_TEXTURE_BINDING_CUBE_MAP;
+    case GL_TEXTURE_1D: return GL_TEXTURE_BINDING_1D;
+    case GL_TEXTURE_2D: return GL_TEXTURE_BINDING_2D;
+    case GL_TEXTURE_RECTANGLE_NV: return GL_TEXTURE_BINDING_RECTANGLE_NV;
     }
-
-    /* Convert the WGL pixelformat to a GLX one, if this fails then most likely the iPixelFormat isn't supported.
-    * We don't have to fail yet as a program can specify an invalid iPixelFormat (lets say 0) if it wants to query
-    * the number of supported WGL formats. Whether the iPixelFormat is valid is handled in the for-loop below. */
-    fmt = get_pixel_format(gdi_display, iPixelFormat, TRUE /* Offscreen */);
-    if(!fmt) {
-        WARN("Unable to convert iPixelFormat %d to a GLX one!\n", iPixelFormat);
-    }
-
-    for (i = 0; i < nAttributes; ++i) {
-        const int curWGLAttr = piAttributes[i];
-        TRACE("pAttr[%d] = %x\n", i, curWGLAttr);
-
-        switch (curWGLAttr) {
-            case WGL_NUMBER_PIXEL_FORMATS_ARB:
-                piValues[i] = nb_pixel_formats;
-                continue;
-
-            case WGL_SUPPORT_OPENGL_ARB:
-                piValues[i] = GL_TRUE; 
-                continue;
-
-            case WGL_ACCELERATION_ARB:
-                curGLXAttr = GLX_CONFIG_CAVEAT;
-                if (!fmt) goto pix_error;
-                if(fmt->dwFlags & PFD_GENERIC_FORMAT)
-                    piValues[i] = WGL_NO_ACCELERATION_ARB;
-                else if(fmt->dwFlags & PFD_GENERIC_ACCELERATED)
-                    piValues[i] = WGL_GENERIC_ACCELERATION_ARB;
-                else
-                    piValues[i] = WGL_FULL_ACCELERATION_ARB;
-                continue;
-
-            case WGL_TRANSPARENT_ARB:
-                curGLXAttr = GLX_TRANSPARENT_TYPE;
-                if (!fmt) goto pix_error;
-                hTest = pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, curGLXAttr, &tmp);
-                if (hTest) goto get_error;
-                piValues[i] = GL_FALSE;
-                if (GLX_NONE != tmp) piValues[i] = GL_TRUE;
-                continue;
-
-            case WGL_PIXEL_TYPE_ARB:
-                curGLXAttr = GLX_RENDER_TYPE;
-                if (!fmt) goto pix_error;
-                hTest = pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, curGLXAttr, &tmp);
-                if (hTest) goto get_error;
-                TRACE("WGL_PIXEL_TYPE_ARB: GLX_RENDER_TYPE = 0x%x\n", tmp);
-                if      (tmp & GLX_RGBA_BIT)           { piValues[i] = WGL_TYPE_RGBA_ARB; }
-                else if (tmp & GLX_COLOR_INDEX_BIT)    { piValues[i] = WGL_TYPE_COLORINDEX_ARB; }
-                else if (tmp & GLX_RGBA_FLOAT_BIT)     { piValues[i] = WGL_TYPE_RGBA_FLOAT_ATI; }
-                else if (tmp & GLX_RGBA_FLOAT_ATI_BIT) { piValues[i] = WGL_TYPE_RGBA_FLOAT_ATI; }
-                else if (tmp & GLX_RGBA_UNSIGNED_FLOAT_BIT_EXT) { piValues[i] = WGL_TYPE_RGBA_UNSIGNED_FLOAT_EXT; }
-                else {
-                    ERR("unexpected RenderType(%x)\n", tmp);
-                    piValues[i] = WGL_TYPE_RGBA_ARB;
-                }
-                continue;
-
-            case WGL_COLOR_BITS_ARB:
-                curGLXAttr = GLX_BUFFER_SIZE;
-                break;
-
-            case WGL_BIND_TO_TEXTURE_RGB_ARB:
-            case WGL_BIND_TO_TEXTURE_RGBA_ARB:
-                if (!use_render_texture_emulation) {
-                    piValues[i] = GL_FALSE;
-                    continue;	
-                }
-                curGLXAttr = GLX_RENDER_TYPE;
-                if (!fmt) goto pix_error;
-                hTest = pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, curGLXAttr, &tmp);
-                if (hTest) goto get_error;
-                if (GLX_COLOR_INDEX_BIT == tmp) {
-                    piValues[i] = GL_FALSE;  
-                    continue;
-                }
-                hTest = pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_DRAWABLE_TYPE, &tmp);
-                if (hTest) goto get_error;
-                piValues[i] = (tmp & GLX_PBUFFER_BIT) ? GL_TRUE : GL_FALSE;
-                continue;
-
-            case WGL_BLUE_BITS_ARB:
-                curGLXAttr = GLX_BLUE_SIZE;
-                break;
-            case WGL_RED_BITS_ARB:
-                curGLXAttr = GLX_RED_SIZE;
-                break;
-            case WGL_GREEN_BITS_ARB:
-                curGLXAttr = GLX_GREEN_SIZE;
-                break;
-            case WGL_ALPHA_BITS_ARB:
-                curGLXAttr = GLX_ALPHA_SIZE;
-                break;
-            case WGL_DEPTH_BITS_ARB:
-                curGLXAttr = GLX_DEPTH_SIZE;
-                break;
-            case WGL_STENCIL_BITS_ARB:
-                curGLXAttr = GLX_STENCIL_SIZE;
-                break;
-            case WGL_DOUBLE_BUFFER_ARB:
-                curGLXAttr = GLX_DOUBLEBUFFER;
-                break;
-            case WGL_STEREO_ARB:
-                curGLXAttr = GLX_STEREO;
-                break;
-            case WGL_AUX_BUFFERS_ARB:
-                curGLXAttr = GLX_AUX_BUFFERS;
-                break;
-
-            case WGL_SUPPORT_GDI_ARB:
-                if (!fmt) goto pix_error;
-                piValues[i] = (fmt->dwFlags & PFD_SUPPORT_GDI) != 0;
-                continue;
-
-            case WGL_DRAW_TO_BITMAP_ARB:
-                if (!fmt) goto pix_error;
-                piValues[i] = (fmt->dwFlags & PFD_DRAW_TO_BITMAP) != 0;
-                continue;
-
-            case WGL_DRAW_TO_WINDOW_ARB:
-            case WGL_DRAW_TO_PBUFFER_ARB:
-                if (!fmt) goto pix_error;
-                hTest = pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_DRAWABLE_TYPE, &tmp);
-                if (hTest) goto get_error;
-                if((curWGLAttr == WGL_DRAW_TO_WINDOW_ARB && (tmp&GLX_WINDOW_BIT)) ||
-                   (curWGLAttr == WGL_DRAW_TO_PBUFFER_ARB && (tmp&GLX_PBUFFER_BIT)))
-                    piValues[i] = GL_TRUE;
-                else
-                    piValues[i] = GL_FALSE;
-                continue;
-
-            case WGL_SWAP_METHOD_ARB:
-                if (has_swap_method)
-                {
-                    hTest = pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_SWAP_METHOD_OML, &tmp);
-                    if (hTest) goto get_error;
-                    switch (tmp)
-                    {
-                    case GLX_SWAP_EXCHANGE_OML:
-                        piValues[i] = WGL_SWAP_EXCHANGE_ARB;
-                        break;
-                    case GLX_SWAP_COPY_OML:
-                        piValues[i] = WGL_SWAP_COPY_ARB;
-                        break;
-                    case GLX_SWAP_UNDEFINED_OML:
-                        piValues[i] = WGL_SWAP_UNDEFINED_ARB;
-                        break;
-                    default:
-                        ERR("Unexpected swap method %x.\n", tmp);
-                    }
-                }
-                else
-                {
-                    WARN("GLX_OML_swap_method not supported, returning WGL_SWAP_EXCHANGE_ARB.\n");
-                    piValues[i] = WGL_SWAP_EXCHANGE_ARB;
-                }
-                continue;
-
-            case WGL_PBUFFER_LARGEST_ARB:
-                curGLXAttr = GLX_LARGEST_PBUFFER;
-                break;
-
-            case WGL_SAMPLE_BUFFERS_ARB:
-                curGLXAttr = GLX_SAMPLE_BUFFERS_ARB;
-                break;
-
-            case WGL_SAMPLES_ARB:
-                curGLXAttr = GLX_SAMPLES_ARB;
-                break;
-
-            case WGL_FLOAT_COMPONENTS_NV:
-                curGLXAttr = GLX_FLOAT_COMPONENTS_NV;
-                break;
-
-            case WGL_FRAMEBUFFER_SRGB_CAPABLE_EXT:
-                curGLXAttr = GLX_FRAMEBUFFER_SRGB_CAPABLE_EXT;
-                break;
-
-            case WGL_TYPE_RGBA_UNSIGNED_FLOAT_EXT:
-                curGLXAttr = GLX_RGBA_UNSIGNED_FLOAT_TYPE_EXT;
-                break;
-
-            case WGL_ACCUM_RED_BITS_ARB:
-                curGLXAttr = GLX_ACCUM_RED_SIZE;
-                break;
-            case WGL_ACCUM_GREEN_BITS_ARB:
-                curGLXAttr = GLX_ACCUM_GREEN_SIZE;
-                break;
-            case WGL_ACCUM_BLUE_BITS_ARB:
-                curGLXAttr = GLX_ACCUM_BLUE_SIZE;
-                break;
-            case WGL_ACCUM_ALPHA_BITS_ARB:
-                curGLXAttr = GLX_ACCUM_ALPHA_SIZE;
-                break;
-            case WGL_ACCUM_BITS_ARB:
-                if (!fmt) goto pix_error;
-                hTest = pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_ACCUM_RED_SIZE, &tmp);
-                if (hTest) goto get_error;
-                piValues[i] = tmp;
-                hTest = pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_ACCUM_GREEN_SIZE, &tmp);
-                if (hTest) goto get_error;
-                piValues[i] += tmp;
-                hTest = pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_ACCUM_BLUE_SIZE, &tmp);
-                if (hTest) goto get_error;
-                piValues[i] += tmp;
-                hTest = pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, GLX_ACCUM_ALPHA_SIZE, &tmp);
-                if (hTest) goto get_error;
-                piValues[i] += tmp;
-                continue;
-
-            default:
-                FIXME("unsupported %x WGL Attribute\n", curWGLAttr);
-        }
-
-        /* Retrieve a GLX FBConfigAttrib when the attribute to query is valid and
-         * iPixelFormat != 0. When iPixelFormat is 0 the only value which makes
-         * sense to query is WGL_NUMBER_PIXEL_FORMATS_ARB.
-         *
-         * TODO: properly test the behavior of wglGetPixelFormatAttrib*v on Windows
-         *       and check which options can work using iPixelFormat=0 and which not.
-         *       A problem would be that this function is an extension. This would
-         *       mean that the behavior could differ between different vendors (ATI, Nvidia, ..).
-         */
-        if (0 != curGLXAttr && iPixelFormat != 0) {
-            if (!fmt) goto pix_error;
-            hTest = pglXGetFBConfigAttrib(gdi_display, fmt->fbconfig, curGLXAttr, piValues + i);
-            if (hTest) goto get_error;
-            curGLXAttr = 0;
-        } else { 
-            piValues[i] = GL_FALSE; 
-        }
-    }
-    return GL_TRUE;
-
-get_error:
-    ERR("(%p): unexpected failure on GetFBConfigAttrib(%x) returns FALSE\n", hdc, curGLXAttr);
-    return GL_FALSE;
-
-pix_error:
-    ERR("(%p): unexpected iPixelFormat(%d) vs nFormats(%d), returns FALSE\n", hdc, iPixelFormat, nb_pixel_formats);
-    return GL_FALSE;
-}
-
-/**
- * X11DRV_wglGetPixelFormatAttribfvARB
- *
- * WGL_ARB_pixel_format: wglGetPixelFormatAttribfvARB
- */
-static BOOL X11DRV_wglGetPixelFormatAttribfvARB( HDC hdc, int iPixelFormat, int iLayerPlane,
-                                                 UINT nAttributes, const int *piAttributes, FLOAT *pfValues )
-{
-    int *attr;
-    int ret;
-    UINT i;
-
-    TRACE("(%p, %d, %d, %d, %p, %p)\n", hdc, iPixelFormat, iLayerPlane, nAttributes, piAttributes, pfValues);
-
-    /* Allocate a temporary array to store integer values */
-    attr = malloc( nAttributes * sizeof(int) );
-    if (!attr) {
-        ERR("couldn't allocate %d array\n", nAttributes);
-        return GL_FALSE;
-    }
-
-    /* Piggy-back on wglGetPixelFormatAttribivARB */
-    ret = X11DRV_wglGetPixelFormatAttribivARB(hdc, iPixelFormat, iLayerPlane, nAttributes, piAttributes, attr);
-    if (ret) {
-        /* Convert integer values to float. Should also check for attributes
-           that can give decimal values here */
-        for (i=0; i<nAttributes;i++) {
-            pfValues[i] = attr[i];
-        }
-    }
-
-    free( attr );
-    return ret;
+    FIXME( "Unsupported target %#x\n", target );
+    return 0;
 }
 
 /**
@@ -2982,57 +2307,55 @@ static BOOL X11DRV_wglGetPixelFormatAttribfvARB( HDC hdc, int iPixelFormat, int 
  */
 static BOOL X11DRV_wglBindTexImageARB( struct wgl_pbuffer *object, int iBuffer )
 {
-    GLboolean ret = GL_FALSE;
+    static BOOL initialized = FALSE;
+    int prev_binded_texture = 0;
+    GLXContext prev_context;
+    GLXDrawable prev_drawable;
 
     TRACE("(%p, %d)\n", object, iBuffer);
 
-    if (!object->use_render_texture) {
-        RtlSetLastWin32Error(ERROR_INVALID_HANDLE);
+    if (!object->texture_format)
+    {
+        RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
         return GL_FALSE;
     }
 
-    if (use_render_texture_emulation) {
-        static BOOL initialized = FALSE;
-        int prev_binded_texture = 0;
-        GLXContext prev_context;
-        GLXDrawable prev_drawable;
+    prev_context = pglXGetCurrentContext();
+    prev_drawable = pglXGetCurrentDrawable();
 
-        prev_context = pglXGetCurrentContext();
-        prev_drawable = pglXGetCurrentDrawable();
-
-        /* Our render_texture emulation is basic and lacks some features (1D/Cube support).
-           This is mostly due to lack of demos/games using them. Further the use of glReadPixels
-           isn't ideal performance wise but I wasn't able to get other ways working.
-        */
-        if(!initialized) {
-            initialized = TRUE; /* Only show the FIXME once for performance reasons */
-            FIXME("partial stub!\n");
-        }
-
-        TRACE("drawable=%p (%lx), context=%p\n", object->gl, object->gl->drawable, prev_context);
-        if (!object->tmp_context || object->prev_context != prev_context) {
-            if (object->tmp_context)
-                pglXDestroyContext(gdi_display, object->tmp_context);
-            object->tmp_context = pglXCreateNewContext(gdi_display, object->fmt->fbconfig, object->fmt->render_type, prev_context, True);
-            object->prev_context = prev_context;
-        }
-
-        opengl_funcs.gl.p_glGetIntegerv(object->texture_bind_target, &prev_binded_texture);
-
-        /* Switch to our pbuffer */
-        pglXMakeCurrent(gdi_display, object->gl->drawable, object->tmp_context);
-
-        /* Make sure that the prev_binded_texture is set as the current texture state isn't shared between contexts.
-         * After that copy the pbuffer texture data. */
-        opengl_funcs.gl.p_glBindTexture(object->texture_target, prev_binded_texture);
-        opengl_funcs.gl.p_glCopyTexImage2D(object->texture_target, 0, object->use_render_texture, 0, 0, object->width, object->height, 0);
-
-        /* Switch back to the original drawable and context */
-        pglXMakeCurrent(gdi_display, prev_drawable, prev_context);
-        return GL_TRUE;
+    /* Our render_texture emulation is basic and lacks some features (1D/Cube support).
+       This is mostly due to lack of demos/games using them. Further the use of glReadPixels
+       isn't ideal performance wise but I wasn't able to get other ways working.
+    */
+    if (!initialized)
+    {
+        initialized = TRUE; /* Only show the FIXME once for performance reasons */
+        FIXME( "partial stub!\n" );
     }
 
-    return ret;
+    TRACE( "drawable=%p (%lx), context=%p\n", object->gl, object->gl->drawable, prev_context );
+    if (!object->tmp_context || object->prev_context != prev_context)
+    {
+        if (object->tmp_context) pglXDestroyContext( gdi_display, object->tmp_context );
+        object->tmp_context = pglXCreateNewContext( gdi_display, object->fmt->fbconfig,
+                                                    object->fmt->render_type, prev_context, True );
+        object->prev_context = prev_context;
+    }
+
+    opengl_funcs.p_glGetIntegerv( binding_from_target( object->texture_target ), &prev_binded_texture );
+
+    /* Switch to our pbuffer */
+    pglXMakeCurrent( gdi_display, object->gl->drawable, object->tmp_context );
+
+    /* Make sure that the prev_binded_texture is set as the current texture state isn't shared
+     * between contexts. After that copy the pbuffer texture data. */
+    opengl_funcs.p_glBindTexture( object->texture_target, prev_binded_texture );
+    opengl_funcs.p_glCopyTexImage2D( object->texture_target, 0, object->texture_format, 0, 0,
+                                     object->width, object->height, 0 );
+
+    /* Switch back to the original drawable and context */
+    pglXMakeCurrent( gdi_display, prev_drawable, prev_context );
+    return GL_TRUE;
 }
 
 /**
@@ -3042,29 +2365,14 @@ static BOOL X11DRV_wglBindTexImageARB( struct wgl_pbuffer *object, int iBuffer )
  */
 static BOOL X11DRV_wglReleaseTexImageARB( struct wgl_pbuffer *object, int iBuffer )
 {
-    GLboolean ret = GL_FALSE;
-
     TRACE("(%p, %d)\n", object, iBuffer);
 
-    if (!object->use_render_texture) {
-        RtlSetLastWin32Error(ERROR_INVALID_HANDLE);
+    if (!object->texture_format)
+    {
+        RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
         return GL_FALSE;
     }
-    if (use_render_texture_emulation) {
-        return GL_TRUE;
-    }
-    return ret;
-}
-
-/**
- * X11DRV_wglGetExtensionsStringEXT
- *
- * WGL_EXT_extensions_string: wglGetExtensionsStringEXT
- */
-static const char *X11DRV_wglGetExtensionsStringEXT(void)
-{
-    TRACE("() returning \"%s\"\n", wglExtensions);
-    return wglExtensions;
+    return GL_TRUE;
 }
 
 /**
@@ -3137,17 +2445,6 @@ static BOOL X11DRV_wglSwapIntervalEXT(int interval)
     return ret;
 }
 
-/**
- * X11DRV_wglSetPixelFormatWINE
- *
- * WGL_WINE_pixel_format_passthrough: wglSetPixelFormatWINE
- * This is a WINE-specific wglSetPixelFormat which can set the pixel format multiple times.
- */
-static BOOL X11DRV_wglSetPixelFormatWINE(HDC hdc, int format)
-{
-    return set_pixel_format(hdc, format, TRUE);
-}
-
 static BOOL X11DRV_wglQueryCurrentRendererIntegerWINE( GLenum attribute, GLuint *value )
 {
     return pglXQueryCurrentRendererIntegerMESA( attribute, value );
@@ -3188,10 +2485,7 @@ static void register_extension(const char *ext)
     TRACE("'%s'\n", ext);
 }
 
-/**
- * X11DRV_WineGL_LoadExtensions
- */
-static void X11DRV_WineGL_LoadExtensions(void)
+static const char *x11drv_init_wgl_extensions(void)
 {
     wglExtensions[0] = 0;
 
@@ -3200,7 +2494,7 @@ static void X11DRV_WineGL_LoadExtensions(void)
     if (has_extension( glxExtensions, "GLX_ARB_create_context"))
     {
         register_extension( "WGL_ARB_create_context" );
-        opengl_funcs.ext.p_wglCreateContextAttribsARB = X11DRV_wglCreateContextAttribsARB;
+        opengl_funcs.p_wglCreateContextAttribsARB = X11DRV_wglCreateContextAttribsARB;
 
         if (has_extension( glxExtensions, "GLX_ARB_create_context_no_error" ))
             register_extension( "WGL_ARB_create_context_no_error" );
@@ -3208,15 +2502,11 @@ static void X11DRV_WineGL_LoadExtensions(void)
             register_extension("WGL_ARB_create_context_profile");
     }
 
-
-    register_extension( "WGL_ARB_extensions_string" );
-    opengl_funcs.ext.p_wglGetExtensionsStringARB = X11DRV_wglGetExtensionsStringARB;
-
     if (glxRequireVersion(3))
     {
         register_extension( "WGL_ARB_make_current_read" );
-        opengl_funcs.ext.p_wglGetCurrentReadDCARB   = (void *)1;  /* never called */
-        opengl_funcs.ext.p_wglMakeContextCurrentARB = X11DRV_wglMakeContextCurrentARB;
+        opengl_funcs.p_wglGetCurrentReadDCARB   = (void *)1;  /* never called */
+        opengl_funcs.p_wglMakeContextCurrentARB = X11DRV_wglMakeContextCurrentARB;
     }
 
     if (has_extension( glxExtensions, "GLX_ARB_multisample")) register_extension( "WGL_ARB_multisample" );
@@ -3224,18 +2514,13 @@ static void X11DRV_WineGL_LoadExtensions(void)
     if (glxRequireVersion(3))
     {
         register_extension( "WGL_ARB_pbuffer" );
-        opengl_funcs.ext.p_wglCreatePbufferARB    = X11DRV_wglCreatePbufferARB;
-        opengl_funcs.ext.p_wglDestroyPbufferARB   = X11DRV_wglDestroyPbufferARB;
-        opengl_funcs.ext.p_wglGetPbufferDCARB     = X11DRV_wglGetPbufferDCARB;
-        opengl_funcs.ext.p_wglQueryPbufferARB     = X11DRV_wglQueryPbufferARB;
-        opengl_funcs.ext.p_wglReleasePbufferDCARB = X11DRV_wglReleasePbufferDCARB;
-        opengl_funcs.ext.p_wglSetPbufferAttribARB = X11DRV_wglSetPbufferAttribARB;
+        opengl_funcs.p_wglCreatePbufferARB    = X11DRV_wglCreatePbufferARB;
+        opengl_funcs.p_wglDestroyPbufferARB   = X11DRV_wglDestroyPbufferARB;
+        opengl_funcs.p_wglGetPbufferDCARB     = X11DRV_wglGetPbufferDCARB;
+        opengl_funcs.p_wglQueryPbufferARB     = X11DRV_wglQueryPbufferARB;
+        opengl_funcs.p_wglReleasePbufferDCARB = X11DRV_wglReleasePbufferDCARB;
+        opengl_funcs.p_wglSetPbufferAttribARB = X11DRV_wglSetPbufferAttribARB;
     }
-
-    register_extension( "WGL_ARB_pixel_format" );
-    opengl_funcs.ext.p_wglChoosePixelFormatARB      = X11DRV_wglChoosePixelFormatARB;
-    opengl_funcs.ext.p_wglGetPixelFormatAttribfvARB = X11DRV_wglGetPixelFormatAttribfvARB;
-    opengl_funcs.ext.p_wglGetPixelFormatAttribivARB = X11DRV_wglGetPixelFormatAttribivARB;
 
     if (has_extension( glxExtensions, "GLX_ARB_fbconfig_float"))
     {
@@ -3244,12 +2529,11 @@ static void X11DRV_WineGL_LoadExtensions(void)
     }
 
     /* Support WGL_ARB_render_texture when there's support or pbuffer based emulation */
-    if (has_extension( glxExtensions, "GLX_ARB_render_texture") ||
-        (glxRequireVersion(3) && use_render_texture_emulation))
+    if (has_extension( glxExtensions, "GLX_ARB_render_texture" ) || glxRequireVersion( 3 ))
     {
         register_extension( "WGL_ARB_render_texture" );
-        opengl_funcs.ext.p_wglBindTexImageARB    = X11DRV_wglBindTexImageARB;
-        opengl_funcs.ext.p_wglReleaseTexImageARB = X11DRV_wglReleaseTexImageARB;
+        opengl_funcs.p_wglBindTexImageARB    = X11DRV_wglBindTexImageARB;
+        opengl_funcs.p_wglReleaseTexImageARB = X11DRV_wglReleaseTexImageARB;
 
         /* The WGL version of GLX_NV_float_buffer requires render_texture */
         if (has_extension( glxExtensions, "GLX_NV_float_buffer"))
@@ -3262,14 +2546,11 @@ static void X11DRV_WineGL_LoadExtensions(void)
 
     /* EXT Extensions */
 
-    register_extension( "WGL_EXT_extensions_string" );
-    opengl_funcs.ext.p_wglGetExtensionsStringEXT = X11DRV_wglGetExtensionsStringEXT;
-
     /* Load this extension even when it isn't backed by a GLX extension because it is has been around for ages.
      * Games like Call of Duty and K.O.T.O.R. rely on it. Further our emulation is good enough. */
     register_extension( "WGL_EXT_swap_control" );
-    opengl_funcs.ext.p_wglSwapIntervalEXT = X11DRV_wglSwapIntervalEXT;
-    opengl_funcs.ext.p_wglGetSwapIntervalEXT = X11DRV_wglGetSwapIntervalEXT;
+    opengl_funcs.p_wglSwapIntervalEXT = X11DRV_wglSwapIntervalEXT;
+    opengl_funcs.p_wglGetSwapIntervalEXT = X11DRV_wglGetSwapIntervalEXT;
 
     if (has_extension( glxExtensions, "GLX_EXT_framebuffer_sRGB"))
         register_extension("WGL_EXT_framebuffer_sRGB");
@@ -3299,8 +2580,8 @@ static void X11DRV_WineGL_LoadExtensions(void)
     if (has_extension(glExtensions, "GL_NV_vertex_array_range"))
     {
         register_extension( "WGL_NV_vertex_array_range" );
-        opengl_funcs.ext.p_wglAllocateMemoryNV = pglXAllocateMemoryNV;
-        opengl_funcs.ext.p_wglFreeMemoryNV = pglXFreeMemoryNV;
+        opengl_funcs.p_wglAllocateMemoryNV = pglXAllocateMemoryNV;
+        opengl_funcs.p_wglFreeMemoryNV = pglXFreeMemoryNV;
     }
 
     if (has_extension(glxExtensions, "GLX_OML_swap_method"))
@@ -3308,22 +2589,17 @@ static void X11DRV_WineGL_LoadExtensions(void)
 
     /* WINE-specific WGL Extensions */
 
-    /* In WineD3D we need the ability to set the pixel format more than once (e.g. after a device reset).
-     * The default wglSetPixelFormat doesn't allow this, so add our own which allows it.
-     */
-    register_extension( "WGL_WINE_pixel_format_passthrough" );
-    opengl_funcs.ext.p_wglSetPixelFormatWINE = X11DRV_wglSetPixelFormatWINE;
-
     if (has_extension( glxExtensions, "GLX_MESA_query_renderer" ))
     {
         register_extension( "WGL_WINE_query_renderer" );
-        opengl_funcs.ext.p_wglQueryCurrentRendererIntegerWINE = X11DRV_wglQueryCurrentRendererIntegerWINE;
-        opengl_funcs.ext.p_wglQueryCurrentRendererStringWINE = X11DRV_wglQueryCurrentRendererStringWINE;
-        opengl_funcs.ext.p_wglQueryRendererIntegerWINE = X11DRV_wglQueryRendererIntegerWINE;
-        opengl_funcs.ext.p_wglQueryRendererStringWINE = X11DRV_wglQueryRendererStringWINE;
+        opengl_funcs.p_wglQueryCurrentRendererIntegerWINE = X11DRV_wglQueryCurrentRendererIntegerWINE;
+        opengl_funcs.p_wglQueryCurrentRendererStringWINE = X11DRV_wglQueryCurrentRendererStringWINE;
+        opengl_funcs.p_wglQueryRendererIntegerWINE = X11DRV_wglQueryRendererIntegerWINE;
+        opengl_funcs.p_wglQueryRendererStringWINE = X11DRV_wglQueryRendererStringWINE;
     }
-}
 
+    return wglExtensions;
+}
 
 /**
  * glxdrv_SwapBuffers
@@ -3332,18 +2608,15 @@ static void X11DRV_WineGL_LoadExtensions(void)
  */
 static BOOL glxdrv_wglSwapBuffers( HDC hdc )
 {
-    struct x11drv_escape_flush_gl_drawable escape;
     struct gl_drawable *gl;
     struct wgl_context *ctx = NtCurrentTeb()->glContext;
     INT64 ust, msc, sbc, target_sbc = 0;
+    HWND hwnd = NtUserWindowFromDC( hdc );
+    Drawable drawable = 0;
 
     TRACE("(%p)\n", hdc);
 
-    escape.code = X11DRV_FLUSH_GL_DRAWABLE;
-    escape.gl_drawable = 0;
-    escape.flush = !pglXWaitForSbcOML;
-
-    if (!(gl = get_gl_drawable( NtUserWindowFromDC( hdc ), hdc )))
+    if (!(gl = get_gl_drawable( hwnd, hdc )))
     {
         RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
         return FALSE;
@@ -3361,17 +2634,17 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
     {
     case DC_GL_PIXMAP_WIN:
         if (ctx) sync_context( ctx );
-        escape.gl_drawable = gl->pixmap;
-        if (pglXCopySubBufferMESA) {
+        drawable = gl->pixmap;
+        if (ctx && pglXCopySubBufferMESA) {
             /* (glX)SwapBuffers has an implicit glFlush effect, however
              * GLX_MESA_copy_sub_buffer doesn't. Make sure GL is flushed before
              * copying */
             pglFlush();
             pglXCopySubBufferMESA( gdi_display, gl->drawable, 0, 0,
-                                   gl->pixmap_size.cx, gl->pixmap_size.cy );
+                                   gl->rect.right, gl->rect.bottom );
             break;
         }
-        if (pglXSwapBuffersMscOML)
+        if (ctx && pglXSwapBuffersMscOML)
         {
             pglFlush();
             target_sbc = pglXSwapBuffersMscOML( gdi_display, gl->drawable, 0, 0, 0 );
@@ -3382,10 +2655,10 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
     case DC_GL_WINDOW:
     case DC_GL_CHILD_WIN:
         if (ctx) sync_context( ctx );
-        if (gl->type == DC_GL_CHILD_WIN) escape.gl_drawable = gl->window;
+        if (gl->type == DC_GL_CHILD_WIN) drawable = gl->window;
         /* fall through */
     default:
-        if (escape.gl_drawable && pglXSwapBuffersMscOML)
+        if (ctx && drawable && pglXSwapBuffersMscOML)
         {
             pglFlush();
             target_sbc = pglXSwapBuffersMscOML( gdi_display, gl->drawable, 0, 0, 0 );
@@ -3395,48 +2668,56 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
         break;
     }
 
-    if (escape.gl_drawable && pglXWaitForSbcOML)
+    if (ctx && drawable && pglXWaitForSbcOML)
         pglXWaitForSbcOML( gdi_display, gl->drawable, target_sbc, &ust, &msc, &sbc );
 
+    present_gl_drawable( hwnd, ctx ? ctx->hdc : hdc, gl, !pglXWaitForSbcOML, FALSE );
+    update_gl_drawable_size( gl );
     release_gl_drawable( gl );
-
-    if (escape.gl_drawable)
-        NtGdiExtEscape( ctx->hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );
     return TRUE;
 }
 
-static struct opengl_funcs opengl_funcs =
+static void glxdrv_get_pixel_formats( struct wgl_pixel_format *formats,
+                                      UINT max_formats, UINT *num_formats,
+                                      UINT *num_onscreen_formats )
 {
+    UINT i;
+
+    if (formats)
     {
-        glxdrv_wglCopyContext,              /* p_wglCopyContext */
-        glxdrv_wglCreateContext,            /* p_wglCreateContext */
-        glxdrv_wglDeleteContext,            /* p_wglDeleteContext */
-        glxdrv_wglDescribePixelFormat,      /* p_wglDescribePixelFormat */
-        glxdrv_wglGetPixelFormat,           /* p_wglGetPixelFormat */
-        glxdrv_wglGetProcAddress,           /* p_wglGetProcAddress */
-        glxdrv_wglMakeCurrent,              /* p_wglMakeCurrent */
-        glxdrv_wglSetPixelFormat,           /* p_wglSetPixelFormat */
-        glxdrv_wglShareLists,               /* p_wglShareLists */
-        glxdrv_wglSwapBuffers,              /* p_wglSwapBuffers */
+        for (i = 0; i < min( max_formats, nb_pixel_formats ); ++i)
+            describe_pixel_format( i + 1, &formats[i] );
     }
+    *num_formats = nb_pixel_formats;
+    *num_onscreen_formats = nb_onscreen_formats;
+}
+
+static const struct opengl_driver_funcs x11drv_driver_funcs =
+{
+    .p_init_wgl_extensions = x11drv_init_wgl_extensions,
+    .p_set_pixel_format = x11drv_set_pixel_format,
 };
 
-struct opengl_funcs *get_glx_driver( UINT version )
+static struct opengl_funcs opengl_funcs =
 {
-    if (version != WINE_WGL_DRIVER_VERSION)
-    {
-        ERR( "version mismatch, opengl32 wants %u but driver has %u\n", version, WINE_WGL_DRIVER_VERSION );
-        return NULL;
-    }
-    if (has_opengl()) return &opengl_funcs;
-    return NULL;
-}
+    .p_wglCopyContext = glxdrv_wglCopyContext,
+    .p_wglCreateContext = glxdrv_wglCreateContext,
+    .p_wglDeleteContext = glxdrv_wglDeleteContext,
+    .p_wglGetProcAddress = glxdrv_wglGetProcAddress,
+    .p_wglMakeCurrent = glxdrv_wglMakeCurrent,
+    .p_wglShareLists = glxdrv_wglShareLists,
+    .p_wglSwapBuffers = glxdrv_wglSwapBuffers,
+    .p_get_pixel_formats = glxdrv_get_pixel_formats,
+};
 
 #else  /* no OpenGL includes */
 
-struct opengl_funcs *get_glx_driver( UINT version )
+/**********************************************************************
+ *           X11DRV_OpenglInit
+ */
+UINT X11DRV_OpenGLInit( UINT version, struct opengl_funcs **funcs, const struct opengl_driver_funcs **driver_funcs )
 {
-    return NULL;
+    return STATUS_NOT_IMPLEMENTED;
 }
 
 void sync_gl_drawable( HWND hwnd, BOOL known_child )

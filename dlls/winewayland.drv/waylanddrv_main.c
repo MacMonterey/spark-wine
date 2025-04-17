@@ -24,26 +24,72 @@
 
 #include "config.h"
 
+#include <stdlib.h>
+
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 
 #include "waylanddrv.h"
 
+char *process_name = NULL;
+
 static const struct user_driver_funcs waylanddrv_funcs =
 {
+    .pClipboardWindowProc = WAYLAND_ClipboardWindowProc,
+    .pClipCursor = WAYLAND_ClipCursor,
     .pDesktopWindowProc = WAYLAND_DesktopWindowProc,
     .pDestroyWindow = WAYLAND_DestroyWindow,
+    .pSetIMECompositionRect = WAYLAND_SetIMECompositionRect,
+    .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
+    .pReleaseKbdTables = WAYLAND_ReleaseKbdTables,
+    .pSetCursor = WAYLAND_SetCursor,
+    .pSetCursorPos = WAYLAND_SetCursorPos,
+    .pSetWindowText = WAYLAND_SetWindowText,
+    .pSysCommand = WAYLAND_SysCommand,
     .pUpdateDisplayDevices = WAYLAND_UpdateDisplayDevices,
     .pWindowMessage = WAYLAND_WindowMessage,
     .pWindowPosChanged = WAYLAND_WindowPosChanged,
-    .pWindowPosChanging = WAYLAND_WindowPosChanging
+    .pWindowPosChanging = WAYLAND_WindowPosChanging,
+    .pCreateWindowSurface = WAYLAND_CreateWindowSurface,
+    .pVulkanInit = WAYLAND_VulkanInit,
+    .pOpenGLInit = WAYLAND_OpenGLInit,
 };
+
+static void wayland_init_process_name(void)
+{
+    WCHAR *p, *appname;
+    WCHAR appname_lower[MAX_PATH];
+    DWORD appname_len;
+    DWORD appnamez_size;
+    DWORD utf8_size;
+    int i;
+
+    appname = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+    if ((p = wcsrchr(appname, '/'))) appname = p + 1;
+    if ((p = wcsrchr(appname, '\\'))) appname = p + 1;
+    appname_len = lstrlenW(appname);
+
+    if (appname_len == 0 || appname_len >= MAX_PATH) return;
+
+    for (i = 0; appname[i]; i++) appname_lower[i] = RtlDowncaseUnicodeChar(appname[i]);
+    appname_lower[i] = 0;
+
+    appnamez_size = (appname_len + 1) * sizeof(WCHAR);
+
+    if (!RtlUnicodeToUTF8N(NULL, 0, &utf8_size, appname_lower, appnamez_size) &&
+        (process_name = malloc(utf8_size)))
+    {
+        RtlUnicodeToUTF8N(process_name, utf8_size, &utf8_size, appname_lower, appnamez_size);
+    }
+}
 
 static NTSTATUS waylanddrv_unix_init(void *arg)
 {
     /* Set the user driver functions now so that they are available during
      * our initialization. We clear them on error. */
     __wine_set_user_driver(&waylanddrv_funcs, WINE_GDI_DRIVER_VERSION);
+
+    wayland_init_process_name();
 
     if (!wayland_process_init()) goto err;
 
@@ -64,10 +110,20 @@ static NTSTATUS waylanddrv_unix_read_events(void *arg)
     return STATUS_UNSUCCESSFUL;
 }
 
+static NTSTATUS waylanddrv_unix_init_clipboard(void *arg)
+{
+    /* If the compositor supports zwlr_data_control_manager_v1, we don't need
+     * per-process clipboard window and handling, we can use the default clipboard
+     * window from the desktop process. */
+    if (process_wayland.zwlr_data_control_manager_v1) return STATUS_UNSUCCESSFUL;
+    return STATUS_SUCCESS;
+}
+
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     waylanddrv_unix_init,
     waylanddrv_unix_read_events,
+    waylanddrv_unix_init_clipboard,
 };
 
 C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == waylanddrv_unix_func_count);
@@ -78,6 +134,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
     waylanddrv_unix_init,
     waylanddrv_unix_read_events,
+    waylanddrv_unix_init_clipboard,
 };
 
 C_ASSERT(ARRAYSIZE(__wine_unix_call_wow64_funcs) == waylanddrv_unix_func_count);

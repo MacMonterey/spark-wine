@@ -27,7 +27,6 @@
 #include "winnls.h"
 #include "commctrl.h"
 
-#include "wine/heap.h"
 #include "wine/test.h"
 #include "v6util.h"
 #include "msg.h"
@@ -75,6 +74,22 @@ static unsigned hash_Ly(const char *str)
         hash = hash * 1664525u + (unsigned char)(*str) + 1013904223u;
 
     return hash;
+}
+
+/* try to make sure pending X events have been processed before continuing */
+static void flush_events(void)
+{
+    MSG msg;
+    int diff = 200;
+    int min_timeout = 100;
+    DWORD time = GetTickCount() + diff;
+
+    while (diff > 0)
+    {
+        if (MsgWaitForMultipleObjects( 0, NULL, FALSE, min_timeout, QS_ALLINPUT ) == WAIT_TIMEOUT) break;
+        while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
+        diff = time - GetTickCount();
+    }
 }
 
 static const char * const strings[4] = {
@@ -254,18 +269,18 @@ static void run_test(DWORD style, const struct listbox_test test)
         WCHAR *txtw;
         CHAR *txt;
 
-        txt = heap_alloc_zero(size + 1);
+        txt = calloc(1, size + 1);
         resA = SendMessageA(hLB, LB_GETTEXT, i, (LPARAM)txt);
         ok(!strcmp(txt, strings[i]), "returned string for item %d does not match %s vs %s\n", i, txt, strings[i]);
 
-        txtw = heap_alloc_zero((size + 1) * sizeof(*txtw));
+        txtw = calloc(size + 1, sizeof(*txtw));
         resW = SendMessageW(hLB, LB_GETTEXT, i, (LPARAM)txtw);
         ok(resA == resW, "Unexpected text length.\n");
         WideCharToMultiByte(CP_ACP, 0, txtw, -1, txt, size, NULL, NULL);
         ok(!strcmp (txt, strings[i]), "Unexpected string for item %d, %s vs %s.\n", i, txt, strings[i]);
 
-        heap_free(txtw);
-        heap_free(txt);
+        free(txtw);
+        free(txt);
     }
 
     /* Confirm the count of items, and that an invalid delete does not remove anything */
@@ -736,6 +751,40 @@ static void test_LB_SETCURSEL(void)
     ok(ret == -1, "Unexpected anchor index %d.\n", ret);
 
     DestroyWindow(hLB);
+
+    /* LBS_NOSEL */
+    hLB = create_listbox(LBS_NOSEL, 0);
+    ok(hLB != NULL, "Failed to create ListBox window.\n");
+
+    ret = SendMessageA(hLB, LB_GETCURSEL, 0, 0);
+    ok(ret == -1, "Unexpected return value %d.\n", ret);
+
+    ret = SendMessageA(hLB, LB_GETSEL, 0, 0);
+    ok(!ret, "Unexpected return value %d.\n", ret);
+
+    ret = SendMessageA(hLB, LB_SETCURSEL, 2, 0);
+    todo_wine
+    ok(ret == 2, "Unexpected return value %d.\n", ret);
+
+    ret = SendMessageA(hLB, LB_GETSEL, 2, 0);
+    ok(ret == 1, "Unexpected return value %d.\n", ret);
+
+    ret = SendMessageA(hLB, LB_GETCURSEL, 0, 0);
+    ok(ret == 2, "Unexpected return value %d.\n", ret);
+
+    ret = SendMessageA(hLB, LB_SETCURSEL, 3, 0);
+    todo_wine
+    ok(ret == 3, "Unexpected return value %d.\n", ret);
+
+    ret = SendMessageA(hLB, LB_GETSEL, 3, 0);
+    ok(ret == 1, "Unexpected return value %d.\n", ret);
+
+    ret = SendMessageA(hLB, LB_GETCURSEL, 0, 0);
+    ok(ret == 3, "Unexpected return value %d.\n", ret);
+
+    DestroyWindow(hLB);
+
+    DestroyWindow(parent);
 }
 
 static void test_LB_SETSEL(void)
@@ -2485,6 +2534,7 @@ static void test_WM_MEASUREITEM(void)
 
     data = SendMessageA(listbox, LB_GETITEMDATA, 0, 0);
     ok(data == (LRESULT)strings[0], "data = %08Ix, expected %p\n", data, strings[0]);
+    DestroyWindow(listbox);
     DestroyWindow(parent);
 
     parent = create_parent();
@@ -2492,6 +2542,8 @@ static void test_WM_MEASUREITEM(void)
 
     data = SendMessageA(listbox, LB_GETITEMDATA, 0, 0);
     ok(!data, "data = %08Ix\n", data);
+    DestroyWindow(listbox);
+    DestroyWindow(parent);
 
     /* LBS_HASSTRINGS */
     parent = create_parent();
@@ -2676,6 +2728,168 @@ static void test_LBS_NODATA(void)
     DestroyWindow(parent);
 }
 
+static void test_LB_FINDSTRING(void)
+{
+    static const WCHAR *strings[] =
+    {
+        L"abci",
+        L"AbCI",
+        L"abcI",
+        L"abc\xcdzz",
+        L"abc\xedzz",
+        L"abc\xcd",
+        L"abc\xed",
+        L"abcO",
+        L"abc\xd8",
+        L"abcP",
+    };
+    static const struct { const WCHAR *str; LRESULT from, res, exact, alt_res, alt_exact; } tests[] =
+    {
+        { L"ab",        -1, 0, -1, 0, -1 },
+        { L"abc",       -1, 0, -1, 0, -1 },
+        { L"abci",      -1, 0, 0, 0, 0 },
+        { L"ABCI",      -1, 0, 0, 0, 0 },
+        { L"ABC\xed",   -1, 3, 3, 3, 3 },
+        { L"ABC\xcd",    4, 5, 3, 5, 3 },
+        { L"abcp",      -1, 9, 9, 8, 8 },
+    };
+    HWND listbox;
+    unsigned int i;
+    LRESULT ret;
+
+    listbox = CreateWindowW( L"listbox", L"TestList", LBS_HASSTRINGS | LBS_SORT,
+                             0, 0, 100, 100, NULL, NULL, NULL, 0 );
+    ok( listbox != NULL, "Failed to create listbox\n" );
+    SendMessageW( listbox, LB_SETLOCALE, MAKELANGID( LANG_FRENCH, SUBLANG_DEFAULT ), 0 );
+    for (i = 0; i < ARRAY_SIZE(strings); i++) SendMessageW( listbox, LB_ADDSTRING, 0, (LPARAM)strings[i] );
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        ret = SendMessageW( listbox, LB_FINDSTRING, tests[i].from, (LPARAM)tests[i].str );
+        ok( ret == tests[i].res, "%u: wrong result %Id / %Id\n", i, ret, tests[i].res );
+        ret = SendMessageW( listbox, LB_FINDSTRINGEXACT, tests[i].from, (LPARAM)tests[i].str );
+        ok( ret == tests[i].exact, "%u: wrong result %Id / %Id\n", i, ret, tests[i].exact );
+    }
+
+    SendMessageW( listbox, LB_RESETCONTENT, 0, 0 );
+    SendMessageW( listbox, LB_SETLOCALE, MAKELANGID( LANG_SWEDISH, SUBLANG_DEFAULT ), 0 );
+    for (i = 0; i < ARRAY_SIZE(strings); i++) SendMessageW( listbox, LB_ADDSTRING, 0, (LPARAM)strings[i] );
+    ret = SendMessageW( listbox, LB_FINDSTRING, -1, (LPARAM)L"abcp" );
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        ret = SendMessageW( listbox, LB_FINDSTRING, tests[i].from, (LPARAM)tests[i].str );
+        ok( ret == tests[i].alt_res, "%u: wrong result %Id / %Id\n", i, ret, tests[i].alt_res );
+        ret = SendMessageW( listbox, LB_FINDSTRINGEXACT, tests[i].from, (LPARAM)tests[i].str );
+        ok( ret == tests[i].alt_exact, "%u: wrong result %Id / %Id\n", i, ret, tests[i].alt_exact );
+    }
+
+    SendMessageW( listbox, LB_RESETCONTENT, 0, 0 );
+    SendMessageW( listbox, LB_ADDSTRING, 0, (LPARAM)L"abc" );
+    SendMessageW( listbox, LB_ADDSTRING, 0, (LPARAM)L"[abc]" );
+    SendMessageW( listbox, LB_ADDSTRING, 0, (LPARAM)L"[-abc-]" );
+    ret = SendMessageW( listbox, LB_FINDSTRING, -1, (LPARAM)L"abc" );
+    ok( ret == 0, "wrong result %Id\n", ret );
+    ret = SendMessageW( listbox, LB_FINDSTRINGEXACT, -1, (LPARAM)L"abc" );
+    todo_wine
+    ok( ret == 0, "wrong result %Id\n", ret );
+    ret = SendMessageW( listbox, LB_FINDSTRING, 0, (LPARAM)L"abc" );
+    ok( ret == 1, "wrong result %Id\n", ret );
+    ret = SendMessageW( listbox, LB_FINDSTRINGEXACT, 0, (LPARAM)L"abc" );
+    todo_wine
+    ok( ret == 0, "wrong result %Id\n", ret );
+    ret = SendMessageW( listbox, LB_FINDSTRING, 1, (LPARAM)L"abc" );
+    ok( ret == 2, "wrong result %Id\n", ret );
+    ret = SendMessageW( listbox, LB_FINDSTRINGEXACT, 1, (LPARAM)L"abc" );
+    todo_wine
+    ok( ret == 0, "wrong result %Id\n", ret );
+    DestroyWindow( listbox );
+}
+
+#define ok_selected_value(list, selected) \
+        _ok_selected_value(list, selected, __LINE__)
+static void _ok_selected_value(HWND list, const char *selected, int line)
+{
+    char buffer[20] = {0};
+    int index = SendMessageA(list, LB_GETCURSEL, 0, 0);
+    SendMessageA(list, LB_GETTEXT, index, (LPARAM)buffer);
+    ok_(__FILE__, line)(!strcmp(buffer, selected), "Got %s\n", buffer);
+}
+
+static void test_keypresses(void)
+{
+    HWND list;
+    int i;
+    const char *strings_to_add[] = {
+        "b_eta", "a_lpha", "be_ta", "al_pha", "beta", "alpha", "gamma", "epsilon", "le"
+    };
+
+    /* Test with an unsorted list */
+
+    list = CreateWindowA(WC_LISTBOXA, "TestList", (LBS_STANDARD & ~LBS_SORT), 0, 0, 100, 100, NULL, NULL, NULL, 0);
+    ok(list != NULL, "Failed to create listbox window.\n");
+
+    for (i = 0; i < ARRAY_SIZE(strings_to_add); i++)
+    {
+        SendMessageA(list, LB_ADDSTRING, 0, (LPARAM)strings_to_add[i]);
+    }
+
+    SendMessageA(list, WM_CHAR, (WPARAM)'a', 0);
+    ok_selected_value(list, "a_lpha");
+
+    SendMessageA(list, WM_CHAR, (WPARAM)'l', 0);
+    ok_selected_value(list, "le");
+
+    SendMessageA(list, WM_CHAR, (WPARAM)'p', 0);
+    ok_selected_value(list, "le");
+
+    SendMessageA(list, WM_CHAR, (WPARAM)'b', 0);
+    ok_selected_value(list, "b_eta");
+
+    SendMessageA(list, WM_CHAR, (WPARAM)'e', 0);
+    ok_selected_value(list, "epsilon");
+
+    SendMessageA(list, WM_CHAR, (WPARAM)'t', 0);
+    ok_selected_value(list, "epsilon");
+
+    DestroyWindow(list);
+
+    /* Test with a sorted list */
+
+    list = CreateWindowA(WC_LISTBOXA, "TestList", LBS_STANDARD, 0, 0, 100, 100, NULL, NULL, NULL, 0);
+
+    for (i = 0; i < ARRAY_SIZE(strings_to_add); i++)
+    {
+        SendMessageA(list, LB_ADDSTRING, 0, (LPARAM)strings_to_add[i]);
+    }
+
+    SendMessageA(list, WM_CHAR, (WPARAM)'a', 0);
+    todo_wine
+    ok_selected_value(list, "a_lpha");
+
+    SendMessageA(list, WM_CHAR, (WPARAM)'l', 0);
+    todo_wine
+    ok_selected_value(list, "al_pha");
+
+    SendMessageA(list, WM_CHAR, (WPARAM)'p', 0);
+    todo_wine
+    ok_selected_value(list, "alpha");
+
+    /* Windows needs a certain time to pass until it starts a new search */
+
+    SendMessageA(list, WM_CHAR, (WPARAM)'b', 0);
+    todo_wine
+    ok_selected_value(list, "alpha");
+
+    Sleep(2100);
+    flush_events();
+
+    SendMessageA(list, WM_CHAR, (WPARAM)'b', 0);
+    todo_wine
+    ok_selected_value(list, "b_eta");
+
+    DestroyWindow(list);
+}
+
 START_TEST(listbox)
 {
     ULONG_PTR ctx_cookie;
@@ -2705,6 +2919,8 @@ START_TEST(listbox)
     test_WM_MEASUREITEM();
     test_LB_SETSEL();
     test_LBS_NODATA();
+    test_LB_FINDSTRING();
+    test_keypresses();
 
     unload_v6_module(ctx_cookie, hCtx);
 }

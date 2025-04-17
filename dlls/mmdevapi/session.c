@@ -28,19 +28,27 @@
 #include <wine/debug.h>
 #include <wine/unixlib.h>
 
-#include "unixlib.h"
-#include "mmdevdrv.h"
+#include "mmdevapi_private.h"
 
 #define NULL_PTR_ERR MAKE_HRESULT(SEVERITY_ERROR, FACILITY_WIN32, RPC_X_NULL_REF_POINTER)
 
 WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
 
-extern void sessions_lock(void) DECLSPEC_HIDDEN;
-extern void sessions_unlock(void) DECLSPEC_HIDDEN;
+extern void sessions_lock(void);
+extern void sessions_unlock(void);
 
-extern void set_stream_volumes(struct audio_client *This) DECLSPEC_HIDDEN;
+static WCHAR *duplicate_wstr(const WCHAR *str)
+{
+    const WCHAR *source = str ? str : L"";
+    int len = (wcslen(source) + 1) * sizeof(WCHAR);
+    WCHAR *ret = CoTaskMemAlloc(len);
+    memcpy(ret, source, len);
+    return ret;
+}
 
-struct list sessions = LIST_INIT(sessions);
+extern void set_stream_volumes(struct audio_client *This);
+
+static struct list sessions = LIST_INIT(sessions);
 
 static inline struct audio_session_wrapper *impl_from_IAudioSessionControl2(IAudioSessionControl2 *iface)
 {
@@ -100,7 +108,7 @@ static ULONG WINAPI control_Release(IAudioSessionControl2 *iface)
             IAudioClient3_Release(&This->client->IAudioClient3_iface);
         }
 
-        HeapFree(GetProcessHeap(), 0, This);
+        free(This);
     }
 
     return ref;
@@ -127,7 +135,7 @@ static HRESULT WINAPI control_GetState(IAudioSessionControl2 *iface, AudioSessio
 
     LIST_FOR_EACH_ENTRY(client, &This->session->clients, struct audio_client, entry) {
         params.stream = client->stream;
-        WINE_UNIX_CALL(is_started, &params);
+        wine_unix_call(is_started, &params);
         if (params.result == S_OK) {
             *state = AudioSessionStateActive;
             sessions_unlock();
@@ -145,46 +153,99 @@ static HRESULT WINAPI control_GetState(IAudioSessionControl2 *iface, AudioSessio
 static HRESULT WINAPI control_GetDisplayName(IAudioSessionControl2 *iface, WCHAR **name)
 {
     struct audio_session_wrapper *This = impl_from_IAudioSessionControl2(iface);
-    FIXME("(%p)->(%p) - stub\n", This, name);
-    return E_NOTIMPL;
+    struct audio_session *session = This->session;
+
+    TRACE("(%p)->(%p) - stub\n", This, name);
+
+    if (!name)
+        return E_POINTER;
+
+    *name = duplicate_wstr(session->display_name);
+
+    return S_OK;
 }
 
 static HRESULT WINAPI control_SetDisplayName(IAudioSessionControl2 *iface, const WCHAR *name,
-                                         const GUID *session)
+                                         const GUID *event_context)
 {
     struct audio_session_wrapper *This = impl_from_IAudioSessionControl2(iface);
-    FIXME("(%p)->(%p, %s) - stub\n", This, name, debugstr_guid(session));
-    return E_NOTIMPL;
+    struct audio_session *session = This->session;
+
+    TRACE("(%p)->(%p, %s) - stub\n", This, name, debugstr_guid(event_context));
+    FIXME("Ignoring event_context\n");
+
+    if (!name)
+        return HRESULT_FROM_WIN32(RPC_X_NULL_REF_POINTER);
+
+    free(session->display_name);
+    session->display_name = wcsdup(name);
+
+    return S_OK;
 }
 
 static HRESULT WINAPI control_GetIconPath(IAudioSessionControl2 *iface, WCHAR **path)
 {
     struct audio_session_wrapper *This = impl_from_IAudioSessionControl2(iface);
-    FIXME("(%p)->(%p) - stub\n", This, path);
-    return E_NOTIMPL;
+    struct audio_session *session = This->session;
+
+    TRACE("(%p)->(%p) - stub\n", This, path);
+
+    if (!path)
+        return E_POINTER;
+
+    *path = duplicate_wstr(session->icon_path);
+
+    return S_OK;
 }
 
 static HRESULT WINAPI control_SetIconPath(IAudioSessionControl2 *iface, const WCHAR *path,
-                                      const GUID *session)
+                                      const GUID *event_context)
 {
     struct audio_session_wrapper *This = impl_from_IAudioSessionControl2(iface);
-    FIXME("(%p)->(%s, %s) - stub\n", This, debugstr_w(path), debugstr_guid(session));
-    return E_NOTIMPL;
+    struct audio_session *session = This->session;
+
+    TRACE("(%p)->(%s, %s) - stub\n", This, debugstr_w(path), debugstr_guid(event_context));
+    FIXME("Ignoring event_context\n");
+
+    if (!path)
+        return HRESULT_FROM_WIN32(RPC_X_NULL_REF_POINTER);
+
+    free(session->icon_path);
+    session->icon_path = wcsdup(path);
+
+    return S_OK;
 }
 
 static HRESULT WINAPI control_GetGroupingParam(IAudioSessionControl2 *iface, GUID *group)
 {
     struct audio_session_wrapper *This = impl_from_IAudioSessionControl2(iface);
-    FIXME("(%p)->(%p) - stub\n", This, group);
-    return E_NOTIMPL;
+    struct audio_session *session = This->session;
+
+    TRACE("(%p)->(%p) - stub\n", This, group);
+
+    if (!group)
+        return HRESULT_FROM_WIN32(RPC_X_NULL_REF_POINTER);
+
+    *group = session->grouping_param;
+
+    return S_OK;
 }
 
 static HRESULT WINAPI control_SetGroupingParam(IAudioSessionControl2 *iface, const GUID *group,
-                                           const GUID *session)
+                                           const GUID *event_context)
 {
     struct audio_session_wrapper *This = impl_from_IAudioSessionControl2(iface);
-    FIXME("(%p)->(%s, %s) - stub\n", This, debugstr_guid(group), debugstr_guid(session));
-    return E_NOTIMPL;
+    struct audio_session *session = This->session;
+
+    TRACE("(%p)->(%s, %s) - stub\n", This, debugstr_guid(group), debugstr_guid(event_context));
+    FIXME("Ignoring event_context\n");
+
+    if (!group)
+        return HRESULT_FROM_WIN32(RPC_X_NULL_REF_POINTER);
+
+    session->grouping_param = *group;
+
+    return S_OK;
 }
 
 static HRESULT WINAPI control_RegisterAudioSessionNotification(IAudioSessionControl2 *iface,
@@ -206,15 +267,55 @@ static HRESULT WINAPI control_UnregisterAudioSessionNotification(IAudioSessionCo
 static HRESULT WINAPI control_GetSessionIdentifier(IAudioSessionControl2 *iface, WCHAR **id)
 {
     struct audio_session_wrapper *This = impl_from_IAudioSessionControl2(iface);
-    FIXME("(%p)->(%p) - stub\n", This, id);
-    return E_NOTIMPL;
+    WCHAR exe_path[MAX_PATH], session_guid[39], *dev_id;
+    DWORD len;
+    HRESULT hr;
+
+    TRACE("(%p)->(%p).\n", This, id);
+
+    if (!id)
+        return E_POINTER;
+    *id = NULL;
+
+    len = ARRAY_SIZE(exe_path);
+    if (!QueryFullProcessImageNameW(GetCurrentProcess(), PROCESS_NAME_NATIVE, exe_path, &len))
+        return E_FAIL;
+    if (!StringFromGUID2(&This->session->guid, session_guid, ARRAY_SIZE(session_guid)))
+        return E_FAIL;
+    if (FAILED(hr = IMMDevice_GetId(This->session->device, &dev_id)))
+        return hr;
+
+    len = wcslen(dev_id) + 1 + wcslen(exe_path) + 2 + wcslen(session_guid) + 1;
+    if (!(*id = CoTaskMemAlloc(len * sizeof(WCHAR)))) {
+        CoTaskMemFree(dev_id);
+        return E_OUTOFMEMORY;
+    }
+    swprintf(*id, len, L"%s|%s%%b%s", dev_id, exe_path, session_guid);
+    CoTaskMemFree(dev_id);
+    return S_OK;
 }
 
 static HRESULT WINAPI control_GetSessionInstanceIdentifier(IAudioSessionControl2 *iface, WCHAR **id)
 {
     struct audio_session_wrapper *This = impl_from_IAudioSessionControl2(iface);
-    FIXME("(%p)->(%p) - stub\n", This, id);
-    return E_NOTIMPL;
+    WCHAR *session_id, pid[16];
+    HRESULT hr;
+    DWORD len;
+
+    TRACE("(%p)->(%p).\n", This, id);
+
+    if (FAILED(hr = control_GetSessionIdentifier(iface, &session_id)))
+        return hr;
+
+    swprintf(pid, ARRAY_SIZE(pid), L"%lu", GetCurrentProcessId());
+    len = wcslen(session_id) + 4 + wcslen(pid) + 1;
+    if (!(*id = CoTaskMemAlloc(len * sizeof(WCHAR)))) {
+        CoTaskMemFree(session_id);
+        return E_OUTOFMEMORY;
+    }
+    swprintf(*id, len, L"%s|1%%b%s", session_id, pid);
+    CoTaskMemFree(session_id);
+    return S_OK;
 }
 
 static HRESULT WINAPI control_GetProcessId(IAudioSessionControl2 *iface, DWORD *pid)
@@ -245,7 +346,7 @@ static HRESULT WINAPI control_SetDuckingPreference(IAudioSessionControl2 *iface,
     return S_OK;
 }
 
-const IAudioSessionControl2Vtbl AudioSessionControl2_Vtbl =
+static const IAudioSessionControl2Vtbl AudioSessionControl2_Vtbl =
 {
     control_QueryInterface,
     control_AddRef,
@@ -416,7 +517,7 @@ static HRESULT WINAPI channelvolume_GetAllVolumes(IChannelAudioVolume *iface, UI
     return S_OK;
 }
 
-const IChannelAudioVolumeVtbl ChannelAudioVolume_Vtbl =
+static const IChannelAudioVolumeVtbl ChannelAudioVolume_Vtbl =
 {
     channelvolume_QueryInterface,
     channelvolume_AddRef,
@@ -542,7 +643,7 @@ static HRESULT WINAPI simplevolume_GetMute(ISimpleAudioVolume *iface, BOOL *mute
     return S_OK;
 }
 
-const ISimpleAudioVolumeVtbl SimpleAudioVolume_Vtbl =
+static const ISimpleAudioVolumeVtbl SimpleAudioVolume_Vtbl =
 {
     simplevolume_QueryInterface,
     simplevolume_AddRef,
@@ -553,17 +654,12 @@ const ISimpleAudioVolumeVtbl SimpleAudioVolume_Vtbl =
     simplevolume_GetMute
 };
 
-void session_init_vols(struct audio_session *session, UINT channels)
+static void session_init_vols(struct audio_session *session, UINT channels)
 {
     if (session->channel_count < channels) {
         UINT i;
 
-        if (session->channel_vols)
-            session->channel_vols = HeapReAlloc(GetProcessHeap(), 0, session->channel_vols,
-                                                sizeof(float) * channels);
-        else
-            session->channel_vols = HeapAlloc(GetProcessHeap(), 0, sizeof(float) * channels);
-
+        session->channel_vols = realloc(session->channel_vols, sizeof(float) * channels);
         if (!session->channel_vols)
             return;
 
@@ -574,10 +670,9 @@ void session_init_vols(struct audio_session *session, UINT channels)
     }
 }
 
-struct audio_session *session_create(const GUID *guid, IMMDevice *device, UINT channels)
+static struct audio_session *session_create(const GUID *guid, IMMDevice *device, UINT channels)
 {
-    struct audio_session *ret = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
-                                          sizeof(struct audio_session));
+    struct audio_session *ret = calloc(1, sizeof(struct audio_session));
     if (!ret)
         return NULL;
 
@@ -593,6 +688,8 @@ struct audio_session *session_create(const GUID *guid, IMMDevice *device, UINT c
 
     ret->master_vol = 1.f;
 
+    CoCreateGuid(&ret->grouping_param);
+
     return ret;
 }
 
@@ -600,7 +697,7 @@ struct audio_session_wrapper *session_wrapper_create(struct audio_client *client
 {
     struct audio_session_wrapper *ret;
 
-    ret = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(struct audio_session_wrapper));
+    ret = calloc(1, sizeof(struct audio_session_wrapper));
     if (!ret)
         return NULL;
 
@@ -617,4 +714,80 @@ struct audio_session_wrapper *session_wrapper_create(struct audio_client *client
     }
 
     return ret;
+}
+
+/* If channels == 0, then this will return or create a session with
+ * matching dataflow and GUID. Otherwise, channels must also match. */
+HRESULT get_audio_session(const GUID *guid, IMMDevice *device, UINT channels,
+                          struct audio_session **out)
+{
+    struct audio_session *session;
+
+    TRACE("(%s, %p, %u, %p)\n", debugstr_guid(guid), device, channels, out);
+
+    if (!guid || IsEqualGUID(guid, &GUID_NULL)) {
+        *out = session_create(&GUID_NULL, device, channels);
+        if (!*out)
+            return E_OUTOFMEMORY;
+
+        return S_OK;
+    }
+
+    *out = NULL;
+    LIST_FOR_EACH_ENTRY(session, &sessions, struct audio_session, entry) {
+        if (session->device == device && IsEqualGUID(guid, &session->guid)) {
+            session_init_vols(session, channels);
+            *out = session;
+            break;
+        }
+    }
+
+    if (!*out) {
+        *out = session_create(guid, device, channels);
+        if (!*out)
+            return E_OUTOFMEMORY;
+    }
+
+    return S_OK;
+}
+
+HRESULT get_audio_session_wrapper(const GUID *guid, IMMDevice *device,
+                                  struct audio_session_wrapper **out)
+{
+    struct audio_session *session;
+
+    const HRESULT hr = get_audio_session(guid, device, 0, &session);
+    if (FAILED(hr))
+        return hr;
+
+    *out = session_wrapper_create(NULL);
+    if (!*out)
+        return E_OUTOFMEMORY;
+
+    (*out)->session = session;
+
+    return S_OK;
+}
+
+HRESULT get_audio_sessions(IMMDevice *device, GUID **ret, int *ret_count)
+{
+    struct audio_session *session;
+
+    *ret_count = 0;
+    *ret = NULL;
+    LIST_FOR_EACH_ENTRY(session, &sessions, struct audio_session, entry) {
+        if (session->device == device)
+            ++*ret_count;
+    }
+    if (!*ret_count)
+        return S_OK;
+
+    if (!(*ret = malloc(*ret_count * sizeof(**ret))))
+        return E_OUTOFMEMORY;
+    *ret_count = 0;
+    LIST_FOR_EACH_ENTRY(session, &sessions, struct audio_session, entry) {
+        if (session->device == device)
+            (*ret)[(*ret_count)++] = session->guid;
+    }
+    return S_OK;
 }

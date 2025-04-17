@@ -26,7 +26,7 @@ extern "C" {
 #endif
 
 #include <bcrypt.h>
-/* FIXME: #include <ncrypt.h> */
+#include <ncrypt.h>
 
 #ifndef WINADVAPI
 #ifdef _ADVAPI32_
@@ -793,7 +793,7 @@ typedef struct _CRYPT_SMIME_CAPABILITIES {
 
 typedef struct _VTableProvStruc {
     DWORD    Version;
-#ifdef WINE_STRICT_PROTOTYPES
+#ifndef WINE_NO_STRICT_PROTOTYPES
     BOOL     (WINAPI *FuncVerifyImage)(LPCSTR,BYTE*);
     void     (WINAPI *FuncReturnhWnd)(HWND*);
 #else
@@ -1657,6 +1657,9 @@ typedef const CERT_CRL_CONTEXT_PAIR *PCCERT_CRL_CONTEXT_PAIR;
 #define CRYPT_OID_INFO_NAME_KEY  2
 #define CRYPT_OID_INFO_ALGID_KEY 3
 #define CRYPT_OID_INFO_SIGN_KEY  4
+
+#define CRYPT_OID_INFO_PUBKEY_ENCRYPT_KEY_FLAG 0x40000000
+#define CRYPT_OID_INFO_PUBKEY_SIGN_KEY_FLAG    0x80000000
 
 /* Algorithm IDs */
 
@@ -3902,7 +3905,7 @@ typedef struct _CMSG_CMS_RECIPIENT_INFO {
 #define CMSG_KEY_AGREE_VERSION          CMSG_ENVELOPED_RECIPIENT_V3
 #define CMSG_MAIL_LIST_VERSION          CMSG_ENVELOPED_RECIPIENT_V4
 
-typedef void * (WINAPI *PFN_CMSG_ALLOC)(size_t cb);
+typedef void * (__WINE_ALLOC_SIZE(1) WINAPI *PFN_CMSG_ALLOC)(size_t cb);
 typedef void   (WINAPI *PFN_CMSG_FREE)(void *pv);
 
 typedef struct _CMSG_CONTENT_ENCRYPT_INFO {

@@ -78,7 +78,7 @@ static void test_create_env(void)
     BOOL r, is_wow64 = FALSE;
     HANDLE htok;
     WCHAR * env[4];
-    char * st, systemroot[100], programdata[100];
+    char * st, systemroot[100], programdata[100], allusersprofile[100];
     int i, j;
 
     static const struct profile_item common_vars[] = {
@@ -186,7 +186,7 @@ static void test_create_env(void)
     }
 
     /* Test for common environment variables (post NT4) */
-    if (!GetEnvironmentVariableA("ALLUSERSPROFILE", NULL, 0))
+    if (!GetEnvironmentVariableA("ALLUSERSPROFILE", allusersprofile, sizeof(allusersprofile)))
     {
         win_skip("Some environment variables are not present on NT4\n");
     }
@@ -198,6 +198,9 @@ static void test_create_env(void)
             {
                 r = get_env(env[j], common_post_nt4_vars[i].name, &st);
                 expect_env(TRUE, r, common_post_nt4_vars[i].name);
+                if (!strcmp(common_post_nt4_vars[i].name, "ALLUSERSPROFILE") ||
+                        !strcmp(common_post_nt4_vars[i].name, "ProgramData"))
+                    ok(!strcmp(st + strlen(common_post_nt4_vars[i].name) + 1, allusersprofile), "%s\n", st);
                 if (r) HeapFree(GetProcessHeap(), 0, st);
             }
         }
@@ -293,6 +296,8 @@ static void test_get_profiles_dir(void)
      */
     ok(profiles_len - 1 == r, "expected %ld, got %d\n", profiles_len - 1, r);
     ok(!strcmp(buf, profiles_dir), "expected %s, got %s\n", profiles_dir, buf);
+    ok(strlen(buf) + 1 == cch, "String length is %Iu, but cch is %lu\n", strlen(buf), cch);
+    ok(strlen(buf) + 1 == r, "String length is %Iu, but returned count is %u\n", strlen(buf), r);
 
     HeapFree(GetProcessHeap(), 0, buf);
     HeapFree(GetProcessHeap(), 0, profiles_dir);
@@ -360,6 +365,14 @@ static void test_get_user_profile_dir(void)
     ok(error == ERROR_INVALID_PARAMETER, "expected ERROR_INVALID_PARAMETER, got %lu\n", error);
     ok(!len, "expected 0, got %lu\n", len);
 
+    len = SHRT_MAX;
+    SetLastError( 0xdeadbeef );
+    ret = GetUserProfileDirectoryA( token, NULL, &len );
+    error = GetLastError();
+    ok(!ret, "expected failure\n");
+    ok(error == ERROR_INVALID_PARAMETER, "expected ERROR_INVALID_PARAMETER, got %lu\n", error);
+    ok(len == SHRT_MAX, "expected SHRT_MAX, got %lu\n", len);
+
     len = 0;
     dirA = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, 32 );
     SetLastError( 0xdeadbeef );
@@ -411,6 +424,14 @@ static void test_get_user_profile_dir(void)
     ok(!ret, "expected failure\n");
     ok(error == ERROR_INSUFFICIENT_BUFFER, "expected ERROR_INSUFFICIENT_BUFFER, got %lu\n", error);
     ok(len, "expected len > 0\n");
+
+    len = SHRT_MAX;
+    SetLastError( 0xdeadbeef );
+    ret = GetUserProfileDirectoryW( token, NULL, &len );
+    error = GetLastError();
+    ok(!ret, "expected failure\n");
+    ok(error == ERROR_INSUFFICIENT_BUFFER, "expected ERROR_INSUFFICIENT_BUFFER, got %lu\n", error);
+    ok(len != SHRT_MAX, "expected not SHRT_MAX, got %lu\n", len);
 
     dirW = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, len * sizeof(WCHAR) );
     SetLastError( 0xdeadbeef );

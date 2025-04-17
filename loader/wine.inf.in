@@ -71,6 +71,7 @@ AddReg=\
     SessionMgr,\
     Tapi,\
     ThemeManager,\
+    VCRuntime.ntx86,\
     LicenseInformation
 
 [DefaultInstall.NT]
@@ -94,6 +95,7 @@ AddReg=\
     SessionMgr,\
     Tapi,\
     ThemeManager,\
+    VCRuntime.ntx86,\
     VersionInfo,\
     LicenseInformation
 
@@ -119,6 +121,7 @@ AddReg=\
     SessionMgr,\
     Tapi,\
     ThemeManager,\
+    VCRuntime.ntamd64,\
     VersionInfo,\
     LicenseInformation
 
@@ -144,6 +147,8 @@ AddReg=\
     SessionMgr,\
     Tapi,\
     ThemeManager,\
+    VCRuntime.ntamd64,\
+    VCRuntime.ntarm64,\
     VersionInfo,\
     LicenseInformation
 
@@ -159,6 +164,8 @@ AddReg=\
     MCI,\
     Misc,\
     Tapi,\
+    VCRuntime.ntamd64,\
+    VCRuntime.ntx86,\
     VersionInfo,\
     LicenseInformation
 
@@ -284,6 +291,7 @@ HKCR,chm.file\shell\open\command,,2,"""%10%\hh.exe"" ""%1"""
 HKCR,cplfile,,2,"Control Panel Item"
 HKCR,cplfile\shell\cplopen,,2,"Open with Control Panel"
 HKCR,cplfile\shell\cplopen\command,,2,"rundll32.exe shell32.dll,Control_RunDLL ""%1"",%*"
+HKCR,Directory\Background\shellex\ContextMenuHandlers\New,,,"{d969a300-e7ff-11d0-a93b-00a0c90f2719}"
 HKCR,DirectShow,,16
 HKCR,exefile,,2,"Application"
 HKCR,exefile\DefaultIcon,,2,"%1"
@@ -293,6 +301,9 @@ HKCR,folder\shell\open\ddeexec,,2,"[ViewFolder("%l", %I, %S)]"
 HKCR,folder\shell\open\ddeexec,"NoActivateHandler",2,""
 HKCR,folder\shell\open\ddeexec\application,,2,"Folders"
 HKCR,folder\shellex\ContextMenuHandlers,,16
+HKCR,folder\shellnew,"Directory",,""
+HKCR,folder\shellnew,"ItemName",,"@%11%\shell32.dll,-142"
+HKCR,folder\shellnew,"MenuText",,"@%11%\shell32.dll,-180"
 HKCR,hlpfile,,2,"Help File"
 HKCR,hlpfile\shell\open\command,,2,"""%11%\winhlp32.exe"" ""%1"""
 HKCR,htmlfile\shell\open\command,,2,"""%11%\winebrowser.exe"" ""%1"""
@@ -310,12 +321,12 @@ HKCR,lnkfile\shellex\ContextMenuHandlers\{00021401-0000-0000-C000-000000000046},
 HKCR,MediaFoundation,,16
 HKCR,Msi.Package,,2,"Windows Installer Package"
 HKCR,Msi.Package\DefaultIcon,,2,"msiexec.exe"
-HKCR,Msi.Package\shell\Open\command,,2,"%11%\msiexec.exe /i ""%1"""
-HKCR,Msi.Package\shell\Repair\command,,2,"%11%\msiexec.exe /f ""%1"""
-HKCR,Msi.Package\shell\Uninstall\command,,2,"%11%\msiexec.exe /x ""%1"""
+HKCR,Msi.Package\shell\Open\command,,2,"%11%\msiexec.exe /i ""%1"" %*"
+HKCR,Msi.Package\shell\Repair\command,,2,"%11%\msiexec.exe /f ""%1"" %*"
+HKCR,Msi.Package\shell\Uninstall\command,,2,"%11%\msiexec.exe /x ""%1"" %*"
 HKCR,Msi.Patch,,2,"Windows Installer Patch"
 HKCR,Msi.Patch\DefaultIcon,,2,"msiexec.exe"
-HKCR,Msi.Patch\shell\Open\command,,2,"%11%\msiexec.exe /p ""%1"""
+HKCR,Msi.Patch\shell\Open\command,,2,"%11%\msiexec.exe /p ""%1"" %*"
 HKCR,pdffile,,2,"PDF Document"
 HKCR,pdffile\shell\open\command,,2,"""%11%\winebrowser.exe"" ""%1"""
 HKCR,rtffile,,2,"Rich Text Document"
@@ -355,6 +366,8 @@ HKLM,System\CurrentControlSet\Control\Class\{745a17a0-74d3-11d0-b6fe-00a0c90f57d
 HKLM,System\CurrentControlSet\Control\Class\{745a17a0-74d3-11d0-b6fe-00a0c90f57da},"Class",,"HIDClass"
 
 [CurrentVersion]
+HKCU,%CurrentVersion%\Explorer\Advanced,,16
+HKCU,%CurrentVersion%\Explorer\FileExts,,16
 HKCU,%CurrentVersion%\Run,,16
 HKCU,%CurrentVersionNT%\Winlogon,,16
 HKLM,%CurrentVersion%,"CommonFilesDir",,"%16427%"
@@ -369,12 +382,13 @@ HKLM,%CurrentVersion%\Control Panel\Cursors\Schemes,,16
 HKLM,%CurrentVersion%\Controls Folder\PowerCfg,"DiskSpinDownMax",,"3600"
 HKLM,%CurrentVersion%\Controls Folder\PowerCfg,"DiskSpinDownMin",,"3"
 HKLM,%CurrentVersion%\Controls Folder\PowerCfg,"LastID",,"5"
+HKLM,%CurrentVersion%\Explorer\Advanced,,16
 HKLM,%CurrentVersion%\Explorer\AutoplayHandlers,,16
 HKLM,%CurrentVersion%\Explorer\DriveIcons,,16
 HKLM,%CurrentVersion%\Explorer\KindMap,,16
 HKLM,%CurrentVersion%\Group Policy,,16
 HKLM,%CurrentVersion%\Installer,"InstallerLocation",,"%11%"
-HKLM,%CurrentVersion%\Policies\System,"EnableLUA",0x10003,0
+HKLM,%CurrentVersion%\Policies\System,"EnableLUA",0x10001,1
 HKLM,%CurrentVersion%\PreviewHandlers,,16
 HKLM,%CurrentVersion%\Run,,16
 HKLM,%CurrentVersion%\Setup,"BootDir",,"%30%"
@@ -425,6 +439,7 @@ HKLM,%CurrentVersion%,"ProgramFilesDir (x86)",,"%16426%"
 HKLM,%CurrentVersion%,"CommonFilesDir (x86)",,"%16428%"
 HKLM,%CurrentVersion%,"ProgramFilesDir (Arm)",,"C:\Program Files (Arm)"
 HKLM,%CurrentVersion%,"CommonFilesDir (Arm)",,"C:\Program Files (Arm)\Common Files"
+HKLM,Software\Microsoft\Wow64\amd64,,2,"xtajit64.dll"
 HKLM,Software\Microsoft\Wow64\arm,,2,"wowarmhw.dll"
 HKLM,Software\Microsoft\Wow64\x86,,2,"xtajit.dll"
 
@@ -488,6 +503,40 @@ HKLM,%Control%\Session Manager\Environment,"TEMP",0x00020002,"%SystemRoot%\temp"
 HKLM,%Control%\Session Manager\Environment,"TMP",0x00020002,"%SystemRoot%\temp"
 HKLM,%Control%\Session Manager\Environment,"windir",0x00020000,"%SystemRoot%"
 HKLM,%Control%\Session Manager\Environment,"winsysdir",,"%11%"
+HKLM,%Control%\Session Manager\KnownDLLs,"_wow64cpu",,"wow64cpu.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"_wowarmhw",,"wowarmhw.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"_xtajit",,"xtajit.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"advapi32",,"advapi32.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"clbcatq",,"clbcatq.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"combase",,"combase.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"comdlg32",,"comdlg32.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"coml2",,"coml2.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"difxapi",,"difxapi.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"gdi32",,"gdi32.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"gdiplus",,"gdiplus.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"imagehlp",,"imagehlp.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"imm32",,"imm32.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"kernel32",,"kernel32.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"msctf",,"msctf.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"msvcrt",,"msvcrt.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"normaliz",,"normaliz.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"nsi",,"nsi.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"ole32",,"ole32.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"oleaut32",,"oleaut32.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"psapi",,"psapi.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"rpcrt4",,"rpcrt4.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"sechost",,"sechost.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"setupapi",,"setupapi.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"shcore",,"shcore.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"shell32",,"shell32.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"shlwapi",,"shlwapi.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"user32",,"user32.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"wldap32",,"wldap32.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"wow64",,"wow64.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"wow64win",,"wow64win.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"ws2_32",,"ws2_32.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"xtajit",,"xtajit.dll"
+HKLM,%Control%\Session Manager\KnownDLLs,"xtajit64",,"xtajit64.dll"
 HKLM,%Control%\Session Manager\Memory Management,PagingFiles,,"%24%\pagefile.sys 27 77"
 HKLM,%Control%\Session Manager\Memory Management,WriteWatch,0x00040002,1
 
@@ -589,6 +638,8 @@ HKLM,Software\Microsoft\WBEM,"Installation Directory",2,"%11%\wbem"
 HKLM,Software\Microsoft\Windows Messaging Subsystem,"MAPI",2,"1"
 HKLM,Software\Policies,,16
 HKLM,Software\Registered Applications,,16
+HKLM,System\CurrentControlSet\Control\Filesystem,"NtfsDisable8dot3NameCreation",0x10003,0
+HKLM,System\CurrentControlSet\Control\Filesystem,"NtfsDisableLastAccessUpdate",0x10003,0x80000002
 HKLM,System\CurrentControlSet\Control\hivelist,,16
 HKLM,System\CurrentControlSet\Control\Lsa,"Security Packages",0x10002,kerberos,schannel
 HKLM,System\CurrentControlSet\Control\Lsa\Kerberos,,16
@@ -602,6 +653,9 @@ HKLM,System\CurrentControlSet\Control\TimeZoneInformation,"TimeZoneKeyName",2,""
 HKLM,System\CurrentControlSet\Control\VirtualDeviceDrivers,,16
 HKLM,System\CurrentControlSet\Control\VMM32Files,,16
 HKLM,System\Select,"Current",0x10003,1
+HKLM,System\Select,"Default",0x10003,1
+HKLM,System\Select,"Failed",0x10003,0
+HKLM,System\Select,"LastKnownGood",0x10003,1
 HKCU,AppEvents\Schemes\Apps\Explorer\Navigating\.Current,,,""
 HKCU,Software\Microsoft\Protected Storage System Provider,,16
 ; Some apps requires at least four subkeys of Active Setup\Installed Components
@@ -2091,28 +2145,62 @@ HKLM,%CurrentVersion%\Telephony\Country List\998,"LongDistanceRule",," 8WFG"
 HKLM,%CurrentVersion%\Telephony\Country List\998,"Name",,"Uzbekistan"
 HKLM,%CurrentVersion%\Telephony\Country List\998,"SameAreaRule",,"G"
 
+[VCRuntime.ntamd64]
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64,"Bld",0x10003,0x00008681
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64,"Installed",0x10003,0x00000001
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64,"Major",0x10003,0x0000000e
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64,"Minor",0x10003,0x0000002a
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64,"Rbld",0x10003,0x00000000
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64,"Version",2,"14.42.34433.0"
+
+[VCRuntime.ntarm64]
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\arm64,"Bld",0x10003,0x00008681
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\arm64,"Installed",0x10003,0x00000001
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\arm64,"Major",0x10003,0x0000000e
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\arm64,"Minor",0x10003,0x0000002a
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\arm64,"Rbld",0x10003,0x00000000
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\arm64,"Version",2,"14.42.34433.0"
+
+[VCRuntime.ntx86]
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86,"Bld",0x10003,0x00008681
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86,"Installed",0x10003,0x00000001
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86,"Major",0x10003,0x0000000e
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86,"Minor",0x10003,0x0000002a
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86,"Rbld",0x10003,0x00000000
+HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86,"Version",2,"14.42.34433.0"
+
 [RegisterDllsSection]
 ;;some dlls have to be registered first
 11,,shell32.dll,1
 11,,quartz.dll,1
 
+11,,colorcnv.dll,1
 11,,cryptdlg.dll,1
 11,,cryptnet.dll,1
 11,,devenum.dll,1
+11,,l3codecx.ax,1
+11,,mfasfsrcsnk.dll,1
+11,,mfh264enc.dll,1
+11,,mfmp4srcsnk.dll,1
 11,,mp3dmod.dll,1
+11,,msauddecmft.dll,1
 11,,mscoree.dll,1
 11,,mshtml.dll,1
 11,,msisip.dll,1
+11,,msmpeg2vdec.dll,1
+11,,msvproc.dll,1
 11,,qcap.dll,1
 11,,qedit.dll,1
+11,,resampledmo.dll,1
 11,,urlmon.dll,1
 11,,windowscodecs.dll,1
 11,,winegstreamer.dll,1
 55,,wineps.drv,1
-11,,wineqtdecoder.dll,1
 11,,winevulkan.dll,1
 55,,winprint.dll,1
 11,,wintrust.dll,1
+11,,wmadmod.dll,1
+11,,wmvdecod.dll,1
 11,,iexplore.exe,1
 
 ; 32bit-only fake dlls
@@ -2127,9 +2215,9 @@ HKLM,%CurrentVersion%\Telephony\Country List\998,"SameAreaRule",,"G"
 10,command,start.exe
 10,system,ddeml.dll,ddeml.dll16
 10,system,mmsystem.dll,mmsystem.dll16
-11,,ddhelp.exe
-11,,dosx.exe
-11,,dsound.vxd
+11,,ddhelp.exe,*
+11,,dosx.exe,*
+11,,dsound.vxd,*
 11,,start.exe
 11,,winhlp32.exe
 52,win40\0,wineps16.drv,wineps16.drv16
@@ -2145,6 +2233,7 @@ HKLM,%CurrentVersion%\Telephony\Country List\998,"SameAreaRule",,"G"
 11,mui,
 11,gecko\plugin,npmshtml.dll
 11,Speech\Common,sapi.dll
+11,Speech\Engines\TTS,msttsengine.dll
 11,wbem,mofcomp.exe
 11,wbem,wbemdisp.dll
 11,wbem,wbemprox.dll
@@ -2166,9 +2255,14 @@ HKLM,%CurrentVersion%\Telephony\Country List\998,"SameAreaRule",,"G"
 11,,presentationfontcache.exe,-
 ; some programs are 64-bit only
 11,,conhost.exe,-
+11,,plugplay.exe,-
+11,,rpcss.exe,-
 11,,services.exe,-
 11,,spoolsv.exe,-
+11,,termsv.exe,-
+11,,wineboot.exe,-
 11,,winemenubuilder.exe,-
+11,,wuauserv.exe,-
 ; registration order matters for these
 11,,msxml.dll
 11,,msxml2.dll
@@ -2195,6 +2289,7 @@ HKLM,%CurrentVersion%\Telephony\Country List\998,"SameAreaRule",,"G"
 10,help,
 10,logs,
 10,performance\winsat\datastore,
+10,security,
 10,tasks,
 10,temp,
 11,catroot,
@@ -2230,6 +2325,7 @@ HKLM,%CurrentVersion%\Telephony\Country List\998,"SameAreaRule",,"G"
 11,,shdocvw.dll
 11,gecko\plugin,npmshtml.dll
 11,Speech\Common,sapi.dll
+11,Speech\Engines\TTS,msttsengine.dll
 11,wbem,mofcomp.exe
 11,wbem,wbemdisp.dll
 11,wbem,wbemprox.dll
@@ -2316,7 +2412,7 @@ Description="Device mounting service"
 DisplayName="Mount Manager"
 ServiceBinary="%12%\mountmgr.sys"
 ServiceType=1
-StartType=2
+StartType=0
 ErrorControl=1
 LoadOrderGroup="System Bus Extender"
 
@@ -2448,12 +2544,12 @@ Description="Lanman Server"
 DisplayName="Lanman Server"
 ServiceBinary="%11%\svchost.exe -k netsvcs"
 ServiceType=32
-StartType=4
+StartType=3
 ErrorControl=1
 
 [LanmanServerServiceKeys]
 HKR,Parameters,"ServiceDll",,"%11%\srvsvc.dll"
-;; HKLM,%CurrentVersionNT%\SvcHost,"netsvcs",0x00010008,"lanmanserver"
+HKLM,%CurrentVersionNT%\SvcHost,"netsvcs",0x00010008,"lanmanserver"
 
 [FontCacheService]
 AddReg=FontCacheServiceKeys
@@ -2502,8 +2598,9 @@ HKLM,"System\CurrentControlSet\Services\Winsock2\Parameters\Protocol_Catalog9\Ca
 HKLM,%CurrentVersionNT%,"CurrentVersion",2,"6.3"
 HKLM,%CurrentVersionNT%,"CurrentMajorVersionNumber",0x10003,10
 HKLM,%CurrentVersionNT%,"CurrentMinorVersionNumber",0x10003,0
-HKLM,%CurrentVersionNT%,"CurrentBuild",2,"18362"
-HKLM,%CurrentVersionNT%,"CurrentBuildNumber",2,"18362"
+HKLM,%CurrentVersionNT%,"CurrentBuild",2,"19043"
+HKLM,%CurrentVersionNT%,"CurrentBuildNumber",2,"19043"
+HKLM,%CurrentVersionNT%,"UBR",0x10003,1165
 HKLM,%CurrentVersionNT%,"CurrentType",2,"Multiprocessor Free"
 HKLM,%CurrentVersionNT%,"DigitalProductId",1,00,00,00,00,00,00,00,00,00,00,00,\
 00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
@@ -2513,6 +2610,7 @@ HKLM,%CurrentVersionNT%,"DigitalProductId",1,00,00,00,00,00,00,00,00,00,00,00,\
 00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
 00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
 HKLM,%CurrentVersionNT%,"EditionId",2,"Professional"
+HKLM,%CurrentVersionNT%,"InstallationType",2,"Client"
 HKLM,%CurrentVersionNT%,"ProductName",2,"Windows 10 Pro"
 HKLM,%Control%\ProductOptions,"ProductType",2,"WinNT"
 HKLM,%Control%\Windows,"CSDVersion",0x10003,0
@@ -2605,6 +2703,8 @@ services,"@%11%\ws2_32.dll,-4"
 
 [InfFiles]
 input.inf,"@%12%\hidclass.sys,-1"
+mouhid.inf,"@%12%\mouhid.sys,-1"
+winebth.inf,"@%12%\winebth.sys,-1"
 winebus.inf,"@%12%\winebus.sys,-1"
 winehid.inf,"@%12%\winehid.sys,-1"
 wineusb.inf,"@%12%\wineusb.sys,-1"

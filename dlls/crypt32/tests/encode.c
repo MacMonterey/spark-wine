@@ -1434,7 +1434,7 @@ static void test_encodeAltName(DWORD dwEncoding)
         LocalFree(buf);
     }
     /* Test with a real URL */
-    U(entry).pwszURL = (LPWSTR)url;
+    entry.pwszURL = (LPWSTR)url;
     ret = CryptEncodeObjectEx(dwEncoding, X509_ALTERNATE_NAME, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     if (ret)
@@ -1444,7 +1444,7 @@ static void test_encodeAltName(DWORD dwEncoding)
         LocalFree(buf);
     }
     /* Now with the URL containing an invalid IA5 char */
-    U(entry).pwszURL = (WCHAR *)L"http://\x226f\x575b";
+    entry.pwszURL = (WCHAR *)L"http://\x226f\x575b";
     ret = CryptEncodeObjectEx(dwEncoding, X509_ALTERNATE_NAME, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     ok(!ret && GetLastError() == CRYPT_E_INVALID_IA5_STRING,
@@ -1454,7 +1454,7 @@ static void test_encodeAltName(DWORD dwEncoding)
      "Expected invalid char at index 7, got %ld\n",
      GET_CERT_ALT_NAME_VALUE_ERR_INDEX(size));
     /* Now with the URL missing a scheme */
-    U(entry).pwszURL = (LPWSTR)dnsName;
+    entry.pwszURL = (LPWSTR)dnsName;
     ret = CryptEncodeObjectEx(dwEncoding, X509_ALTERNATE_NAME, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
@@ -1476,8 +1476,8 @@ static void test_encodeAltName(DWORD dwEncoding)
     }
     /* Test with an IP address */
     entry.dwAltNameChoice = CERT_ALT_NAME_IP_ADDRESS;
-    U(entry).IPAddress.cbData = sizeof(localhost);
-    U(entry).IPAddress.pbData = (LPBYTE)localhost;
+    entry.IPAddress.cbData = sizeof(localhost);
+    entry.IPAddress.pbData = (LPBYTE)localhost;
     ret = CryptEncodeObjectEx(dwEncoding, X509_ALTERNATE_NAME, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     if (ret)
@@ -1488,7 +1488,7 @@ static void test_encodeAltName(DWORD dwEncoding)
     }
     /* Test with OID */
     entry.dwAltNameChoice = CERT_ALT_NAME_REGISTERED_ID;
-    U(entry).pszRegisteredID = oid;
+    entry.pszRegisteredID = oid;
     ret = CryptEncodeObjectEx(dwEncoding, X509_ALTERNATE_NAME, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     if (ret)
@@ -1499,8 +1499,8 @@ static void test_encodeAltName(DWORD dwEncoding)
     }
     /* Test with directory name */
     entry.dwAltNameChoice = CERT_ALT_NAME_DIRECTORY_NAME;
-    U(entry).DirectoryName.cbData = sizeof(encodedCommonName);
-    U(entry).DirectoryName.pbData = (LPBYTE)encodedCommonName;
+    entry.DirectoryName.cbData = sizeof(encodedCommonName);
+    entry.DirectoryName.pbData = (LPBYTE)encodedCommonName;
     ret = CryptEncodeObjectEx(dwEncoding, X509_ALTERNATE_NAME, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     if (ret)
@@ -1563,7 +1563,7 @@ static void test_decodeAltName(DWORD dwEncoding)
         ok(info->rgAltEntry[0].dwAltNameChoice == CERT_ALT_NAME_URL,
          "Expected CERT_ALT_NAME_URL, got %ld\n",
          info->rgAltEntry[0].dwAltNameChoice);
-        ok(U(info->rgAltEntry[0]).pwszURL == NULL || !*U(info->rgAltEntry[0]).pwszURL,
+        ok(info->rgAltEntry[0].pwszURL == NULL || !*info->rgAltEntry[0].pwszURL,
          "Expected empty URL\n");
         LocalFree(buf);
     }
@@ -1582,7 +1582,7 @@ static void test_decodeAltName(DWORD dwEncoding)
         ok(info->rgAltEntry[0].dwAltNameChoice == CERT_ALT_NAME_URL,
          "Expected CERT_ALT_NAME_URL, got %ld\n",
          info->rgAltEntry[0].dwAltNameChoice);
-        ok(!lstrcmpW(U(info->rgAltEntry[0]).pwszURL, url), "Unexpected URL\n");
+        ok(!lstrcmpW(info->rgAltEntry[0].pwszURL, url), "Unexpected URL\n");
         LocalFree(buf);
     }
     ret = CryptDecodeObjectEx(dwEncoding, X509_ALTERNATE_NAME, encodedDnsName,
@@ -1597,7 +1597,7 @@ static void test_decodeAltName(DWORD dwEncoding)
         ok(info->rgAltEntry[0].dwAltNameChoice == CERT_ALT_NAME_DNS_NAME,
          "Expected CERT_ALT_NAME_DNS_NAME, got %ld\n",
          info->rgAltEntry[0].dwAltNameChoice);
-        ok(!lstrcmpW(U(info->rgAltEntry[0]).pwszDNSName, dnsName),
+        ok(!lstrcmpW(info->rgAltEntry[0].pwszDNSName, dnsName),
          "Unexpected DNS name\n");
         LocalFree(buf);
     }
@@ -1613,10 +1613,10 @@ static void test_decodeAltName(DWORD dwEncoding)
         ok(info->rgAltEntry[0].dwAltNameChoice == CERT_ALT_NAME_IP_ADDRESS,
          "Expected CERT_ALT_NAME_IP_ADDRESS, got %ld\n",
          info->rgAltEntry[0].dwAltNameChoice);
-        ok(U(info->rgAltEntry[0]).IPAddress.cbData == sizeof(localhost),
+        ok(info->rgAltEntry[0].IPAddress.cbData == sizeof(localhost),
          "Unexpected IP address length %ld\n",
-          U(info->rgAltEntry[0]).IPAddress.cbData);
-        ok(!memcmp(U(info->rgAltEntry[0]).IPAddress.pbData, localhost,
+          info->rgAltEntry[0].IPAddress.cbData);
+        ok(!memcmp(info->rgAltEntry[0].IPAddress.pbData, localhost,
          sizeof(localhost)), "Unexpected IP address value\n");
         LocalFree(buf);
     }
@@ -1632,8 +1632,8 @@ static void test_decodeAltName(DWORD dwEncoding)
         ok(info->rgAltEntry[0].dwAltNameChoice == CERT_ALT_NAME_REGISTERED_ID,
          "Expected CERT_ALT_NAME_REGISTERED_ID, got %ld\n",
          info->rgAltEntry[0].dwAltNameChoice);
-        ok(!strcmp(U(info->rgAltEntry[0]).pszRegisteredID, "1.2.3"),
-           "Expected OID 1.2.3, got %s\n", U(info->rgAltEntry[0]).pszRegisteredID);
+        ok(!strcmp(info->rgAltEntry[0].pszRegisteredID, "1.2.3"),
+           "Expected OID 1.2.3, got %s\n", info->rgAltEntry[0].pszRegisteredID);
         LocalFree(buf);
     }
     ret = CryptDecodeObjectEx(dwEncoding, X509_ALTERNATE_NAME,
@@ -1649,10 +1649,10 @@ static void test_decodeAltName(DWORD dwEncoding)
         ok(info->rgAltEntry[0].dwAltNameChoice == CERT_ALT_NAME_DIRECTORY_NAME,
          "Expected CERT_ALT_NAME_DIRECTORY_NAME, got %ld\n",
          info->rgAltEntry[0].dwAltNameChoice);
-        ok(U(info->rgAltEntry[0]).DirectoryName.cbData ==
+        ok(info->rgAltEntry[0].DirectoryName.cbData ==
          sizeof(encodedCommonName), "Unexpected directory name length %ld\n",
-          U(info->rgAltEntry[0]).DirectoryName.cbData);
-        ok(!memcmp(U(info->rgAltEntry[0]).DirectoryName.pbData,
+          info->rgAltEntry[0].DirectoryName.cbData);
+        ok(!memcmp(info->rgAltEntry[0].DirectoryName.pbData,
          encodedCommonName, sizeof(encodedCommonName)),
          "Unexpected directory name value\n");
         LocalFree(buf);
@@ -3594,9 +3594,9 @@ static void test_encodeCRLDistPoints(DWORD dwEncoding)
     /* A dist point with an invalid name */
     point.DistPointName.dwDistPointNameChoice = CRL_DIST_POINT_FULL_NAME;
     entry.dwAltNameChoice = CERT_ALT_NAME_URL;
-    U(entry).pwszURL = (WCHAR *)L"http://\x226f\x575b";
-    U(point.DistPointName).FullName.cAltEntry = 1;
-    U(point.DistPointName).FullName.rgAltEntry = &entry;
+    entry.pwszURL = (WCHAR *)L"http://\x226f\x575b";
+    point.DistPointName.FullName.cAltEntry = 1;
+    point.DistPointName.FullName.rgAltEntry = &entry;
     ret = CryptEncodeObjectEx(dwEncoding, X509_CRL_DIST_POINTS, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     ok(!ret && GetLastError() == CRYPT_E_INVALID_IA5_STRING,
@@ -3606,7 +3606,7 @@ static void test_encodeCRLDistPoints(DWORD dwEncoding)
      "Expected invalid char at index 7, got %ld\n",
      GET_CERT_ALT_NAME_VALUE_ERR_INDEX(size));
     /* A dist point with (just) a valid name */
-    U(entry).pwszURL = (LPWSTR)url;
+    entry.pwszURL = (LPWSTR)url;
     ret = CryptEncodeObjectEx(dwEncoding, X509_CRL_DIST_POINTS, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
@@ -3700,13 +3700,13 @@ static void test_decodeCRLDistPoints(DWORD dwEncoding)
          CRL_DIST_POINT_FULL_NAME,
          "Expected CRL_DIST_POINT_FULL_NAME, got %ld\n",
          point->DistPointName.dwDistPointNameChoice);
-        ok(U(point->DistPointName).FullName.cAltEntry == 1,
+        ok(point->DistPointName.FullName.cAltEntry == 1,
          "Expected 1 name entry, got %ld\n",
-         U(point->DistPointName).FullName.cAltEntry);
-        entry = U(point->DistPointName).FullName.rgAltEntry;
+         point->DistPointName.FullName.cAltEntry);
+        entry = point->DistPointName.FullName.rgAltEntry;
         ok(entry->dwAltNameChoice == CERT_ALT_NAME_URL,
          "Expected CERT_ALT_NAME_URL, got %ld\n", entry->dwAltNameChoice);
-        ok(!lstrcmpW(U(*entry).pwszURL, url), "Unexpected name\n");
+        ok(!lstrcmpW(entry->pwszURL, url), "Unexpected name\n");
         ok(point->ReasonFlags.cbData == 0, "Expected no reason\n");
         ok(point->CRLIssuer.cAltEntry == 0, "Expected no issuer\n");
         LocalFree(buf);
@@ -3750,20 +3750,20 @@ static void test_decodeCRLDistPoints(DWORD dwEncoding)
          CRL_DIST_POINT_FULL_NAME,
          "Expected CRL_DIST_POINT_FULL_NAME, got %ld\n",
          point->DistPointName.dwDistPointNameChoice);
-        ok(U(point->DistPointName).FullName.cAltEntry == 1,
+        ok(point->DistPointName.FullName.cAltEntry == 1,
          "Expected 1 name entry, got %ld\n",
-         U(point->DistPointName).FullName.cAltEntry);
-        entry = U(point->DistPointName).FullName.rgAltEntry;
+         point->DistPointName.FullName.cAltEntry);
+        entry = point->DistPointName.FullName.rgAltEntry;
         ok(entry->dwAltNameChoice == CERT_ALT_NAME_URL,
          "Expected CERT_ALT_NAME_URL, got %ld\n", entry->dwAltNameChoice);
-        ok(!lstrcmpW(U(*entry).pwszURL, url), "Unexpected name\n");
+        ok(!lstrcmpW(entry->pwszURL, url), "Unexpected name\n");
         ok(point->ReasonFlags.cbData == 0, "Expected no reason\n");
         ok(point->CRLIssuer.cAltEntry == 1,
          "Expected 1 issuer entry, got %ld\n", point->CRLIssuer.cAltEntry);
         entry = point->CRLIssuer.rgAltEntry;
         ok(entry->dwAltNameChoice == CERT_ALT_NAME_URL,
          "Expected CERT_ALT_NAME_URL, got %ld\n", entry->dwAltNameChoice);
-        ok(!lstrcmpW(U(*entry).pwszURL, url), "Unexpected name\n");
+        ok(!lstrcmpW(entry->pwszURL, url), "Unexpected name\n");
         LocalFree(buf);
     }
     ret = CryptDecodeObjectEx(dwEncoding, X509_CRL_DIST_POINTS,
@@ -3829,7 +3829,7 @@ static void test_encodeCRLIssuingDistPoint(DWORD dwEncoding)
      "Expected E_INVALIDARG, got %08lx\n", GetLastError());
     /* empty name */
     point.DistPointName.dwDistPointNameChoice = CRL_DIST_POINT_FULL_NAME;
-    U(point.DistPointName).FullName.cAltEntry = 0;
+    point.DistPointName.FullName.cAltEntry = 0;
     ret = CryptEncodeObjectEx(dwEncoding, X509_ISSUING_DIST_POINT, &point,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
@@ -3841,9 +3841,9 @@ static void test_encodeCRLIssuingDistPoint(DWORD dwEncoding)
     }
     /* name with URL entry */
     entry.dwAltNameChoice = CERT_ALT_NAME_URL;
-    U(entry).pwszURL = (LPWSTR)url;
-    U(point.DistPointName).FullName.cAltEntry = 1;
-    U(point.DistPointName).FullName.rgAltEntry = &entry;
+    entry.pwszURL = (LPWSTR)url;
+    point.DistPointName.FullName.cAltEntry = 1;
+    point.DistPointName.FullName.rgAltEntry = &entry;
     ret = CryptEncodeObjectEx(dwEncoding, X509_ISSUING_DIST_POINT, &point,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
@@ -3870,19 +3870,19 @@ static void compareAltNameEntry(const CERT_ALT_NAME_ENTRY *expected,
         case CERT_ALT_NAME_EDI_PARTY_NAME:
         case CERT_ALT_NAME_URL:
         case CERT_ALT_NAME_REGISTERED_ID:
-            ok((!U(*expected).pwszURL && !U(*got).pwszURL) ||
-             (!U(*expected).pwszURL && !lstrlenW(U(*got).pwszURL)) ||
-             (!U(*got).pwszURL && !lstrlenW(U(*expected).pwszURL)) ||
-             !lstrcmpW(U(*expected).pwszURL, U(*got).pwszURL),
+            ok((!expected->pwszURL && !got->pwszURL) ||
+             (!expected->pwszURL && !lstrlenW(got->pwszURL)) ||
+             (!got->pwszURL && !lstrlenW(expected->pwszURL)) ||
+             !lstrcmpW(expected->pwszURL, got->pwszURL),
              "Unexpected name\n");
             break;
         case CERT_ALT_NAME_X400_ADDRESS:
         case CERT_ALT_NAME_DIRECTORY_NAME:
         case CERT_ALT_NAME_IP_ADDRESS:
-            ok(U(*got).IPAddress.cbData == U(*expected).IPAddress.cbData,
-               "Unexpected IP address length %ld\n", U(*got).IPAddress.cbData);
-            ok(!memcmp(U(*got).IPAddress.pbData, U(*expected).IPAddress.pbData,
-                       U(*got).IPAddress.cbData), "Unexpected value\n");
+            ok(got->IPAddress.cbData == expected->IPAddress.cbData,
+               "Unexpected IP address length %ld\n", got->IPAddress.cbData);
+            ok(!memcmp(got->IPAddress.pbData, expected->IPAddress.pbData,
+                       got->IPAddress.cbData), "Unexpected value\n");
             break;
         }
     }
@@ -3905,7 +3905,7 @@ static void compareDistPointName(const CRL_DIST_POINT_NAME *expected,
     ok(got->dwDistPointNameChoice == expected->dwDistPointNameChoice,
      "Unexpected name choice %ld\n", got->dwDistPointNameChoice);
     if (got->dwDistPointNameChoice == CRL_DIST_POINT_FULL_NAME)
-        compareAltNameInfo(&(U(*expected).FullName), &(U(*got).FullName));
+        compareAltNameInfo(&(expected->FullName), &(got->FullName));
 }
 
 static void compareCRLIssuingDistPoints(const CRL_ISSUING_DIST_POINT *expected,
@@ -3956,7 +3956,7 @@ static void test_decodeCRLIssuingDistPoint(DWORD dwEncoding)
     {
         point.fOnlyContainsCACerts = point.fOnlyContainsUserCerts = FALSE;
         point.DistPointName.dwDistPointNameChoice = CRL_DIST_POINT_FULL_NAME;
-        U(point.DistPointName).FullName.cAltEntry = 0;
+        point.DistPointName.FullName.cAltEntry = 0;
         compareCRLIssuingDistPoints(&point, (PCRL_ISSUING_DIST_POINT)buf);
         LocalFree(buf);
     }
@@ -3968,9 +3968,9 @@ static void test_decodeCRLIssuingDistPoint(DWORD dwEncoding)
         CERT_ALT_NAME_ENTRY entry;
 
         entry.dwAltNameChoice = CERT_ALT_NAME_URL;
-        U(entry).pwszURL = (LPWSTR)url;
-        U(point.DistPointName).FullName.cAltEntry = 1;
-        U(point.DistPointName).FullName.rgAltEntry = &entry;
+        entry.pwszURL = (LPWSTR)url;
+        point.DistPointName.FullName.cAltEntry = 1;
+        point.DistPointName.FullName.rgAltEntry = &entry;
         compareCRLIssuingDistPoints(&point, (PCRL_ISSUING_DIST_POINT)buf);
         LocalFree(buf);
     }
@@ -5104,7 +5104,7 @@ static void test_encodeAuthorityKeyId2(DWORD dwEncoding)
      "Expected E_INVALIDARG, got %08lx\n", GetLastError());
     /* With an issuer name */
     entry.dwAltNameChoice = CERT_ALT_NAME_URL;
-    U(entry).pwszURL = (LPWSTR)url;
+    entry.pwszURL = (LPWSTR)url;
     ret = CryptEncodeObjectEx(dwEncoding, X509_AUTHORITY_KEY_ID2, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
@@ -5191,7 +5191,7 @@ static void test_decodeAuthorityKeyId2(DWORD dwEncoding)
         ok(info->AuthorityCertIssuer.rgAltEntry[0].dwAltNameChoice ==
          CERT_ALT_NAME_URL, "Expected CERT_ALT_NAME_URL, got %ld\n",
          info->AuthorityCertIssuer.rgAltEntry[0].dwAltNameChoice);
-        ok(!lstrcmpW(U(info->AuthorityCertIssuer.rgAltEntry[0]).pwszURL,
+        ok(!lstrcmpW(info->AuthorityCertIssuer.rgAltEntry[0].pwszURL,
          url), "Unexpected URL\n");
         ok(info->AuthorityCertSerialNumber.cbData == 0,
          "Expected no serial number\n");
@@ -5265,7 +5265,7 @@ static void test_encodeAuthorityInfoAccess(DWORD dwEncoding)
     ok(!ret && GetLastError() == E_INVALIDARG,
      "expected E_INVALIDARG, got %08lx\n", GetLastError());
     accessDescription[0].AccessLocation.dwAltNameChoice = CERT_ALT_NAME_URL;
-    U(accessDescription[0].AccessLocation).pwszURL = (LPWSTR)url;
+    accessDescription[0].AccessLocation.pwszURL = (LPWSTR)url;
     ret = CryptEncodeObjectEx(dwEncoding, X509_AUTHORITY_INFO_ACCESS, &aia,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
@@ -5279,12 +5279,9 @@ static void test_encodeAuthorityInfoAccess(DWORD dwEncoding)
         buf = NULL;
     }
     accessDescription[1].pszAccessMethod = oid2;
-    accessDescription[1].AccessLocation.dwAltNameChoice =
-     CERT_ALT_NAME_IP_ADDRESS;
-    U(accessDescription[1].AccessLocation).IPAddress.cbData =
-     sizeof(encodedIPAddr);
-    U(accessDescription[1].AccessLocation).IPAddress.pbData =
-     (LPBYTE)encodedIPAddr;
+    accessDescription[1].AccessLocation.dwAltNameChoice = CERT_ALT_NAME_IP_ADDRESS;
+    accessDescription[1].AccessLocation.IPAddress.cbData = sizeof(encodedIPAddr);
+    accessDescription[1].AccessLocation.IPAddress.pbData = (LPBYTE)encodedIPAddr;
     aia.cAccDescr = 2;
     ret = CryptEncodeObjectEx(dwEncoding, X509_AUTHORITY_INFO_ACCESS, &aia,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
@@ -5352,7 +5349,7 @@ static void test_decodeAuthorityInfoAccess(DWORD dwEncoding)
 
         accessDescription.pszAccessMethod = oid1;
         accessDescription.AccessLocation.dwAltNameChoice = CERT_ALT_NAME_URL;
-        U(accessDescription.AccessLocation).pwszURL = (LPWSTR)url;
+        accessDescription.AccessLocation.pwszURL = (LPWSTR)url;
         aia.cAccDescr = 1;
         aia.rgAccDescr = &accessDescription;
         compareAuthorityInfoAccess("AIA with URL", &aia,
@@ -5372,14 +5369,11 @@ static void test_decodeAuthorityInfoAccess(DWORD dwEncoding)
 
         accessDescription[0].pszAccessMethod = oid1;
         accessDescription[0].AccessLocation.dwAltNameChoice = CERT_ALT_NAME_URL;
-        U(accessDescription[0].AccessLocation).pwszURL = (LPWSTR)url;
+        accessDescription[0].AccessLocation.pwszURL = (LPWSTR)url;
         accessDescription[1].pszAccessMethod = oid2;
-        accessDescription[1].AccessLocation.dwAltNameChoice =
-         CERT_ALT_NAME_IP_ADDRESS;
-        U(accessDescription[1].AccessLocation).IPAddress.cbData =
-         sizeof(encodedIPAddr);
-        U(accessDescription[1].AccessLocation).IPAddress.pbData =
-         (LPBYTE)encodedIPAddr;
+        accessDescription[1].AccessLocation.dwAltNameChoice = CERT_ALT_NAME_IP_ADDRESS;
+        accessDescription[1].AccessLocation.IPAddress.cbData = sizeof(encodedIPAddr);
+        accessDescription[1].AccessLocation.IPAddress.pbData = (LPBYTE)encodedIPAddr;
         aia.cAccDescr = 2;
         aia.rgAccDescr = accessDescription;
         compareAuthorityInfoAccess("AIA with URL and IP addr", &aia,
@@ -6882,9 +6876,8 @@ static void test_encodeCMSSignerInfo(DWORD dwEncoding)
      * the encoding must include PKCS_7_ASN_ENCODING.
      * (That isn't enough to be decoded, see decoding tests.)
      */
-    U(info.SignerId).IssuerSerialNumber.Issuer.cbData =
-     sizeof(encodedCommonNameNoNull);
-    U(info.SignerId).IssuerSerialNumber.Issuer.pbData = encodedCommonNameNoNull;
+    info.SignerId.IssuerSerialNumber.Issuer.cbData = sizeof(encodedCommonNameNoNull);
+    info.SignerId.IssuerSerialNumber.Issuer.pbData = encodedCommonNameNoNull;
     SetLastError(0xdeadbeef);
     ret = CryptEncodeObjectEx(dwEncoding, CMS_SIGNER_INFO, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
@@ -6901,8 +6894,8 @@ static void test_encodeCMSSignerInfo(DWORD dwEncoding)
             LocalFree(buf);
         }
     }
-    U(info.SignerId).IssuerSerialNumber.SerialNumber.cbData = sizeof(serialNum);
-    U(info.SignerId).IssuerSerialNumber.SerialNumber.pbData = (BYTE *)serialNum;
+    info.SignerId.IssuerSerialNumber.SerialNumber.cbData = sizeof(serialNum);
+    info.SignerId.IssuerSerialNumber.SerialNumber.pbData = (BYTE *)serialNum;
     SetLastError(0xdeadbeef);
     ret = CryptEncodeObjectEx(dwEncoding, CMS_SIGNER_INFO, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
@@ -6921,8 +6914,8 @@ static void test_encodeCMSSignerInfo(DWORD dwEncoding)
         }
     }
     info.SignerId.dwIdChoice = CERT_ID_KEY_IDENTIFIER;
-    U(info.SignerId).KeyId.cbData = sizeof(serialNum);
-    U(info.SignerId).KeyId.pbData = (BYTE *)serialNum;
+    info.SignerId.KeyId.cbData = sizeof(serialNum);
+    info.SignerId.KeyId.pbData = (BYTE *)serialNum;
     SetLastError(0xdeadbeef);
     ret = CryptEncodeObjectEx(dwEncoding, CMS_SIGNER_INFO, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
@@ -6945,8 +6938,8 @@ static void test_encodeCMSSignerInfo(DWORD dwEncoding)
      * (see RFC 3852, section 5.3.)
      */
     info.SignerId.dwIdChoice = CERT_ID_SHA1_HASH;
-    U(info.SignerId).HashId.cbData = sizeof(hash);
-    U(info.SignerId).HashId.pbData = (BYTE *)hash;
+    info.SignerId.HashId.cbData = sizeof(hash);
+    info.SignerId.HashId.pbData = (BYTE *)hash;
     SetLastError(0xdeadbeef);
     ret = CryptEncodeObjectEx(dwEncoding, CMS_SIGNER_INFO, &info,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
@@ -6954,9 +6947,8 @@ static void test_encodeCMSSignerInfo(DWORD dwEncoding)
      "Expected E_INVALIDARG, got %08lx\n", GetLastError());
     /* Now with a hash algo */
     info.SignerId.dwIdChoice = CERT_ID_ISSUER_SERIAL_NUMBER;
-    U(info.SignerId).IssuerSerialNumber.Issuer.cbData =
-     sizeof(encodedCommonNameNoNull);
-    U(info.SignerId).IssuerSerialNumber.Issuer.pbData = encodedCommonNameNoNull;
+    info.SignerId.IssuerSerialNumber.Issuer.cbData = sizeof(encodedCommonNameNoNull);
+    info.SignerId.IssuerSerialNumber.Issuer.pbData = encodedCommonNameNoNull;
     info.HashAlgorithm.pszObjId = oid1;
     SetLastError(0xdeadbeef);
     ret = CryptEncodeObjectEx(dwEncoding, CMS_SIGNER_INFO, &info,
@@ -7044,17 +7036,17 @@ static void test_decodeCMSSignerInfo(DWORD dwEncoding)
         ok(info->SignerId.dwIdChoice == CERT_ID_ISSUER_SERIAL_NUMBER,
          "Expected CERT_ID_ISSUER_SERIAL_NUMBER, got %ld\n",
          info->SignerId.dwIdChoice);
-        ok(U(info->SignerId).IssuerSerialNumber.Issuer.cbData ==
+        ok(info->SignerId.IssuerSerialNumber.Issuer.cbData ==
          sizeof(encodedCommonNameNoNull), "Unexpected size %ld\n",
-         U(info->SignerId).IssuerSerialNumber.Issuer.cbData);
-        ok(!memcmp(U(info->SignerId).IssuerSerialNumber.Issuer.pbData,
+         info->SignerId.IssuerSerialNumber.Issuer.cbData);
+        ok(!memcmp(info->SignerId.IssuerSerialNumber.Issuer.pbData,
          encodedCommonNameNoNull,
-         U(info->SignerId).IssuerSerialNumber.Issuer.cbData),
+         info->SignerId.IssuerSerialNumber.Issuer.cbData),
          "Unexpected value\n");
-        ok(U(info->SignerId).IssuerSerialNumber.SerialNumber.cbData ==
+        ok(info->SignerId.IssuerSerialNumber.SerialNumber.cbData ==
          sizeof(serialNum), "Unexpected size %ld\n",
-         U(info->SignerId).IssuerSerialNumber.SerialNumber.cbData);
-        ok(!memcmp(U(info->SignerId).IssuerSerialNumber.SerialNumber.pbData,
+         info->SignerId.IssuerSerialNumber.SerialNumber.cbData);
+        ok(!memcmp(info->SignerId.IssuerSerialNumber.SerialNumber.pbData,
          serialNum, sizeof(serialNum)), "Unexpected value\n");
         LocalFree(buf);
     }
@@ -7070,17 +7062,17 @@ static void test_decodeCMSSignerInfo(DWORD dwEncoding)
         ok(info->SignerId.dwIdChoice == CERT_ID_ISSUER_SERIAL_NUMBER,
          "Expected CERT_ID_ISSUER_SERIAL_NUMBER, got %ld\n",
          info->SignerId.dwIdChoice);
-        ok(U(info->SignerId).IssuerSerialNumber.Issuer.cbData ==
+        ok(info->SignerId.IssuerSerialNumber.Issuer.cbData ==
          sizeof(encodedCommonNameNoNull), "Unexpected size %ld\n",
-         U(info->SignerId).IssuerSerialNumber.Issuer.cbData);
-        ok(!memcmp(U(info->SignerId).IssuerSerialNumber.Issuer.pbData,
+         info->SignerId.IssuerSerialNumber.Issuer.cbData);
+        ok(!memcmp(info->SignerId.IssuerSerialNumber.Issuer.pbData,
          encodedCommonNameNoNull,
-         U(info->SignerId).IssuerSerialNumber.Issuer.cbData),
+         info->SignerId.IssuerSerialNumber.Issuer.cbData),
          "Unexpected value\n");
-        ok(U(info->SignerId).IssuerSerialNumber.SerialNumber.cbData ==
+        ok(info->SignerId.IssuerSerialNumber.SerialNumber.cbData ==
          sizeof(serialNum), "Unexpected size %ld\n",
-         U(info->SignerId).IssuerSerialNumber.SerialNumber.cbData);
-        ok(!memcmp(U(info->SignerId).IssuerSerialNumber.SerialNumber.pbData,
+         info->SignerId.IssuerSerialNumber.SerialNumber.cbData);
+        ok(!memcmp(info->SignerId.IssuerSerialNumber.SerialNumber.pbData,
          serialNum, sizeof(serialNum)), "Unexpected value\n");
         ok(!strcmp(info->HashAlgorithm.pszObjId, oid1),
          "Expected %s, got %s\n", oid1, info->HashAlgorithm.pszObjId);
@@ -7099,17 +7091,17 @@ static void test_decodeCMSSignerInfo(DWORD dwEncoding)
         ok(info->SignerId.dwIdChoice == CERT_ID_ISSUER_SERIAL_NUMBER,
          "Expected CERT_ID_ISSUER_SERIAL_NUMBER, got %ld\n",
          info->SignerId.dwIdChoice);
-        ok(U(info->SignerId).IssuerSerialNumber.Issuer.cbData ==
+        ok(info->SignerId.IssuerSerialNumber.Issuer.cbData ==
          sizeof(encodedCommonNameNoNull), "Unexpected size %ld\n",
-         U(info->SignerId).IssuerSerialNumber.Issuer.cbData);
-        ok(!memcmp(U(info->SignerId).IssuerSerialNumber.Issuer.pbData,
+         info->SignerId.IssuerSerialNumber.Issuer.cbData);
+        ok(!memcmp(info->SignerId.IssuerSerialNumber.Issuer.pbData,
          encodedCommonNameNoNull,
-         U(info->SignerId).IssuerSerialNumber.Issuer.cbData),
+         info->SignerId.IssuerSerialNumber.Issuer.cbData),
          "Unexpected value\n");
-        ok(U(info->SignerId).IssuerSerialNumber.SerialNumber.cbData ==
+        ok(info->SignerId.IssuerSerialNumber.SerialNumber.cbData ==
          sizeof(serialNum), "Unexpected size %ld\n",
-         U(info->SignerId).IssuerSerialNumber.SerialNumber.cbData);
-        ok(!memcmp(U(info->SignerId).IssuerSerialNumber.SerialNumber.pbData,
+         info->SignerId.IssuerSerialNumber.SerialNumber.cbData);
+        ok(!memcmp(info->SignerId.IssuerSerialNumber.SerialNumber.pbData,
          serialNum, sizeof(serialNum)), "Unexpected value\n");
         ok(!strcmp(info->HashAlgorithm.pszObjId, oid1),
          "Expected %s, got %s\n", oid1, info->HashAlgorithm.pszObjId);
@@ -7129,17 +7121,17 @@ static void test_decodeCMSSignerInfo(DWORD dwEncoding)
         ok(info->SignerId.dwIdChoice == CERT_ID_ISSUER_SERIAL_NUMBER,
          "Expected CERT_ID_ISSUER_SERIAL_NUMBER, got %ld\n",
          info->SignerId.dwIdChoice);
-        ok(U(info->SignerId).IssuerSerialNumber.Issuer.cbData ==
+        ok(info->SignerId.IssuerSerialNumber.Issuer.cbData ==
          sizeof(encodedCommonNameNoNull), "Unexpected size %ld\n",
-         U(info->SignerId).IssuerSerialNumber.Issuer.cbData);
-        ok(!memcmp(U(info->SignerId).IssuerSerialNumber.Issuer.pbData,
+         info->SignerId.IssuerSerialNumber.Issuer.cbData);
+        ok(!memcmp(info->SignerId.IssuerSerialNumber.Issuer.pbData,
          encodedCommonNameNoNull,
-         U(info->SignerId).IssuerSerialNumber.Issuer.cbData),
+         info->SignerId.IssuerSerialNumber.Issuer.cbData),
          "Unexpected value\n");
-        ok(U(info->SignerId).IssuerSerialNumber.SerialNumber.cbData ==
+        ok(info->SignerId.IssuerSerialNumber.SerialNumber.cbData ==
          sizeof(serialNum), "Unexpected size %ld\n",
-         U(info->SignerId).IssuerSerialNumber.SerialNumber.cbData);
-        ok(!memcmp(U(info->SignerId).IssuerSerialNumber.SerialNumber.pbData,
+         info->SignerId.IssuerSerialNumber.SerialNumber.cbData);
+        ok(!memcmp(info->SignerId.IssuerSerialNumber.SerialNumber.pbData,
          serialNum, sizeof(serialNum)), "Unexpected value\n");
         ok(!strcmp(info->HashAlgorithm.pszObjId, oid1),
          "Expected %s, got %s\n", oid1, info->HashAlgorithm.pszObjId);
@@ -7163,9 +7155,9 @@ static void test_decodeCMSSignerInfo(DWORD dwEncoding)
         ok(info->SignerId.dwIdChoice == CERT_ID_KEY_IDENTIFIER,
          "Expected CERT_ID_KEY_IDENTIFIER, got %ld\n",
          info->SignerId.dwIdChoice);
-        ok(U(info->SignerId).KeyId.cbData == sizeof(serialNum),
-         "Unexpected size %ld\n", U(info->SignerId).KeyId.cbData);
-        ok(!memcmp(U(info->SignerId).KeyId.pbData, serialNum, sizeof(serialNum)),
+        ok(info->SignerId.KeyId.cbData == sizeof(serialNum),
+         "Unexpected size %ld\n", info->SignerId.KeyId.cbData);
+        ok(!memcmp(info->SignerId.KeyId.pbData, serialNum, sizeof(serialNum)),
          "Unexpected value\n");
         LocalFree(buf);
     }
@@ -7241,7 +7233,7 @@ static void test_encodeNameConstraints(DWORD dwEncoding)
          "Unexpected value\n");
         LocalFree(buf);
     }
-    U(excluded.Base).pwszURL = (LPWSTR)url;
+    excluded.Base.pwszURL = (LPWSTR)url;
     ret = CryptEncodeObjectEx(dwEncoding, X509_NAME_CONSTRAINTS, &constraints,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
     ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
@@ -7253,8 +7245,8 @@ static void test_encodeNameConstraints(DWORD dwEncoding)
         LocalFree(buf);
     }
     permitted.Base.dwAltNameChoice = CERT_ALT_NAME_IP_ADDRESS;
-    U(permitted.Base).IPAddress.cbData = sizeof(encodedIPAddr);
-    U(permitted.Base).IPAddress.pbData = (LPBYTE)encodedIPAddr;
+    permitted.Base.IPAddress.cbData = sizeof(encodedIPAddr);
+    permitted.Base.IPAddress.pbData = (LPBYTE)encodedIPAddr;
     constraints.cPermittedSubtree = 1;
     ret = CryptEncodeObjectEx(dwEncoding, X509_NAME_CONSTRAINTS, &constraints,
      CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
@@ -7336,13 +7328,13 @@ static void test_decodeNameConstraints(DWORD dwEncoding)
     DWORD i;
     CERT_NAME_CONSTRAINTS_INFO *constraints;
 
-    U(DNSSubtree.Base).pwszURL = (LPWSTR)url;
-    U(IPAddressSubtree.Base).IPAddress.cbData = sizeof(encodedIPAddr);
-    U(IPAddressSubtree.Base).IPAddress.pbData = (LPBYTE)encodedIPAddr;
-    U(IPAddressWithMinSubtree.Base).IPAddress.cbData = sizeof(encodedIPAddr);
-    U(IPAddressWithMinSubtree.Base).IPAddress.pbData = (LPBYTE)encodedIPAddr;
-    U(IPAddressWithMinMaxSubtree.Base).IPAddress.cbData = sizeof(encodedIPAddr);
-    U(IPAddressWithMinMaxSubtree.Base).IPAddress.pbData = (LPBYTE)encodedIPAddr;
+    DNSSubtree.Base.pwszURL = (LPWSTR)url;
+    IPAddressSubtree.Base.IPAddress.cbData = sizeof(encodedIPAddr);
+    IPAddressSubtree.Base.IPAddress.pbData = (LPBYTE)encodedIPAddr;
+    IPAddressWithMinSubtree.Base.IPAddress.cbData = sizeof(encodedIPAddr);
+    IPAddressWithMinSubtree.Base.IPAddress.pbData = (LPBYTE)encodedIPAddr;
+    IPAddressWithMinMaxSubtree.Base.IPAddress.cbData = sizeof(encodedIPAddr);
+    IPAddressWithMinMaxSubtree.Base.IPAddress.pbData = (LPBYTE)encodedIPAddr;
     for (i = 0; i < ARRAY_SIZE(encodedNameConstraints); i++)
     {
         DWORD size;
@@ -8736,9 +8728,126 @@ static const BYTE ocsp_signature[] = {
   0xe8, 0x67, 0xcf, 0xa7
 };
 
+static const BYTE ocsp_basic_signed_response_with_cert[] =
+{
+    0x30, 0x82, 0x05, 0x32, 0x30, 0x81, 0xdf, 0xa1, 0x54, 0x30, 0x52, 0x31,
+    0x0b, 0x30, 0x09, 0x06, 0x03, 0x55, 0x04, 0x06, 0x13, 0x02, 0x4d, 0x58,
+    0x31, 0x0b, 0x30, 0x09, 0x06, 0x03, 0x55, 0x04, 0x08, 0x0c, 0x02, 0x44,
+    0x46, 0x31, 0x0b, 0x30, 0x09, 0x06, 0x03, 0x55, 0x04, 0x0a, 0x0c, 0x02,
+    0x43, 0x57, 0x31, 0x0d, 0x30, 0x0b, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c,
+    0x04, 0x74, 0x65, 0x73, 0x74, 0x31, 0x1a, 0x30, 0x18, 0x06, 0x09, 0x2a,
+    0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x01, 0x16, 0x0b, 0x74, 0x65,
+    0x73, 0x74, 0x40, 0x71, 0x71, 0x2e, 0x63, 0x6f, 0x6d, 0x18, 0x0f, 0x32,
+    0x30, 0x32, 0x34, 0x30, 0x34, 0x32, 0x35, 0x30, 0x30, 0x30, 0x36, 0x31,
+    0x31, 0x5a, 0x30, 0x51, 0x30, 0x4f, 0x30, 0x3a, 0x30, 0x09, 0x06, 0x05,
+    0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14, 0x1b, 0xe8, 0x99,
+    0x10, 0xe7, 0x3d, 0x9c, 0x6b, 0xba, 0x65, 0xb8, 0x6e, 0x6f, 0xd1, 0x63,
+    0x52, 0xa5, 0x6f, 0xd9, 0x81, 0x04, 0x14, 0xc4, 0x57, 0x2a, 0x53, 0xb7,
+    0x21, 0x6d, 0x03, 0x2d, 0xd0, 0xbc, 0xd4, 0x2a, 0x88, 0xd2, 0xae, 0x62,
+    0xa9, 0x97, 0x2a, 0x02, 0x01, 0x02, 0x80, 0x00, 0x18, 0x0f, 0x32, 0x30,
+    0x32, 0x34, 0x30, 0x34, 0x32, 0x35, 0x30, 0x30, 0x30, 0x36, 0x31, 0x31,
+    0x5a, 0xa1, 0x23, 0x30, 0x21, 0x30, 0x1f, 0x06, 0x09, 0x2b, 0x06, 0x01,
+    0x05, 0x05, 0x07, 0x30, 0x01, 0x02, 0x04, 0x12, 0x04, 0x10, 0xab, 0x7a,
+    0x07, 0x8a, 0xef, 0xc9, 0x7e, 0xb3, 0x51, 0x90, 0xa5, 0x72, 0x09, 0x60,
+    0x84, 0x27, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d,
+    0x01, 0x01, 0x0b, 0x05, 0x00, 0x03, 0x82, 0x01, 0x01, 0x00, 0xb5, 0x61,
+    0x78, 0x5b, 0xc4, 0xb5, 0xe4, 0x8d, 0xff, 0xe1, 0xc5, 0x95, 0xd1, 0xad,
+    0xb8, 0x55, 0xb4, 0xca, 0xcc, 0xf5, 0xe9, 0x6f, 0x63, 0x64, 0x4b, 0xf7,
+    0x46, 0xf9, 0x12, 0x02, 0x36, 0xe1, 0x9f, 0xce, 0xe0, 0x5e, 0x6c, 0xf7,
+    0x35, 0x19, 0x80, 0x89, 0x6b, 0x7d, 0x8f, 0xa1, 0x8c, 0xb1, 0x7d, 0xdc,
+    0xf1, 0x1c, 0xf7, 0x70, 0x45, 0x77, 0xf3, 0xb4, 0x42, 0x99, 0x58, 0x68,
+    0x11, 0xec, 0x41, 0x47, 0x11, 0xcc, 0xb1, 0x2f, 0xbb, 0x11, 0xe7, 0x81,
+    0x7d, 0x17, 0x93, 0x30, 0xab, 0x58, 0xb1, 0xe0, 0x69, 0x34, 0x17, 0x3a,
+    0xa0, 0x4a, 0xed, 0xd6, 0x9e, 0x02, 0xfd, 0xb7, 0xd1, 0x77, 0x3c, 0x59,
+    0x47, 0xeb, 0xce, 0xa0, 0x64, 0x06, 0x38, 0x78, 0x96, 0x86, 0x77, 0x1e,
+    0x3f, 0xa8, 0x56, 0x9d, 0xc4, 0x8f, 0x1d, 0x23, 0x23, 0x1c, 0xe6, 0x03,
+    0x2c, 0xb9, 0xfd, 0xac, 0x3e, 0x30, 0x52, 0x51, 0x27, 0x35, 0x20, 0x93,
+    0x94, 0xaa, 0x69, 0x83, 0xeb, 0x04, 0x32, 0x2a, 0xc0, 0x6b, 0x24, 0x30,
+    0x6f, 0x0f, 0x61, 0xdb, 0xac, 0x01, 0x46, 0x71, 0x52, 0x96, 0x07, 0x48,
+    0xba, 0xdf, 0x71, 0x96, 0x25, 0xa6, 0x04, 0x36, 0x49, 0xb9, 0xd9, 0x93,
+    0x9a, 0x79, 0xbf, 0xad, 0x4a, 0x4f, 0x49, 0x98, 0x7d, 0xa3, 0x49, 0x1d,
+    0x65, 0xb8, 0x51, 0x93, 0x60, 0x63, 0x91, 0x34, 0x5c, 0xe4, 0xad, 0x91,
+    0x44, 0xc7, 0x69, 0x93, 0x82, 0x28, 0xce, 0xc1, 0xf6, 0xc2, 0xfb, 0xf5,
+    0xef, 0xaf, 0xdb, 0xc2, 0x14, 0xed, 0x26, 0xad, 0xc9, 0xba, 0xee, 0xe8,
+    0x40, 0xc6, 0x03, 0x21, 0x9a, 0x7a, 0x47, 0x45, 0x24, 0x5b, 0xc6, 0xf3,
+    0xb4, 0x55, 0x7e, 0xa5, 0x86, 0x22, 0x60, 0x16, 0x4a, 0x67, 0x0b, 0xbd,
+    0x92, 0x7a, 0x53, 0x6b, 0xa0, 0x05, 0x2e, 0x3c, 0xfa, 0x5e, 0x06, 0x4f,
+    0xf1, 0x70, 0xa0, 0x82, 0x03, 0x38, 0x30, 0x82, 0x03, 0x34, 0x30, 0x82,
+    0x03, 0x30, 0x30, 0x82, 0x02, 0x99, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02,
+    0x01, 0x03, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d,
+    0x01, 0x01, 0x0b, 0x05, 0x00, 0x30, 0x61, 0x31, 0x0b, 0x30, 0x09, 0x06,
+    0x03, 0x55, 0x04, 0x06, 0x13, 0x02, 0x4d, 0x58, 0x31, 0x0b, 0x30, 0x09,
+    0x06, 0x03, 0x55, 0x04, 0x08, 0x0c, 0x02, 0x44, 0x46, 0x31, 0x0d, 0x30,
+    0x0b, 0x06, 0x03, 0x55, 0x04, 0x07, 0x0c, 0x04, 0x43, 0x44, 0x4d, 0x58,
+    0x31, 0x0b, 0x30, 0x09, 0x06, 0x03, 0x55, 0x04, 0x0a, 0x0c, 0x02, 0x43,
+    0x57, 0x31, 0x0d, 0x30, 0x0b, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x04,
+    0x74, 0x65, 0x73, 0x74, 0x31, 0x1a, 0x30, 0x18, 0x06, 0x09, 0x2a, 0x86,
+    0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x01, 0x16, 0x0b, 0x74, 0x65, 0x73,
+    0x74, 0x40, 0x71, 0x71, 0x2e, 0x63, 0x6f, 0x6d, 0x30, 0x20, 0x17, 0x0d,
+    0x32, 0x34, 0x30, 0x34, 0x32, 0x34, 0x32, 0x33, 0x35, 0x31, 0x31, 0x39,
+    0x5a, 0x18, 0x0f, 0x32, 0x30, 0x35, 0x31, 0x30, 0x39, 0x30, 0x39, 0x32,
+    0x33, 0x35, 0x31, 0x31, 0x39, 0x5a, 0x30, 0x52, 0x31, 0x0b, 0x30, 0x09,
+    0x06, 0x03, 0x55, 0x04, 0x06, 0x13, 0x02, 0x4d, 0x58, 0x31, 0x0b, 0x30,
+    0x09, 0x06, 0x03, 0x55, 0x04, 0x08, 0x0c, 0x02, 0x44, 0x46, 0x31, 0x0b,
+    0x30, 0x09, 0x06, 0x03, 0x55, 0x04, 0x0a, 0x0c, 0x02, 0x43, 0x57, 0x31,
+    0x0d, 0x30, 0x0b, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x04, 0x74, 0x65,
+    0x73, 0x74, 0x31, 0x1a, 0x30, 0x18, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+    0xf7, 0x0d, 0x01, 0x09, 0x01, 0x16, 0x0b, 0x74, 0x65, 0x73, 0x74, 0x40,
+    0x71, 0x71, 0x2e, 0x63, 0x6f, 0x6d, 0x30, 0x82, 0x01, 0x22, 0x30, 0x0d,
+    0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05,
+    0x00, 0x03, 0x82, 0x01, 0x0f, 0x00, 0x30, 0x82, 0x01, 0x0a, 0x02, 0x82,
+    0x01, 0x01, 0x00, 0xd5, 0x4d, 0x96, 0x69, 0x63, 0x59, 0x0a, 0x6e, 0x79,
+    0x9e, 0x5a, 0x16, 0x0a, 0xb2, 0xc1, 0x2f, 0x9c, 0x73, 0x9f, 0x0d, 0x61,
+    0xac, 0x48, 0x31, 0x04, 0x9f, 0xcb, 0x30, 0xb6, 0x47, 0xf3, 0xe3, 0x9d,
+    0x9e, 0x96, 0xe6, 0xad, 0x2e, 0xe7, 0x40, 0x9e, 0x54, 0xe1, 0x85, 0x94,
+    0x2f, 0xf5, 0xc4, 0x46, 0x21, 0x37, 0x57, 0xbe, 0x4f, 0x47, 0xda, 0x91,
+    0x0b, 0xd6, 0x51, 0xe0, 0x13, 0x1c, 0x4b, 0x3f, 0xe8, 0xf2, 0xad, 0x8b,
+    0xdb, 0xc1, 0x3d, 0xb5, 0x6c, 0x4d, 0xf7, 0x52, 0x5e, 0x67, 0x90, 0xd7,
+    0xc8, 0xe9, 0xf5, 0x0a, 0xc1, 0x26, 0xbc, 0x00, 0x21, 0xca, 0xc1, 0xd5,
+    0x37, 0xc2, 0xea, 0xd7, 0x82, 0x18, 0x94, 0x3e, 0xd7, 0x1a, 0x9e, 0xa6,
+    0x77, 0x76, 0x37, 0xe8, 0x90, 0xeb, 0x4d, 0x09, 0x18, 0x6f, 0xda, 0xca,
+    0x73, 0xbc, 0x15, 0x1f, 0xac, 0x14, 0x1f, 0xe5, 0x28, 0x3e, 0x04, 0x11,
+    0x91, 0x71, 0x34, 0x50, 0xc4, 0xfc, 0x32, 0xb3, 0x2d, 0x0a, 0x9d, 0xa7,
+    0x15, 0xca, 0x7a, 0xf8, 0x57, 0xc0, 0xe6, 0x92, 0x5e, 0x55, 0xa7, 0x45,
+    0x58, 0x2b, 0xbf, 0x82, 0x23, 0x8d, 0xe4, 0xb7, 0x4a, 0xd4, 0x15, 0x44,
+    0x80, 0x88, 0x16, 0x10, 0xcd, 0x42, 0x98, 0x46, 0xd1, 0x55, 0xa4, 0xa2,
+    0xd8, 0xd8, 0x65, 0x33, 0x4d, 0x21, 0x6d, 0x1d, 0x11, 0x66, 0xd8, 0xa9,
+    0xf9, 0x12, 0x42, 0x38, 0x2d, 0x36, 0x43, 0xa5, 0xe2, 0x5e, 0xff, 0x7c,
+    0xae, 0xaa, 0xc8, 0x85, 0x42, 0xf3, 0xa0, 0x90, 0xd2, 0x04, 0xc9, 0xe4,
+    0xa0, 0x0d, 0x97, 0xbb, 0x66, 0x8d, 0x81, 0xaa, 0x86, 0xa9, 0x49, 0x4c,
+    0x14, 0x67, 0x02, 0xf6, 0x32, 0xde, 0x19, 0xf9, 0x14, 0xd0, 0xdb, 0x89,
+    0xbf, 0x65, 0xc9, 0x87, 0x1d, 0xcc, 0xd3, 0x5f, 0x6a, 0xd4, 0x9d, 0x54,
+    0x9d, 0x34, 0x08, 0xef, 0x7a, 0x77, 0x4f, 0x02, 0x03, 0x01, 0x00, 0x01,
+    0xa3, 0x81, 0x80, 0x30, 0x7e, 0x30, 0x31, 0x06, 0x08, 0x2b, 0x06, 0x01,
+    0x05, 0x05, 0x07, 0x01, 0x01, 0x04, 0x25, 0x30, 0x23, 0x30, 0x21, 0x06,
+    0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x86, 0x15, 0x68,
+    0x74, 0x74, 0x70, 0x3a, 0x2f, 0x2f, 0x31, 0x32, 0x37, 0x2e, 0x30, 0x2e,
+    0x30, 0x2e, 0x31, 0x3a, 0x38, 0x30, 0x38, 0x30, 0x30, 0x09, 0x06, 0x03,
+    0x55, 0x1d, 0x13, 0x04, 0x02, 0x30, 0x00, 0x30, 0x1d, 0x06, 0x03, 0x55,
+    0x1d, 0x0e, 0x04, 0x16, 0x04, 0x14, 0x58, 0x25, 0x0b, 0x7b, 0x6c, 0xe7,
+    0x50, 0xdf, 0x45, 0x4b, 0x35, 0x37, 0xd1, 0x84, 0x25, 0x66, 0xbb, 0xda,
+    0x7b, 0xc5, 0x30, 0x1f, 0x06, 0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30,
+    0x16, 0x80, 0x14, 0xc4, 0x57, 0x2a, 0x53, 0xb7, 0x21, 0x6d, 0x03, 0x2d,
+    0xd0, 0xbc, 0xd4, 0x2a, 0x88, 0xd2, 0xae, 0x62, 0xa9, 0x97, 0x2a, 0x30,
+    0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b,
+    0x05, 0x00, 0x03, 0x81, 0x81, 0x00, 0xca, 0xbf, 0xb3, 0xcb, 0xf8, 0x5d,
+    0x57, 0x25, 0xc4, 0xcd, 0xd3, 0xa2, 0xae, 0xcb, 0xc8, 0xe0, 0xd0, 0x16,
+    0xa5, 0x54, 0x80, 0xf9, 0x6c, 0xa9, 0x4a, 0x8d, 0xa0, 0xea, 0x21, 0x6b,
+    0xec, 0xfe, 0xa1, 0xdd, 0x48, 0x4c, 0xc0, 0x37, 0x5c, 0x36, 0x9f, 0x6d,
+    0x3d, 0x89, 0x31, 0xc2, 0x74, 0xfd, 0xdf, 0x60, 0xa4, 0x05, 0xcb, 0x47,
+    0xd2, 0x13, 0xa4, 0x23, 0x9f, 0xfb, 0x3c, 0x3f, 0x7a, 0x1f, 0x75, 0xfc,
+    0x32, 0x8f, 0xbc, 0xb1, 0x3d, 0x7b, 0xef, 0x49, 0xd1, 0x47, 0x4a, 0x6d,
+    0x6d, 0x8f, 0xd4, 0xb3, 0x71, 0x3d, 0x24, 0x48, 0x05, 0x1b, 0x29, 0xa7,
+    0xe0, 0xbd, 0xad, 0x01, 0xff, 0x92, 0x2a, 0x24, 0x1e, 0x94, 0x6e, 0x59,
+    0x7b, 0xd4, 0x98, 0xf0, 0x60, 0xe5, 0x69, 0xa2, 0x45, 0xaf, 0xd6, 0x7f,
+    0x5b, 0x69, 0x84, 0x97, 0x23, 0xc7, 0xda, 0x3b, 0x37, 0xcd, 0x15, 0x4e,
+    0x6b, 0xf0,
+};
+
 static void test_decodeOCSPBasicSignedResponseInfo(DWORD dwEncoding)
 {
     OCSP_BASIC_SIGNED_RESPONSE_INFO *info;
+    OCSP_BASIC_RESPONSE_INFO *b;
     DWORD size;
     BOOL ret;
 
@@ -8767,6 +8876,25 @@ static void test_decodeOCSPBasicSignedResponseInfo(DWORD dwEncoding)
 
     ok(!info->SignatureInfo.cCertEncoded, "got %lu\n", info->SignatureInfo.cCertEncoded);
     ok(!info->SignatureInfo.rgCertEncoded, "got %p\n", info->SignatureInfo.rgCertEncoded);
+
+
+    ret = CryptDecodeObjectEx(dwEncoding, OCSP_BASIC_RESPONSE, info->ToBeSigned.pbData, info->ToBeSigned.cbData,
+                             CRYPT_DECODE_ALLOC_FLAG, NULL, &b, &size);
+    ok(ret, "got %08lx\n", GetLastError());
+    ok(!b->cExtension, "got %lu.\n", b->cExtension);
+    LocalFree(b);
+    LocalFree(info);
+
+    size = 0;
+    ret = CryptDecodeObjectEx(dwEncoding, OCSP_BASIC_SIGNED_RESPONSE, ocsp_basic_signed_response_with_cert,
+                               sizeof(ocsp_basic_signed_response_with_cert), CRYPT_DECODE_ALLOC_FLAG, NULL, &info, &size);
+    ok(ret, "got %08lx\n", GetLastError());
+
+    ret = CryptDecodeObjectEx(dwEncoding, OCSP_BASIC_RESPONSE, info->ToBeSigned.pbData, info->ToBeSigned.cbData,
+                             CRYPT_DECODE_ALLOC_FLAG, NULL, &b, &size);
+    ok(ret, "got %08lx\n", GetLastError());
+    ok(b->cExtension == 1, "got %lu.\n", b->cExtension);
+    LocalFree(b);
     LocalFree(info);
 }
 

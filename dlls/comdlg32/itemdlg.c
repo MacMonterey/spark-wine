@@ -21,8 +21,6 @@
 #include <stdarg.h>
 
 #define COBJMACROS
-#define NONAMELESSUNION
-
 #include "windef.h"
 #include "winbase.h"
 #include "winuser.h"
@@ -40,6 +38,7 @@
 #define IDC_NAV_TOOLBAR      200
 #define IDC_NAVBACK          201
 #define IDC_NAVFORWARD       202
+#define IDC_NAVUP            203
 
 #include <initguid.h>
 /* This seems to be another version of IID_IFileDialogCustomize. If
@@ -130,6 +129,7 @@ typedef struct FileDialogImpl {
     LPWSTR custom_okbutton;
     LPWSTR custom_cancelbutton;
     LPWSTR custom_filenamelabel;
+    LPWSTR current_filter;
 
     UINT cctrl_width, cctrl_def_height, cctrls_cols;
     UINT cctrl_indent, dpi_x, dpi_y;
@@ -450,12 +450,34 @@ static UINT get_file_name(FileDialogImpl *This, LPWSTR *str)
     return len;
 }
 
+static void set_current_filter(FileDialogImpl *This, LPCWSTR str)
+{
+    IShellView *psv;
+
+    if(str && !str[0])
+        return;
+
+    if(This->current_filter)
+        LocalFree(This->current_filter);
+
+    This->current_filter = str ? StrDupW(str) : NULL;
+
+    if (This->peb && SUCCEEDED(IExplorerBrowser_GetCurrentView(This->peb, &IID_IShellView, (void**)&psv)))
+    {
+        IShellView_Refresh(psv);
+        IShellView_Release(psv);
+    }
+}
+
 static BOOL set_file_name(FileDialogImpl *This, LPCWSTR str)
 {
     if(This->set_filename)
         LocalFree(This->set_filename);
 
     This->set_filename = str ? StrDupW(str) : NULL;
+
+    if (str && wcspbrk(str, L"*?"))
+        set_current_filter(This, str);
 
     return SetDlgItemTextW(This->dlg_hwnd, IDC_FILENAME, This->set_filename);
 }
@@ -536,10 +558,17 @@ static void fill_filename_from_selection(FileDialogImpl *This)
 static LPWSTR get_first_ext_from_spec(LPWSTR buf, LPCWSTR spec)
 {
     WCHAR *endpos, *ext;
+    INT len;
 
-    lstrcpyW(buf, spec);
-    if( (endpos = StrChrW(buf, ';')) )
-        *endpos = '\0';
+    if( (endpos = StrChrW(spec, ';')) )
+        len = endpos-spec+1;
+    else
+        len = lstrlenW(spec)+1;
+
+    if (len > MAX_PATH)
+        return NULL;
+
+    lstrcpynW(buf, spec, len);
 
     ext = PathFindExtensionW(buf);
     if(StrChrW(ext, '*'))
@@ -575,7 +604,7 @@ static HRESULT on_default_action(FileDialogImpl *This)
     IShellFolder *psf_parent, *psf_desktop;
     LPITEMIDLIST *pidla;
     LPITEMIDLIST current_folder;
-    LPWSTR fn_iter, files = NULL, tmp_files;
+    LPWSTR fn_iter, files = NULL, tmp_files, filter = NULL;
     UINT file_count = 0, len, i;
     int open_action;
     HRESULT hr, ret = E_FAIL;
@@ -624,25 +653,26 @@ static HRESULT on_default_action(FileDialogImpl *This)
         /* Add the proper extension */
         if(open_action == ONOPEN_OPEN)
         {
+            WCHAR extbuf[MAX_PATH], *newext = NULL;
+
+            if(This->current_filter)
+            {
+                newext = get_first_ext_from_spec(extbuf, This->current_filter);
+            }
+
+            if(!newext && This->default_ext)
+            {
+                lstrcpyW(extbuf, L".");
+                lstrcatW(extbuf, This->default_ext);
+                newext = extbuf;
+            }
+
             if(This->dlg_type == ITEMDLG_TYPE_SAVE)
             {
-                WCHAR extbuf[MAX_PATH], *newext = NULL;
-
-                if(This->filterspec_count)
-                {
-                    newext = get_first_ext_from_spec(extbuf, This->filterspecs[This->filetypeindex].pszSpec);
-                }
-                else if(This->default_ext)
-                {
-                    lstrcpyW(extbuf, L".");
-                    lstrcatW(extbuf, This->default_ext);
-                    newext = extbuf;
-                }
-
                 if(newext)
                 {
                     WCHAR *ext = PathFindExtensionW(canon_filename);
-                    if(lstrcmpW(ext, newext))
+                    if(lstrcmpiW(ext, newext))
                         lstrcatW(canon_filename, newext);
                 }
             }
@@ -651,10 +681,9 @@ static HRESULT on_default_action(FileDialogImpl *This)
                 if( !(This->options & FOS_NOVALIDATE) && (This->options & FOS_FILEMUSTEXIST) &&
                     !PathFileExistsW(canon_filename))
                 {
-                    if(This->default_ext)
+                    if(newext)
                     {
-                        lstrcatW(canon_filename, L".");
-                        lstrcatW(canon_filename, This->default_ext);
+                        lstrcatW(canon_filename, newext);
 
                         if(!PathFileExistsW(canon_filename))
                         {
@@ -669,6 +698,8 @@ static HRESULT on_default_action(FileDialogImpl *This)
                     }
                 }
             }
+        } else if (open_action == ONOPEN_SEARCH) {
+            filter = fn_iter;
         }
 
         pidla[i] = SHSimpleIDListFromPath(canon_filename);
@@ -679,8 +710,6 @@ static HRESULT on_default_action(FileDialogImpl *This)
         fn_iter += (WCHAR)lstrlenW(fn_iter) + 1;
     }
 
-    HeapFree(GetProcessHeap(), 0, files);
-    ILFree(current_folder);
 
     if((This->options & FOS_PICKFOLDERS) && open_action == ONOPEN_BROWSE)
         open_action = ONOPEN_OPEN; /* FIXME: Multiple folders? */
@@ -688,7 +717,7 @@ static HRESULT on_default_action(FileDialogImpl *This)
     switch(open_action)
     {
     case ONOPEN_SEARCH:
-        FIXME("Filtering not implemented.\n");
+        set_current_filter(This, filter);
         break;
 
     case ONOPEN_BROWSE:
@@ -765,6 +794,8 @@ static HRESULT on_default_action(FileDialogImpl *This)
     }
 
     /* Clean up */
+    HeapFree(GetProcessHeap(), 0, files);
+    ILFree(current_folder);
     for(i = 0; i < file_count; i++)
         ILFree(pidla[i]);
     HeapFree(GetProcessHeap(), 0, pidla);
@@ -1967,8 +1998,9 @@ static void init_toolbar(FileDialogImpl *This, HWND hwnd)
 {
     HWND htoolbar;
     TBADDBITMAP tbab;
-    TBBUTTON button[2];
+    TBBUTTON button[3];
     int height;
+    int navUpImgIndex;
 
     htoolbar = CreateWindowExW(0, TOOLBARCLASSNAMEW, NULL, TBSTYLE_FLAT | WS_CHILD | WS_VISIBLE,
                                0, 0, 0, 0,
@@ -1977,6 +2009,9 @@ static void init_toolbar(FileDialogImpl *This, HWND hwnd)
     tbab.hInst = HINST_COMMCTRL;
     tbab.nID = IDB_HIST_LARGE_COLOR;
     SendMessageW(htoolbar, TB_ADDBITMAP, 0, (LPARAM)&tbab);
+    tbab.nID = IDB_VIEW_LARGE_COLOR;
+    navUpImgIndex = SendMessageW(htoolbar, TB_ADDBITMAP, 0, (LPARAM)&tbab);
+    navUpImgIndex += VIEW_PARENTFOLDER;
 
     button[0].iBitmap = HIST_BACK;
     button[0].idCommand = IDC_NAVBACK;
@@ -1992,7 +2027,14 @@ static void init_toolbar(FileDialogImpl *This, HWND hwnd)
     button[1].dwData = 0;
     button[1].iString = 0;
 
-    SendMessageW(htoolbar, TB_ADDBUTTONSW, 2, (LPARAM)button);
+    button[2].iBitmap = navUpImgIndex;
+    button[2].idCommand = IDC_NAVUP;
+    button[2].fsState = TBSTATE_ENABLED;
+    button[2].fsStyle = BTNS_BUTTON;
+    button[2].dwData = 0;
+    button[2].iString = 0;
+
+    SendMessageW(htoolbar, TB_ADDBUTTONSW, 3, (LPARAM)button);
     height = MulDiv(24, This->dpi_y, USER_DEFAULT_SCREEN_DPI);
     SendMessageW(htoolbar, TB_SETBUTTONSIZE, 0, MAKELPARAM(height, height));
     SendMessageW(htoolbar, TB_AUTOSIZE, 0, 0);
@@ -2238,9 +2280,7 @@ static LRESULT on_command_filetype(FileDialogImpl *This, WPARAM wparam, LPARAM l
 {
     if(HIWORD(wparam) == CBN_SELCHANGE)
     {
-        IShellView *psv;
-        HRESULT hr;
-        LPWSTR filename;
+        LPWSTR filename = NULL;
         UINT prev_index = This->filetypeindex;
 
         This->filetypeindex = SendMessageW((HWND)lparam, CB_GETCURSEL, 0, 0);
@@ -2249,14 +2289,15 @@ static LRESULT on_command_filetype(FileDialogImpl *This, WPARAM wparam, LPARAM l
         if(prev_index == This->filetypeindex)
             return FALSE;
 
-        hr = IExplorerBrowser_GetCurrentView(This->peb, &IID_IShellView, (void**)&psv);
-        if(SUCCEEDED(hr))
-        {
-            IShellView_Refresh(psv);
-            IShellView_Release(psv);
-        }
+        set_current_filter(This, This->filterspecs[This->filetypeindex].pszSpec);
 
-        if(This->dlg_type == ITEMDLG_TYPE_SAVE && get_file_name(This, &filename))
+        get_file_name(This, &filename);
+
+        if(filename && wcspbrk(filename, L"*?") != NULL && This->filterspecs[This->filetypeindex].pszSpec[0])
+        {
+            set_file_name(This, L"");
+        }
+        else if(filename && This->dlg_type == ITEMDLG_TYPE_SAVE)
         {
             WCHAR buf[MAX_PATH], extbuf[MAX_PATH], *ext;
 
@@ -2271,8 +2312,9 @@ static LRESULT on_command_filetype(FileDialogImpl *This, WPARAM wparam, LPARAM l
                 lstrcatW(buf, ext);
                 set_file_name(This, buf);
             }
-            CoTaskMemFree(filename);
         }
+
+        CoTaskMemFree(filename);
 
         /* The documentation claims that OnTypeChange is called only
          * when the dialog is opened, but this is obviously not the
@@ -2280,6 +2322,13 @@ static LRESULT on_command_filetype(FileDialogImpl *This, WPARAM wparam, LPARAM l
         events_OnTypeChange(This);
     }
 
+    return FALSE;
+}
+
+static LRESULT on_browse_up(FileDialogImpl *This)
+{
+    TRACE("%p\n", This);
+    IExplorerBrowser_BrowseToIDList(This->peb, NULL, SBSP_PARENT);
     return FALSE;
 }
 
@@ -2293,6 +2342,7 @@ static LRESULT on_wm_command(FileDialogImpl *This, WPARAM wparam, LPARAM lparam)
     case IDC_NAVBACK:         return on_browse_back(This);
     case IDC_NAVFORWARD:      return on_browse_forward(This);
     case IDC_FILETYPE:        return on_command_filetype(This, wparam, lparam);
+    case IDC_NAVUP:           return on_browse_up(This);
     default:                  TRACE("Unknown command.\n");
     }
     return FALSE;
@@ -2457,6 +2507,7 @@ static ULONG WINAPI IFileDialog2_fnRelease(IFileDialog2 *iface)
         LocalFree(This->custom_okbutton);
         LocalFree(This->custom_cancelbutton);
         LocalFree(This->custom_filenamelabel);
+        LocalFree(This->current_filter);
 
         DestroyMenu(This->hmenu_opendropdown);
         DeleteObject(This->hfont_opendropdown);
@@ -2501,6 +2552,8 @@ static HRESULT WINAPI IFileDialog2_fnSetFileTypes(IFileDialog2 *iface, UINT cFil
     }
     This->filterspec_count = cFileTypes;
 
+    set_current_filter(This, This->filterspecs[This->filetypeindex].pszSpec);
+
     return S_OK;
 }
 
@@ -2515,6 +2568,8 @@ static HRESULT WINAPI IFileDialog2_fnSetFileTypeIndex(IFileDialog2 *iface, UINT 
     iFileType = max(iFileType, 1);
     iFileType = min(iFileType, This->filterspec_count);
     This->filetypeindex = iFileType-1;
+
+    set_current_filter(This, This->filterspecs[This->filetypeindex].pszSpec);
 
     return S_OK;
 }
@@ -3633,7 +3688,7 @@ static HRESULT WINAPI ICommDlgBrowser3_fnIncludeObject(ICommDlgBrowser3 *iface,
     ULONG attr;
     TRACE("%p (%p, %p)\n", This, shv, pidl);
 
-    if(!This->filterspec_count && !(This->options & FOS_PICKFOLDERS))
+    if(!This->current_filter && !(This->options & FOS_PICKFOLDERS))
         return S_OK;
 
     hr = SHGetIDListFromObject((IUnknown*)shv, &parent_pidl);
@@ -3666,7 +3721,7 @@ static HRESULT WINAPI ICommDlgBrowser3_fnIncludeObject(ICommDlgBrowser3 *iface,
     hr = S_OK;
     if(SUCCEEDED(IShellItem_GetDisplayName(psi, SIGDN_PARENTRELATIVEPARSING, &filename)))
     {
-        if(!PathMatchSpecW(filename, This->filterspecs[This->filetypeindex].pszSpec))
+        if(!PathMatchSpecW(filename, This->current_filter))
             hr = S_FALSE;
         CoTaskMemFree(filename);
     }

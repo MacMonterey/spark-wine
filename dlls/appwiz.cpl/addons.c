@@ -22,8 +22,6 @@
 #include <errno.h>
 
 #define COBJMACROS
-#define NONAMELESSUNION
-
 #include "windef.h"
 #include "winbase.h"
 #include "winuser.h"
@@ -58,10 +56,10 @@ WINE_DEFAULT_DEBUG_CHANNEL(appwizcpl);
 #define GECKO_SHA "???"
 #endif
 
-#define MONO_VERSION "8.0.0"
+#define MONO_VERSION "10.0.0"
 #if defined(__i386__) || defined(__x86_64__)
 #define MONO_ARCH "x86"
-#define MONO_SHA "75b3f45dca1dc89857fe9e932da78710f64cc6d49ef1ab0c723a177085b4711b"
+#define MONO_SHA "dbaca73e5d09f7a3a7c157ad04289af9ca47c3ced7012d46544a607046902b87"
 #else
 #define MONO_ARCH ""
 #define MONO_SHA "???"
@@ -110,8 +108,7 @@ static LPWSTR url = NULL;
 static IBinding *dwl_binding;
 static WCHAR *msi_file;
 
-extern const char * CDECL wine_get_version(void);
-
+static const char * (CDECL *p_wine_get_version)(void);
 static WCHAR * (CDECL *p_wine_get_dos_file_name)(const char*);
 
 static BOOL sha_check(const WCHAR *file_name)
@@ -320,15 +317,18 @@ static enum install_res install_from_default_dir(void)
 
 static WCHAR *get_cache_file_name(BOOL ensure_exists)
 {
-    const char *xdg_dir;
+    const WCHAR *xdg_dir;
     const WCHAR *home_dir;
-    WCHAR *cache_dir, *ret;
+    WCHAR *cache_dir=NULL, *ret;
     size_t len, size;
 
-    xdg_dir = getenv( "XDG_CACHE_HOME" );
-    if (xdg_dir && *xdg_dir && p_wine_get_dos_file_name)
+    xdg_dir = _wgetenv( L"XDG_CACHE_HOME" );
+    if (xdg_dir && *xdg_dir)
     {
-        if (!(cache_dir = p_wine_get_dos_file_name( xdg_dir ))) return NULL;
+        if (!(cache_dir = HeapAlloc( GetProcessHeap(), 0, wcslen(xdg_dir) * sizeof(WCHAR) + sizeof(L"\\\\?\\unix") ))) return NULL;
+        lstrcpyW( cache_dir, L"\\\\?\\unix" );
+        lstrcatW( cache_dir, xdg_dir );
+        TRACE("cache dir %s\n", debugstr_w(cache_dir));
     }
     else if ((home_dir = _wgetenv( L"WINEHOMEDIR" )))
     {
@@ -518,7 +518,7 @@ static HRESULT WINAPI InstallCallback_OnDataAvailable(IBindStatusCallback *iface
         DWORD dwSize, FORMATETC* pformatetc, STGMEDIUM* pstgmed)
 {
     if(!msi_file) {
-        msi_file = wcsdup(pstgmed->u.lpszFileName);
+        msi_file = wcsdup(pstgmed->lpszFileName);
         TRACE("got file name %s\n", debugstr_w(msi_file));
     }
 
@@ -612,7 +612,7 @@ static void append_url_params( WCHAR *url )
     len += MultiByteToWideChar(CP_ACP, 0, addon->version, -1, url+len, size/sizeof(WCHAR)-len)-1;
     lstrcpyW(url+len, L"&winev=");
     len += lstrlenW(L"&winev=");
-    MultiByteToWideChar(CP_ACP, 0, wine_get_version(), -1, url+len, size/sizeof(WCHAR)-len);
+    MultiByteToWideChar(CP_ACP, 0, p_wine_get_version ? p_wine_get_version() : 0, -1, url+len, size/sizeof(WCHAR)-len);
 }
 
 static LPWSTR get_url(void)
@@ -753,6 +753,7 @@ BOOL install_addon(addon_t addon_type)
     addon = addons_info+addon_type;
 
     p_wine_get_dos_file_name = (void *)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "wine_get_dos_file_name");
+    p_wine_get_version = (void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version");
 
     /*
      * Try to find addon .msi file in following order:

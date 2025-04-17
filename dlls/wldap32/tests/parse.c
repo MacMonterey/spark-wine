@@ -25,6 +25,9 @@
 #include <winbase.h>
 #include <winldap.h>
 #include <winber.h>
+#include <dsgetdc.h>
+#include <lmcons.h>
+#include <lmapibuf.h>
 
 #include "wine/test.h"
 
@@ -169,6 +172,12 @@ static void test_ldap_bind_sA( void )
     }
 
     ret = ldap_connect( ld, NULL );
+    if (ret == LDAP_SERVER_DOWN)
+    {
+        skip( "test server can't be reached\n" );
+        ldap_unbind( ld );
+        return;
+    }
     ok( !ret, "ldap_connect failed %#lx\n", ret );
 
     ret = ldap_bind_sA( ld, (char *)"uid=winetest,ou=users,dc=debian,dc=org", (char *)"winetest",
@@ -511,6 +520,12 @@ static void test_opt_ssl(void)
     ret = ldap_set_optionA( ld, LDAP_OPT_SSL, LDAP_OPT_ON );
     ok( !ret, "ldap_set_optionA should succeed, got %#lx\n", ret );
     ret = ldap_simple_bind_sA( ld, NULL, NULL );
+    if (ret == LDAP_SERVER_DOWN)
+    {
+        skip( "test server can't be reached\n" );
+        ldap_unbind( ld );
+        return;
+    }
     todo_wine ok( ret == LDAP_PROTOCOL_ERROR, "ldap_simple_bind_sA should fail, got %#lx\n", ret );
     ldap_unbind( ld );
 
@@ -593,15 +608,136 @@ static void test_opt_server_certificate(void)
     ldap_unbind( ld );
 }
 
+static void test_opt_auto_reconnect(void)
+{
+    LDAP *ld;
+    ULONG ret, value;
+
+    ld = ldap_initA( (char *)"db.debian.org", 389 );
+    ok( ld != NULL, "ldap_init failed\n" );
+
+    ret = ldap_set_optionA( ld, LDAP_OPT_AUTO_RECONNECT, LDAP_OPT_ON );
+    ok( !ret, "ldap_set_optionA should succeed, got %#lx\n", ret );
+    ret = ldap_get_optionA( ld, LDAP_OPT_AUTO_RECONNECT, &value );
+    ok( !ret, "ldap_get_optionA should succeed, got %#lx\n", ret );
+    ok( value == 1, "got %lu\n", ret );
+
+    ret = ldap_set_optionA( ld, LDAP_OPT_AUTO_RECONNECT, LDAP_OPT_OFF );
+    ok( !ret, "ldap_set_optionA should succeed, got %#lx\n", ret );
+    ret = ldap_get_optionA( ld, LDAP_OPT_AUTO_RECONNECT, &value );
+    ok( !ret, "ldap_get_optionA should succeed, got %#lx\n", ret );
+    ok( value == 0, "got %lu\n", ret );
+
+    value = 1;
+    ret = ldap_set_optionA( ld, LDAP_OPT_AUTO_RECONNECT, &value );
+    ok( !ret, "ldap_set_optionA should succeed, got %#lx\n", ret );
+    ret = ldap_get_optionA( ld, LDAP_OPT_AUTO_RECONNECT, &value );
+    ok( !ret, "ldap_get_optionA should succeed, got %#lx\n", ret );
+    ok( value == 1, "got %lu\n", ret );
+
+    value = 0;
+    ret = ldap_set_optionA( ld, LDAP_OPT_AUTO_RECONNECT, &value );
+    ok( !ret, "ldap_set_optionA should succeed, got %#lx\n", ret );
+    ret = ldap_get_optionA( ld, LDAP_OPT_AUTO_RECONNECT, &value );
+    ok( !ret, "ldap_get_optionA should succeed, got %#lx\n", ret );
+    ok( value == 0, "got %lu\n", ret );
+
+    value = 2;
+    ret = ldap_set_optionA( ld, LDAP_OPT_AUTO_RECONNECT, &value );
+    ok( ret == LDAP_PARAM_ERROR, "ldap_set_optionA should fail, got %#lx\n", ret );
+}
+
+static void test_ldap_host_name(void)
+{
+    LDAP *ld;
+    char *value;
+    ULONG ret;
+
+    ld = ldap_initA( NULL, 389 );
+    ok(ld != NULL, "ldap_init failed\n");
+
+    value = (char *)"deadbeef";
+    ret = ldap_get_optionA( ld, LDAP_OPT_HOST_NAME, &value );
+    ok( !ret, "ldap_get_option error %#lx\n", ret );
+    todo_wine
+    ok( !value, "got %s\n", value );
+
+    value = (char *)"deadbeef";
+    ret = ldap_set_optionA( ld, LDAP_OPT_HOST_NAME, &value );
+    ok( !ret, "ldap_set_option error %#lx\n", ret );
+
+    value = (char *)"";
+    ret = ldap_get_optionA( ld, LDAP_OPT_HOST_NAME, &value );
+    ok( !ret, "ldap_get_option error %#lx\n", ret );
+    ok( !strcmp(value, "deadbeef") || !strcmp(value, "deadbeef:389"), "got %s\n", value );
+
+    ldap_unbind( ld );
+}
+
+static void test_ldap_search_dc(void)
+{
+    DOMAIN_CONTROLLER_INFOW *info;
+    char *attrs[] = { (char *)"defaultNamingContext", NULL };
+    LDAP *ld;
+    int version;
+    LDAPMessage *res, *entry;
+    char **values;
+    ULONG ret;
+
+    ret = DsGetDcNameW( NULL, NULL, NULL, NULL, DS_RETURN_DNS_NAME, &info );
+    if (ret != ERROR_SUCCESS)
+    {
+        skip( "Computer is not part of an Active Directory Domain\n" );
+        return;
+    }
+    trace( "Computer is part of domain %s\n", wine_dbgstr_w(info->DomainName) );
+    NetApiBufferFree( info );
+
+    ld = ldap_initA( NULL, 389 );
+    ok( ld != NULL, "ldap_init failed\n" );
+
+    version = LDAP_VERSION3;
+    ret = ldap_set_optionW( ld, LDAP_OPT_PROTOCOL_VERSION, &version );
+    if (ret == LDAP_SERVER_DOWN || ret == LDAP_UNAVAILABLE)
+    {
+        skip( "test server can't be reached\n" );
+        ldap_unbind( ld );
+        return;
+    }
+
+    ret = ldap_search_sA( ld, NULL, LDAP_SCOPE_BASE, (char *)"(objectclass=*)", attrs, FALSE, &res );
+    ok( !ret, "ldap_search_s error %#lx\n", ret );
+    if (ret)
+    {
+        ldap_unbind( ld );
+        return;
+    }
+
+    entry = ldap_first_entry( ld, res );
+    ok( entry != NULL, "expected entry != NULL\n" );
+
+    values = ldap_get_valuesA( ld, entry, attrs[0] );
+    ok( entry != NULL, "expected values != NULL\n" );
+    trace( "%s[0]: %s\n", attrs[0], values[0] );
+
+    ldap_value_freeA( values );
+    ldap_msgfree( res );
+
+    ldap_unbind( ld );
+}
+
 START_TEST (parse)
 {
     LDAP *ld;
 
+    test_ldap_search_dc();
+    test_ldap_host_name();
     test_ldap_paged_search();
     test_ldap_server_control();
     test_ldap_bind_sA();
     test_opt_ssl();
     test_opt_server_certificate();
+    test_opt_auto_reconnect();
 
     ld = ldap_initA( (char *)"db.debian.org", 389 );
     ok( ld != NULL, "ldap_init failed\n" );

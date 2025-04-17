@@ -101,11 +101,29 @@ static void test_parms_syntax(void)
     ok(GetFileAttributesA("xcopytest2") == INVALID_FILE_ATTRIBUTES,
        "xcopy copied empty directory incorrectly\n");
 
-    rc = runcmd("xcopy /D/S/E xcopytest xcopytest2\\");
+    rc = runcmd("xcopy xcopytest xcopytest2\\/D/S/E");
     ok(rc == 0, "xcopy /D/S/E test failed rc=%lu\n", rc);
     ok(GetFileAttributesA("xcopytest2") != INVALID_FILE_ATTRIBUTES,
        "xcopy failed to copy empty directory\n");
     RemoveDirectoryA("xcopytest2");
+
+    rc = runcmd("xcopy xcopytest xcopytest2\\ /D/S/\"E\"");
+    ok(rc == 4, "xcopy /D/S/\"E\" test failed rc=%lu\n", rc);
+    ok(GetFileAttributesA("xcopytest2") == INVALID_FILE_ATTRIBUTES,
+       "xcopy copied empty directory incorrectly\n");
+
+    rc = runcmd("xcopy xcopytest xcopytest2\\/DSE");
+    ok(rc == 0, "xcopy /DSE test failed rc=%lu\n", rc);
+    ok(GetFileAttributesA("xcopytest2") != INVALID_FILE_ATTRIBUTES,
+       "xcopy failed to copy empty directory\n");
+    RemoveDirectoryA("xcopytest2");
+
+    CreateDirectoryA("xcopy test2", NULL);
+    rc = runcmd("xcopy /S/R/Y/I \"xcopytest\" \"xcopy test2\"");
+    ok(rc == 0, "xcopy /S/R/Y/I test failed rc=%lu\n", rc);
+    ok(GetFileAttributesA("xcopy test2") != INVALID_FILE_ATTRIBUTES,
+       "xcopy failed to copy empty directory\n");
+    RemoveDirectoryA("xcopy test2");
 }
 
 static void test_keep_attributes(void)

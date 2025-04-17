@@ -195,60 +195,8 @@ static inline HTMLBodyElement *impl_from_IHTMLBodyElement(IHTMLBodyElement *ifac
     return CONTAINING_RECORD(iface, HTMLBodyElement, IHTMLBodyElement_iface);
 }
 
-static HRESULT WINAPI HTMLBodyElement_QueryInterface(IHTMLBodyElement *iface,
-                                                     REFIID riid, void **ppv)
-{
-    HTMLBodyElement *This = impl_from_IHTMLBodyElement(iface);
-
-    return IHTMLDOMNode_QueryInterface(&This->element.node.IHTMLDOMNode_iface, riid, ppv);
-}
-
-static ULONG WINAPI HTMLBodyElement_AddRef(IHTMLBodyElement *iface)
-{
-    HTMLBodyElement *This = impl_from_IHTMLBodyElement(iface);
-
-    return IHTMLDOMNode_AddRef(&This->element.node.IHTMLDOMNode_iface);
-}
-
-static ULONG WINAPI HTMLBodyElement_Release(IHTMLBodyElement *iface)
-{
-    HTMLBodyElement *This = impl_from_IHTMLBodyElement(iface);
-
-    return IHTMLDOMNode_Release(&This->element.node.IHTMLDOMNode_iface);
-}
-
-static HRESULT WINAPI HTMLBodyElement_GetTypeInfoCount(IHTMLBodyElement *iface, UINT *pctinfo)
-{
-    HTMLBodyElement *This = impl_from_IHTMLBodyElement(iface);
-    return IDispatchEx_GetTypeInfoCount(&This->element.node.event_target.dispex.IDispatchEx_iface,
-            pctinfo);
-}
-
-static HRESULT WINAPI HTMLBodyElement_GetTypeInfo(IHTMLBodyElement *iface, UINT iTInfo,
-                                              LCID lcid, ITypeInfo **ppTInfo)
-{
-    HTMLBodyElement *This = impl_from_IHTMLBodyElement(iface);
-    return IDispatchEx_GetTypeInfo(&This->element.node.event_target.dispex.IDispatchEx_iface, iTInfo,
-            lcid, ppTInfo);
-}
-
-static HRESULT WINAPI HTMLBodyElement_GetIDsOfNames(IHTMLBodyElement *iface, REFIID riid,
-                                                LPOLESTR *rgszNames, UINT cNames,
-                                                LCID lcid, DISPID *rgDispId)
-{
-    HTMLBodyElement *This = impl_from_IHTMLBodyElement(iface);
-    return IDispatchEx_GetIDsOfNames(&This->element.node.event_target.dispex.IDispatchEx_iface, riid,
-            rgszNames, cNames, lcid, rgDispId);
-}
-
-static HRESULT WINAPI HTMLBodyElement_Invoke(IHTMLBodyElement *iface, DISPID dispIdMember,
-                            REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS *pDispParams,
-                            VARIANT *pVarResult, EXCEPINFO *pExcepInfo, UINT *puArgErr)
-{
-    HTMLBodyElement *This = impl_from_IHTMLBodyElement(iface);
-    return IDispatchEx_Invoke(&This->element.node.event_target.dispex.IDispatchEx_iface, dispIdMember,
-            riid, lcid, wFlags, pDispParams, pVarResult, pExcepInfo, puArgErr);
-}
+DISPEX_IDISPATCH_IMPL(HTMLBodyElement, IHTMLBodyElement,
+                      impl_from_IHTMLBodyElement(iface)->element.node.event_target.dispex)
 
 static HRESULT WINAPI HTMLBodyElement_put_background(IHTMLBodyElement *iface, BSTR v)
 {
@@ -739,56 +687,8 @@ static inline HTMLBodyElement *impl_from_IHTMLTextContainer(IHTMLTextContainer *
     return CONTAINING_RECORD(iface, HTMLBodyElement, IHTMLTextContainer_iface);
 }
 
-static HRESULT WINAPI HTMLTextContainer_QueryInterface(IHTMLTextContainer *iface,
-                                                       REFIID riid, void **ppv)
-{
-    HTMLBodyElement *This = impl_from_IHTMLTextContainer(iface);
-    return IHTMLElement_QueryInterface(&This->element.IHTMLElement_iface, riid, ppv);
-}
-
-static ULONG WINAPI HTMLTextContainer_AddRef(IHTMLTextContainer *iface)
-{
-    HTMLBodyElement *This = impl_from_IHTMLTextContainer(iface);
-    return IHTMLElement_AddRef(&This->element.IHTMLElement_iface);
-}
-
-static ULONG WINAPI HTMLTextContainer_Release(IHTMLTextContainer *iface)
-{
-    HTMLBodyElement *This = impl_from_IHTMLTextContainer(iface);
-    return IHTMLElement_Release(&This->element.IHTMLElement_iface);
-}
-
-static HRESULT WINAPI HTMLTextContainer_GetTypeInfoCount(IHTMLTextContainer *iface, UINT *pctinfo)
-{
-    HTMLBodyElement *This = impl_from_IHTMLTextContainer(iface);
-    return IDispatchEx_GetTypeInfoCount(&This->element.node.event_target.dispex.IDispatchEx_iface, pctinfo);
-}
-
-static HRESULT WINAPI HTMLTextContainer_GetTypeInfo(IHTMLTextContainer *iface, UINT iTInfo,
-                                              LCID lcid, ITypeInfo **ppTInfo)
-{
-    HTMLBodyElement *This = impl_from_IHTMLTextContainer(iface);
-    return IDispatchEx_GetTypeInfo(&This->element.node.event_target.dispex.IDispatchEx_iface, iTInfo, lcid,
-            ppTInfo);
-}
-
-static HRESULT WINAPI HTMLTextContainer_GetIDsOfNames(IHTMLTextContainer *iface, REFIID riid,
-                                                LPOLESTR *rgszNames, UINT cNames,
-                                                LCID lcid, DISPID *rgDispId)
-{
-    HTMLBodyElement *This = impl_from_IHTMLTextContainer(iface);
-    return IDispatchEx_GetIDsOfNames(&This->element.node.event_target.dispex.IDispatchEx_iface, riid, rgszNames,
-            cNames, lcid, rgDispId);
-}
-
-static HRESULT WINAPI HTMLTextContainer_Invoke(IHTMLTextContainer *iface, DISPID dispIdMember,
-                            REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS *pDispParams,
-                            VARIANT *pVarResult, EXCEPINFO *pExcepInfo, UINT *puArgErr)
-{
-    HTMLBodyElement *This = impl_from_IHTMLTextContainer(iface);
-    return IDispatchEx_Invoke(&This->element.node.event_target.dispex.IDispatchEx_iface, dispIdMember, riid,
-            lcid, wFlags, pDispParams, pVarResult, pExcepInfo, puArgErr);
-}
+DISPEX_IDISPATCH_IMPL(HTMLTextContainer, IHTMLTextContainer,
+                      impl_from_IHTMLTextContainer(iface)->element.node.event_target.dispex)
 
 static HRESULT WINAPI HTMLTextContainer_createControlRange(IHTMLTextContainer *iface,
                                                            IDispatch **range)
@@ -890,53 +790,6 @@ static inline HTMLBodyElement *impl_from_HTMLDOMNode(HTMLDOMNode *iface)
     return CONTAINING_RECORD(iface, HTMLBodyElement, element.node);
 }
 
-static HRESULT HTMLBodyElement_QI(HTMLDOMNode *iface, REFIID riid, void **ppv)
-{
-    HTMLBodyElement *This = impl_from_HTMLDOMNode(iface);
-
-    *ppv = NULL;
-
-    if(IsEqualGUID(&IID_IUnknown, riid)) {
-        TRACE("(%p)->(IID_IUnknown %p)\n", This, ppv);
-        *ppv = &This->IHTMLBodyElement_iface;
-    }else if(IsEqualGUID(&IID_IDispatch, riid)) {
-        TRACE("(%p)->(IID_IDispatch %p)\n", This, ppv);
-        *ppv = &This->IHTMLBodyElement_iface;
-    }else if(IsEqualGUID(&IID_IHTMLBodyElement, riid)) {
-        TRACE("(%p)->(IID_IHTMLBodyElement %p)\n", This, ppv);
-        *ppv = &This->IHTMLBodyElement_iface;
-    }else if(IsEqualGUID(&IID_IHTMLTextContainer, riid)) {
-        TRACE("(%p)->(IID_IHTMLTextContainer %p)\n", This, ppv);
-        *ppv = &This->IHTMLTextContainer_iface;
-    }
-
-    if(*ppv) {
-        IUnknown_AddRef((IUnknown*)*ppv);
-        return S_OK;
-    }
-
-    return HTMLElement_QI(&This->element.node, riid, ppv);
-}
-
-static void HTMLBodyElement_traverse(HTMLDOMNode *iface, nsCycleCollectionTraversalCallback *cb)
-{
-    HTMLBodyElement *This = impl_from_HTMLDOMNode(iface);
-
-    if(This->nsbody)
-        note_cc_edge((nsISupports*)This->nsbody, "This->nsbody", cb);
-}
-
-static void HTMLBodyElement_unlink(HTMLDOMNode *iface)
-{
-    HTMLBodyElement *This = impl_from_HTMLDOMNode(iface);
-
-    if(This->nsbody) {
-        nsIDOMHTMLBodyElement *nsbody = This->nsbody;
-        This->nsbody = NULL;
-        nsIDOMHTMLBodyElement_Release(nsbody);
-    }
-}
-
 static EventTarget *HTMLBodyElement_get_event_prop_target(HTMLDOMNode *iface, int event_id)
 {
     HTMLBodyElement *This = impl_from_HTMLDOMNode(iface);
@@ -970,6 +823,39 @@ static BOOL HTMLBodyElement_is_settable(HTMLDOMNode *iface, DISPID dispid)
     }
 }
 
+static inline HTMLBodyElement *impl_from_DispatchEx(DispatchEx *iface)
+{
+    return CONTAINING_RECORD(iface, HTMLBodyElement, element.node.event_target.dispex);
+}
+
+static void *HTMLBodyElement_query_interface(DispatchEx *dispex, REFIID riid)
+{
+    HTMLBodyElement *This = impl_from_DispatchEx(dispex);
+
+    if(IsEqualGUID(&IID_IHTMLBodyElement, riid))
+        return &This->IHTMLBodyElement_iface;
+    if(IsEqualGUID(&IID_IHTMLTextContainer, riid))
+        return &This->IHTMLTextContainer_iface;
+
+    return HTMLElement_query_interface(&This->element.node.event_target.dispex, riid);
+}
+
+static void HTMLBodyElement_traverse(DispatchEx *dispex, nsCycleCollectionTraversalCallback *cb)
+{
+    HTMLBodyElement *This = impl_from_DispatchEx(dispex);
+    HTMLElement_traverse(dispex, cb);
+
+    if(This->nsbody)
+        note_cc_edge((nsISupports*)This->nsbody, "nsbody", cb);
+}
+
+static void HTMLBodyElement_unlink(DispatchEx *dispex)
+{
+    HTMLBodyElement *This = impl_from_DispatchEx(dispex);
+    HTMLElement_unlink(dispex);
+    unlink_ref(&This->nsbody);
+}
+
 static const cpc_entry_t HTMLBodyElement_cpc[] = {
     {&DIID_HTMLTextContainerEvents},
     {&IID_IPropertyNotifySink},
@@ -978,42 +864,41 @@ static const cpc_entry_t HTMLBodyElement_cpc[] = {
 };
 
 static const NodeImplVtbl HTMLBodyElementImplVtbl = {
-    &CLSID_HTMLBody,
-    HTMLBodyElement_QI,
-    HTMLElement_destructor,
-    HTMLBodyElement_cpc,
-    HTMLElement_clone,
-    HTMLElement_handle_event,
-    HTMLElement_get_attr_col,
-    HTMLBodyElement_get_event_prop_target,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    HTMLBodyElement_traverse,
-    HTMLBodyElement_unlink,
-    HTMLBodyElement_is_text_edit,
-    HTMLBodyElement_is_settable
+    .clsid                 = &CLSID_HTMLBody,
+    .cpc_entries           = HTMLBodyElement_cpc,
+    .clone                 = HTMLElement_clone,
+    .get_attr_col          = HTMLElement_get_attr_col,
+    .get_event_prop_target = HTMLBodyElement_get_event_prop_target,
+    .is_text_edit          = HTMLBodyElement_is_text_edit,
+    .is_settable           = HTMLBodyElement_is_settable
+};
+
+static const event_target_vtbl_t HTMLBodyElement_event_target_vtbl = {
+    {
+        HTMLELEMENT_DISPEX_VTBL_ENTRIES,
+        .query_interface= HTMLBodyElement_query_interface,
+        .destructor     = HTMLElement_destructor,
+        .traverse       = HTMLBodyElement_traverse,
+        .unlink         = HTMLBodyElement_unlink
+    },
+    HTMLELEMENT_EVENT_TARGET_VTBL_ENTRIES,
+    .handle_event       = HTMLElement_handle_event
 };
 
 static const tid_t HTMLBodyElement_iface_tids[] = {
     IHTMLBodyElement_tid,
     IHTMLBodyElement2_tid,
-    HTMLELEMENT_TIDS,
     IHTMLTextContainer_tid,
     0
 };
 
-static dispex_static_data_t HTMLBodyElement_dispex = {
-    L"HTMLBodyElement",
-    NULL,
-    DispHTMLBody_tid,
-    HTMLBodyElement_iface_tids,
-    HTMLElement_init_dispex_info
+dispex_static_data_t HTMLBodyElement_dispex = {
+    .id           = PROT_HTMLBodyElement,
+    .prototype_id = PROT_HTMLElement,
+    .vtbl         = &HTMLBodyElement_event_target_vtbl.dispex_vtbl,
+    .disp_tid     = DispHTMLBody_tid,
+    .iface_tids   = HTMLBodyElement_iface_tids,
+    .init_info    = HTMLElement_init_dispex_info,
 };
 
 HRESULT HTMLBodyElement_Create(HTMLDocumentNode *doc, nsIDOMElement *nselem, HTMLElement **elem)

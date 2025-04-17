@@ -28,6 +28,9 @@ WINE_DEFAULT_DEBUG_CHANNEL(msvcp);
 
 #if _MSVCP_VER >= 110
 /* error strings generated with glibc strerror */
+#if _MSVCP_VER >= 140
+static const char str_SUCC[]            = "success";
+#endif
 static const char str_EPERM[]           = "operation not permitted";
 static const char str_ENOENT[]          = "no such file or directory";
 static const char str_ESRCH[]           = "no such process";
@@ -112,6 +115,9 @@ static const struct {
     const char *str;
 } syserror_map[] =
 {
+#if _MSVCP_VER >= 140
+    {0, str_SUCC},
+#endif
     {EPERM, str_EPERM},
     {ENOENT, str_ENOENT},
     {ESRCH, str_ESRCH},
@@ -191,9 +197,7 @@ static const struct {
     {ETXTBSY, str_ETXTBSY},
     {EWOULDBLOCK, str_EWOULDBLOCK},
 };
-#endif
 
-#if _MSVCP_VER >= 140
 static const struct {
     int winerr;
     int doserr;
@@ -260,7 +264,7 @@ DEFINE_THISCALL_WRAPPER(mutex_ctor, 4)
 mutex* __thiscall mutex_ctor(mutex *this)
 {
     CRITICAL_SECTION *cs = operator_new(sizeof(*cs));
-    InitializeCriticalSection(cs);
+    InitializeCriticalSectionEx(cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO);
     cs->DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": _Mutex critical section");
     this->mutex = cs;
     return this;
@@ -343,7 +347,7 @@ void __cdecl _Init_locks__Init_locks_ctor(_Init_locks *this)
     {
         for(i=0; i<_MAX_LOCK; i++)
         {
-            InitializeCriticalSection(&lockit_cs[i]);
+            InitializeCriticalSectionEx(&lockit_cs[i], 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO);
             lockit_cs[i].DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": _Lockit critical section");
         }
     }
@@ -711,6 +715,9 @@ unsigned int __cdecl _Random_device(void)
 typedef struct
 {
     DWORD flags;
+#if _MSVCP_VER >= 140
+    ULONG_PTR unknown;
+#endif
     cs cs;
     DWORD thread_id;
     DWORD count;
@@ -732,6 +739,9 @@ void __cdecl _Mtx_init_in_situ(_Mtx_t mtx, int flags)
         FIXME("unknown flags ignored: %x\n", flags);
 
     mtx->flags = flags;
+#if _MSVCP_VER >= 140
+    mtx->unknown = 0;
+#endif
     cs_init(&mtx->cs);
     mtx->thread_id = -1;
     mtx->count = 0;
@@ -822,6 +832,9 @@ void __cdecl _Mtx_reset_owner(_Mtx_arg_t mtx)
 
 typedef struct
 {
+#if _MSVCP_VER >= 140
+    ULONG_PTR unknown;
+#endif
     cv cv;
 } *_Cnd_t;
 
@@ -837,6 +850,9 @@ typedef _Cnd_t *_Cnd_arg_t;
 
 void __cdecl _Cnd_init_in_situ(_Cnd_t cnd)
 {
+#if _MSVCP_VER >= 140
+    cnd->unknown = 0;
+#endif
     cv_init(&cnd->cv);
 }
 
@@ -997,11 +1013,7 @@ void __cdecl _Cnd_do_broadcast_at_thread_exit(void)
 
 #endif
 
-#if _MSVCP_VER == 100
-typedef struct {
-    const vtable_ptr *vtable;
-} error_category;
-
+#if _MSVCP_VER >= 100
 typedef struct {
     error_category base;
     const char *type;
@@ -1009,14 +1021,22 @@ typedef struct {
 static custom_category iostream_category;
 
 DEFINE_RTTI_DATA0(error_category, 0, ".?AVerror_category@std@@")
+DEFINE_RTTI_DATA1(generic_category, 0, &error_category_rtti_base_descriptor, ".?AV_Generic_error_category@std@@")
+#if _MSVCP_VER == 100
 DEFINE_RTTI_DATA1(iostream_category, 0, &error_category_rtti_base_descriptor, ".?AV_Iostream_error_category@std@@")
+#else
+DEFINE_RTTI_DATA2(iostream_category, 0, &generic_category_rtti_base_descriptor,
+        &error_category_rtti_base_descriptor, ".?AV_Iostream_error_category@std@@")
+#endif
 
 extern const vtable_ptr iostream_category_vtable;
 
 static void iostream_category_ctor(custom_category *this)
 {
     this->base.vtable = &iostream_category_vtable;
+#if _MSVCP_VER == 100
     this->type = "iostream";
+#endif
 }
 
 DEFINE_THISCALL_WRAPPER(custom_category_vector_dtor, 8)
@@ -1037,19 +1057,6 @@ custom_category* __thiscall custom_category_vector_dtor(custom_category *this, u
     return this;
 }
 
-DEFINE_THISCALL_WRAPPER(custom_category_name, 4)
-const char* __thiscall custom_category_name(const custom_category *this)
-{
-    return this->type;
-}
-
-DEFINE_THISCALL_WRAPPER(custom_category_message, 12)
-basic_string_char* __thiscall custom_category_message(const custom_category *this,
-        basic_string_char *ret, int err)
-{
-    return MSVCP_basic_string_char_ctor_cstr(ret, strerror(err));
-}
-
 DEFINE_THISCALL_WRAPPER(custom_category_default_error_condition, 12)
 /*error_condition*/void* __thiscall custom_category_default_error_condition(
         custom_category *this, /*error_condition*/void *ret, int code)
@@ -1068,10 +1075,27 @@ bool __thiscall custom_category_equivalent(const custom_category *this,
 
 DEFINE_THISCALL_WRAPPER(custom_category_equivalent_code, 12)
 bool __thiscall custom_category_equivalent_code(custom_category *this,
-        const /*error_code*/void *code, int condition)
+        const error_code *code, int condition)
 {
     FIXME("(%p %p %x) stub\n", this, code, condition);
     return FALSE;
+}
+
+DEFINE_THISCALL_WRAPPER(custom_category_message, 12)
+basic_string_char* __thiscall custom_category_message(const custom_category *this,
+        basic_string_char *ret, int err)
+{
+    return MSVCP_basic_string_char_ctor_cstr(ret, strerror(err));
+}
+
+DEFINE_THISCALL_WRAPPER(iostream_category_name, 4)
+const char* __thiscall iostream_category_name(const custom_category *this)
+{
+#if _MSVCP_VER == 100
+    return this->type;
+#else
+    return "iostream";
+#endif
 }
 
 DEFINE_THISCALL_WRAPPER(iostream_category_message, 12)
@@ -1089,7 +1113,9 @@ const error_category* __cdecl std_iostream_category(void)
     TRACE("()\n");
     return &iostream_category.base;
 }
+#endif
 
+#if _MSVCP_VER == 100 || _MSVCP_VER >= 140
 static custom_category system_category;
 DEFINE_RTTI_DATA1(system_category, 0, &error_category_rtti_base_descriptor, ".?AV_System_error_category@std@@")
 
@@ -1098,7 +1124,32 @@ extern const vtable_ptr system_category_vtable;
 static void system_category_ctor(custom_category *this)
 {
     this->base.vtable = &system_category_vtable;
+#if _MSVCP_VER == 100
     this->type = "system";
+#endif
+}
+
+DEFINE_THISCALL_WRAPPER(system_category_name, 4)
+const char* __thiscall system_category_name(const custom_category *this)
+{
+#if _MSVCP_VER == 100
+    return this->type;
+#else
+    return "system";
+#endif
+}
+
+DEFINE_THISCALL_WRAPPER(system_category_message, 12)
+basic_string_char* __thiscall system_category_message(const custom_category *this,
+        basic_string_char *ret, int err)
+{
+#if _MSVCP_VER > 100
+    const char *msg = _Winerror_map_str(err);
+    if (!msg) return MSVCP_basic_string_char_ctor_cstr(ret, "unknown error");
+    return MSVCP_basic_string_char_ctor_cstr(ret, msg);
+#else
+    return custom_category_message(this, ret, err);
+#endif
 }
 
 /* ?system_category@std@@YAABVerror_category@1@XZ */
@@ -1108,16 +1159,29 @@ const error_category* __cdecl std_system_category(void)
     TRACE("()\n");
     return &system_category.base;
 }
+#endif
 
+#if _MSVCP_VER >= 100
 static custom_category generic_category;
-DEFINE_RTTI_DATA1(generic_category, 0, &error_category_rtti_base_descriptor, ".?AV_Generic_error_category@std@@")
 
 extern const vtable_ptr generic_category_vtable;
 
 static void generic_category_ctor(custom_category *this)
 {
     this->base.vtable = &generic_category_vtable;
+#if _MSVCP_VER == 100
     this->type = "generic";
+#endif
+}
+
+DEFINE_THISCALL_WRAPPER(generic_category_name, 4)
+const char* __thiscall generic_category_name(const custom_category *this)
+{
+#if _MSVCP_VER == 100
+    return this->type;
+#else
+    return "generic";
+#endif
 }
 
 /* ?generic_category@std@@YAABVerror_category@1@XZ */
@@ -1662,7 +1726,9 @@ ULONG __cdecl _Winerror_message(ULONG err, char *buf, ULONG size)
     return FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
             NULL, err, 0, buf, size, NULL);
 }
+#endif
 
+#if _MSVCP_VER >= 110
 /* ?_Winerror_map@std@@YAHH@Z */
 int __cdecl _Winerror_map(int err)
 {
@@ -1682,33 +1748,40 @@ int __cdecl _Winerror_map(int err)
 
     return 0;
 }
+
+/* ?_Winerror_map@std@@YAPBDH@Z */
+/* ?_Winerror_map@std@@YAPEBDH@Z */
+const char *_Winerror_map_str(int err)
+{
+    return _Syserror_map(_Winerror_map(err));
+}
 #endif
 
 #if _MSVCP_VER >= 100
 __ASM_BLOCK_BEGIN(misc_vtables)
-#if _MSVCP_VER == 100
     __ASM_VTABLE(iostream_category,
             VTABLE_ADD_FUNC(custom_category_vector_dtor)
-            VTABLE_ADD_FUNC(custom_category_name)
+            VTABLE_ADD_FUNC(iostream_category_name)
             VTABLE_ADD_FUNC(iostream_category_message)
             VTABLE_ADD_FUNC(custom_category_default_error_condition)
             VTABLE_ADD_FUNC(custom_category_equivalent)
             VTABLE_ADD_FUNC(custom_category_equivalent_code));
+#if _MSVCP_VER == 100 || _MSVCP_VER >= 140
     __ASM_VTABLE(system_category,
             VTABLE_ADD_FUNC(custom_category_vector_dtor)
-            VTABLE_ADD_FUNC(custom_category_name)
-            VTABLE_ADD_FUNC(custom_category_message)
-            VTABLE_ADD_FUNC(custom_category_default_error_condition)
-            VTABLE_ADD_FUNC(custom_category_equivalent)
-            VTABLE_ADD_FUNC(custom_category_equivalent_code));
-    __ASM_VTABLE(generic_category,
-            VTABLE_ADD_FUNC(custom_category_vector_dtor)
-            VTABLE_ADD_FUNC(custom_category_name)
-            VTABLE_ADD_FUNC(custom_category_message)
+            VTABLE_ADD_FUNC(system_category_name)
+            VTABLE_ADD_FUNC(system_category_message)
             VTABLE_ADD_FUNC(custom_category_default_error_condition)
             VTABLE_ADD_FUNC(custom_category_equivalent)
             VTABLE_ADD_FUNC(custom_category_equivalent_code));
 #endif
+    __ASM_VTABLE(generic_category,
+            VTABLE_ADD_FUNC(custom_category_vector_dtor)
+            VTABLE_ADD_FUNC(generic_category_name)
+            VTABLE_ADD_FUNC(custom_category_message)
+            VTABLE_ADD_FUNC(custom_category_default_error_condition)
+            VTABLE_ADD_FUNC(custom_category_equivalent)
+            VTABLE_ADD_FUNC(custom_category_equivalent_code));
 #if _MSVCP_VER >= 110
     __ASM_VTABLE(_Pad,
             VTABLE_ADD_FUNC(_Pad__Go));
@@ -1717,22 +1790,27 @@ __ASM_BLOCK_END
 
 void init_misc(void *base)
 {
-#ifdef __x86_64__
-#if _MSVCP_VER == 100
+#ifdef RTTI_USE_RVA
+#if _MSVCP_VER >= 100
     init_error_category_rtti(base);
-    init_iostream_category_rtti(base);
-    init_system_category_rtti(base);
     init_generic_category_rtti(base);
+    init_iostream_category_rtti(base);
+#endif
+#if _MSVCP_VER == 100 || _MSVCP_VER >= 140
+    init_system_category_rtti(base);
 #endif
 #if _MSVCP_VER >= 110
     init__Pad_rtti(base);
 #endif
 #endif
 
-#if _MSVCP_VER == 100
+#if _MSVCP_VER >= 100
     iostream_category_ctor(&iostream_category);
-    system_category_ctor(&system_category);
     generic_category_ctor(&generic_category);
+#endif
+
+#if _MSVCP_VER == 100 || _MSVCP_VER >= 140
+    system_category_ctor(&system_category);
 #endif
 }
 

@@ -19,8 +19,6 @@
 #include <stdarg.h>
 
 #define COBJMACROS
-#define NONAMELESSUNION
-
 #include "windef.h"
 #include "winbase.h"
 #include "ole2.h"
@@ -116,7 +114,7 @@ static ULONG WINAPI XMLView_Binding_Release(IBinding *iface)
 
     if(!ref) {
         IBinding_Release(This->binding);
-        heap_free(This);
+        free(This);
     }
     return ref;
 }
@@ -187,7 +185,7 @@ static inline HRESULT XMLView_Binding_Create(IBinding *binding, IBinding **ret)
 {
     Binding *bind;
 
-    bind = heap_alloc_zero(sizeof(Binding));
+    bind = calloc(1, sizeof(Binding));
     if(!bind)
         return E_OUTOFMEMORY;
 
@@ -249,7 +247,7 @@ static ULONG WINAPI XMLView_BindStatusCallback_Release(
             IStream_Release(This->stream);
         IBindStatusCallback_Release(This->bsc);
         IMoniker_Release(This->mon);
-        heap_free(This);
+        free(This);
     }
     return ref;
 }
@@ -348,7 +346,7 @@ static inline HRESULT report_data(BindStatusCallback *This)
         return hres;
 
     stgmedium.tymed = TYMED_ISTREAM;
-    stgmedium.u.pstm = This->stream;
+    stgmedium.pstm = This->stream;
     stgmedium.pUnkForRelease = NULL;
 
     hres = IBindStatusCallback_OnDataAvailable(This->bsc,
@@ -368,11 +366,6 @@ static inline HRESULT display_error_page(BindStatusCallback *This)
 
 static inline HRESULT handle_xml_load(BindStatusCallback *This)
 {
-    static const WCHAR selectW[] = {'p','r','o','c','e','s','s','i','n','g','-',
-        'i','n','s','t','r','u','c','t','i','o','n','(','\'','x','m','l',
-        '-','s','t','y','l','e','s','h','e','e','t','\'',')',0};
-    static const WCHAR hrefW[] = {'h','r','e','f','=',0};
-
     IXMLDOMDocument3 *xml = NULL, *xsl = NULL;
     IXMLDOMNode *stylesheet;
     IBindCtx *pbc;
@@ -403,7 +396,7 @@ static inline HRESULT handle_xml_load(BindStatusCallback *This)
     }
     V_VT(&var) = VT_EMPTY;
 
-    bstr = SysAllocString(selectW);
+    bstr = SysAllocString(L"processing-instruction('xml-stylesheet')");
     hres = IXMLDOMDocument3_selectSingleNode(xml, bstr, &stylesheet);
     SysFreeString(bstr);
     if(hres != S_OK) {
@@ -424,8 +417,8 @@ static inline HRESULT handle_xml_load(BindStatusCallback *This)
     }
 
     /* TODO: fix parsing processing instruction value */
-    if((p = wcsstr(V_BSTR(&var), hrefW))) {
-        p += ARRAY_SIZE(hrefW) - 1;
+    if((p = wcsstr(V_BSTR(&var), L"href="))) {
+        p += ARRAY_SIZE(L"href=") - 1;
         if(*p!='\'' && *p!='\"') p = NULL;
         else {
             href = p+1;
@@ -518,7 +511,7 @@ static HRESULT WINAPI XMLView_BindStatusCallback_OnDataAvailable(
         return E_FAIL;
 
     do {
-        hres = IStream_Read(pstgmed->u.pstm, buf, sizeof(buf), &size);
+        hres = IStream_Read(pstgmed->pstm, buf, sizeof(buf), &size);
         IStream_Write(This->stream, buf, size, &size);
     } while(hres==S_OK && size);
 
@@ -557,7 +550,7 @@ static inline HRESULT XMLView_BindStatusCallback_Create(IBindStatusCallback *bsc
 {
     BindStatusCallback *bsc;
 
-    bsc = heap_alloc_zero(sizeof(BindStatusCallback));
+    bsc = calloc(1, sizeof(BindStatusCallback));
     if(!bsc)
         return E_OUTOFMEMORY;
 
@@ -617,7 +610,7 @@ static ULONG WINAPI XMLView_Moniker_Release(IMoniker *iface)
 
     if(!ref) {
         IMoniker_Release(This->mon);
-        heap_free(This);
+        free(This);
     }
     return ref;
 }
@@ -821,7 +814,7 @@ static inline HRESULT XMLView_Moniker_Create(IMoniker *mon,
 {
     Moniker *wrap;
 
-    wrap = heap_alloc_zero(sizeof(Moniker));
+    wrap = calloc(1, sizeof(Moniker));
     if(!wrap)
         return E_OUTOFMEMORY;
 
@@ -886,7 +879,7 @@ static ULONG WINAPI XMLView_PersistMoniker_Release(IPersistMoniker *iface)
         if(This->mon)
             IMoniker_Release(This->mon);
         IUnknown_Release(This->html_doc);
-        heap_free(This);
+        free(This);
     }
     return ref;
 }
@@ -909,12 +902,6 @@ static HRESULT WINAPI XMLView_PersistMoniker_IsDirty(IPersistMoniker *iface)
 static HRESULT WINAPI XMLView_PersistMoniker_Load(IPersistMoniker *iface,
         BOOL fFullyAvailable, IMoniker *pimkName, LPBC pibc, DWORD grfMode)
 {
-    static const WCHAR XSLParametersW[] = {'X','S','L','P','a','r','a','m','e','t','e','r','s',0};
-    static const WCHAR XMLBufferStreamW[] = {'X','M','L','B','u','f','f','e','r','S','t','r','e','a','m',0};
-    static const WCHAR DWNBINDINFOW[] = {'_','_','D','W','N','B','I','N','D','I','N','F','O',0};
-    static const WCHAR HTMLLOADOPTIONSW[] = {'_','_','H','T','M','L','L','O','A','D','O','P','T','I','O','N','S',0};
-    static const WCHAR BSCBHolderW[] = { '_','B','S','C','B','_','H','o','l','d','e','r','_',0 };
-
     XMLView *This = impl_from_IPersistMoniker(iface);
     IPersistMoniker *html_persist_mon;
     IBindStatusCallback *bsc, *bsc_html;
@@ -926,12 +913,12 @@ static HRESULT WINAPI XMLView_PersistMoniker_Load(IPersistMoniker *iface,
 
     TRACE("%p, %x, %p, %p, %lx.\n", iface, fFullyAvailable, pimkName, pibc, grfMode);
 
-    hres = IBindCtx_GetObjectParam(pibc, (LPOLESTR)XSLParametersW, &unk);
+    hres = IBindCtx_GetObjectParam(pibc, (OLECHAR*)L"XSLParameters", &unk);
     if(SUCCEEDED(hres)) {
         FIXME("ignoring XSLParameters\n");
         IUnknown_Release(unk);
     }
-    hres = IBindCtx_GetObjectParam(pibc, (LPOLESTR)XMLBufferStreamW, &unk);
+    hres = IBindCtx_GetObjectParam(pibc, (OLECHAR*)L"XMLBufferStream", &unk);
     if(SUCCEEDED(hres)) {
         FIXME("ignoring XMLBufferStream\n");
         IUnknown_Release(unk);
@@ -941,14 +928,14 @@ static HRESULT WINAPI XMLView_PersistMoniker_Load(IPersistMoniker *iface,
     if(FAILED(hres))
         return hres;
 
-    hres = IBindCtx_GetObjectParam(pibc, (LPOLESTR)DWNBINDINFOW, &unk);
+    hres = IBindCtx_GetObjectParam(pibc, (OLECHAR*)L"__DWNBINDINFO", &unk);
     if(SUCCEEDED(hres)) {
-        IBindCtx_RegisterObjectParam(bindctx, (LPOLESTR)DWNBINDINFOW, unk);
+        IBindCtx_RegisterObjectParam(bindctx, (OLECHAR*)L"__DWNBINDINFO", unk);
         IUnknown_Release(unk);
     }
-    hres = IBindCtx_GetObjectParam(pibc, (LPOLESTR)HTMLLOADOPTIONSW, &unk);
+    hres = IBindCtx_GetObjectParam(pibc, (OLECHAR*)L"__HTMLLOADOPTIONS", &unk);
     if(SUCCEEDED(hres)) {
-        IBindCtx_RegisterObjectParam(bindctx, (LPOLESTR)HTMLLOADOPTIONSW, unk);
+        IBindCtx_RegisterObjectParam(bindctx, (OLECHAR*)L"__HTMLLOADOPTIONS", unk);
         IUnknown_Release(unk);
     }
     hres = IBindCtx_GetObjectParam(pibc, (LPOLESTR)SZ_HTML_CLIENTSITE_OBJECTPARAM, &unk);
@@ -993,7 +980,7 @@ static HRESULT WINAPI XMLView_PersistMoniker_Load(IPersistMoniker *iface,
         return hres;
     }
 
-    hres = IBindCtx_GetObjectParam(bindctx, (LPOLESTR)BSCBHolderW, &unk);
+    hres = IBindCtx_GetObjectParam(bindctx, (OLECHAR*)L"_BSCB_Holder_", &unk);
     IBindCtx_Release(bindctx);
     if(FAILED(hres)) {
         IStream_Release(stream);
@@ -1407,7 +1394,7 @@ HRESULT XMLView_create(void **ppObj)
 
     TRACE("(%p)\n", ppObj);
 
-    This = heap_alloc_zero(sizeof(*This));
+    This = calloc(1, sizeof(*This));
     if(!This)
         return E_OUTOFMEMORY;
 
@@ -1420,7 +1407,7 @@ HRESULT XMLView_create(void **ppObj)
     hres = CoCreateInstance(&CLSID_HTMLDocument, (IUnknown*)&This->IPersistMoniker_iface,
             CLSCTX_INPROC_SERVER, &IID_IUnknown, (void**)&This->html_doc);
     if(FAILED(hres)) {
-        heap_free(This);
+        free(This);
         return hres;
     }
 

@@ -1166,6 +1166,15 @@ static void test_lpFile_parsed(void)
                         NULL, "\"%TMPDIR%\\simple.shlexec\"", NULL, NULL, NULL);
     okShell(rc > 32 || broken(rc == SE_ERR_FNF) /* Win95/NT4 */,
             "failed: rc=%Iu\n", rc);
+    /* test lpfile + trailing space */
+    rc=shell_execute_ex(SEE_MASK_DOENVSUBST | SEE_MASK_FLAG_NO_UI,
+                        NULL, "%TMPDIR%\\simple.shlexec ", NULL, NULL, NULL);
+    okShell(rc > 32, "failed: rc=%Iu\n", rc);
+    /* test lpfile + leading space */
+    rc=shell_execute_ex(SEE_MASK_DOENVSUBST | SEE_MASK_FLAG_NO_UI,
+                        NULL, " %TMPDIR%\\simple.shlexec", NULL, NULL, NULL);
+    okShell(rc == SE_ERR_FNF, "failed: rc=%Iu\n", rc);
+
 }
 
 typedef struct
@@ -1379,7 +1388,6 @@ static BOOL test_one_cmdline(const cmdline_tests_t* test)
 
 static void test_commandline2argv(void)
 {
-    static const WCHAR exeW[] = {'e','x','e',0};
     const cmdline_tests_t* test;
     WCHAR strW[MAX_PATH];
     LPWSTR *args;
@@ -1395,7 +1403,7 @@ static void test_commandline2argv(void)
     }
 
     SetLastError(0xdeadbeef);
-    args = CommandLineToArgvW(exeW, NULL);
+    args = CommandLineToArgvW(L"exe", NULL);
     le = GetLastError();
     ok(args == NULL && le == ERROR_INVALID_PARAMETER, "expected NULL with ERROR_INVALID_PARAMETER got %p with %lu\n", args, le);
 
@@ -1624,7 +1632,7 @@ static void test_argify(void)
 
 static void test_filename(void)
 {
-    char filename[MAX_PATH + 20];
+    char filename[MAX_PATH + 20], curdir[MAX_PATH];
     const filename_tests_t* test;
     char* c;
     INT_PTR rc;
@@ -1634,6 +1642,31 @@ static void test_filename(void)
         skip("No ShellExecute/filename tests due to lack of .shlexec association\n");
         return;
     }
+
+    GetCurrentDirectoryA(sizeof(curdir), curdir);
+
+    SetCurrentDirectoryA(tmpdir);
+    rc=shell_execute("QuotedLowerL", "simple.shlexec", NULL, NULL);
+    if (rc > 32)
+        rc=33;
+    okShell(rc == 33, "failed: rc=%Id err=%lu\n", rc, GetLastError());
+    okChildInt("argcA", 5);
+    okChildString("argvA3", "QuotedLowerL");
+    strcpy(filename, tmpdir);
+    strcat(filename, "\\simple.shlexec");
+    okChildPath("argvA4", filename);
+
+    rc=shell_execute("QuotedUpperL", "simple.shlexec", NULL, NULL);
+    if (rc > 32)
+        rc=33;
+    okShell(rc == 33, "failed: rc=%Id err=%lu\n", rc, GetLastError());
+    okChildInt("argcA", 5);
+    okChildString("argvA3", "QuotedUpperL");
+    strcpy(filename, tmpdir);
+    strcat(filename, "\\simple.shlexec");
+    okChildPath("argvA4", filename);
+
+    SetCurrentDirectoryA(curdir);
 
     test=filename_tests;
     while (test->basename)
@@ -1984,9 +2017,11 @@ static void test_urls(void)
 
 static void test_find_executable(void)
 {
+    char curdir[MAX_PATH];
     char notepad_path[MAX_PATH];
     char filename[MAX_PATH + 17];
     char command[MAX_PATH];
+    char *basename = strrchr(argv0, '\\') + 1;
     const filename_tests_t* test;
     INT_PTR rc;
 
@@ -2026,6 +2061,18 @@ static void test_find_executable(void)
     rc=(INT_PTR)FindExecutableA(tmpdir, NULL, command);
     ok(rc == SE_ERR_NOASSOC /* >= win2000 */ || rc > 32 /* win98, nt4 */, "FindExecutable(NULL) returned %Id\n", rc);
     ok(strcmp(command, "your word") != 0, "FindExecutable(NULL) returned command=[%s]\n", command);
+
+    /* Search for the current executabe itself */
+    strcpy(command, "your word");
+    rc=(INT_PTR)FindExecutableA(argv0, NULL, command);
+    ok(rc > 32, "FindExecutable(%s) returned %Id\n", argv0, rc);
+
+    /* Make sure FindExecutable uses the correct current directory */
+    GetCurrentDirectoryA(MAX_PATH, curdir);
+    SetCurrentDirectoryA(tmpdir);
+    rc=(INT_PTR)FindExecutableA(basename, NULL, command);
+    ok(rc == SE_ERR_FNF, "FindExecutable(%s) returned %Id\n", basename, rc);
+    SetCurrentDirectoryA(curdir);
 
     sprintf(filename, "%s\\test file.sfe", tmpdir);
     rc=(INT_PTR)FindExecutableA(filename, NULL, command);
@@ -2227,8 +2274,12 @@ static void test_exes(void)
 {
     char filename[2 * MAX_PATH + 17];
     char params[1024];
+    char curdir[MAX_PATH];
+    char relative_basename[MAX_PATH];
+    char *basename = strrchr(argv0, '\\') + 1, *dirname = strdup(argv0);
     INT_PTR rc;
 
+    *strrchr(dirname, '\\') = '\0';
     sprintf(params, "shlexec \"%s\" Exec", child_file);
 
     /* We need NOZONECHECKS on Win2003 to block a dialog */
@@ -2237,6 +2288,15 @@ static void test_exes(void)
     okShell(rc > 32, "returned %Iu\n", rc);
     okChildInt("argcA", 4);
     okChildString("argvA3", "Exec");
+
+    /* Check non-filespec paths */
+    snprintf(relative_basename, ARRAY_SIZE(relative_basename), ".\\\\%s", basename);
+    rc=shell_execute_ex(SEE_MASK_NOZONECHECKS | SEE_MASK_FLAG_NO_UI, NULL, relative_basename, params,
+                        dirname, NULL);
+    okShell(rc > 32, "returned %Iu\n", rc);
+    okChildInt("argcA", 4);
+    okChildString("argvA3", "Exec");
+    free(dirname);
 
     rc=shell_execute_ex(SEE_MASK_NOZONECHECKS | SEE_MASK_CLASSNAME | SEE_MASK_FLAG_NO_UI, NULL, argv0, params,
                         NULL, ".exe");
@@ -2290,9 +2350,7 @@ static void test_exes(void)
         if (CopyFileA(argv0, filename, FALSE))
         {
             rc=shell_execute(NULL, filename, params, NULL);
-            todo_wine {
-                okShell(rc==SE_ERR_NOASSOC, "returned %Iu\n", rc);
-            }
+            okShell(rc==SE_ERR_NOASSOC, "returned %Iu\n", rc);
         }
     }
     else
@@ -2313,6 +2371,13 @@ static void test_exes(void)
     todo_wait rc = shell_execute_ex(SEE_MASK_FLAG_NO_UI,
                                     "notaverb", argv0, NULL, NULL, NULL);
     todo_wine okShell(rc == SE_ERR_NOASSOC, "returned %Iu\n", rc);
+
+    /* Check the correct search path is used */
+    GetCurrentDirectoryA(MAX_PATH, curdir);
+    SetCurrentDirectoryA(tmpdir);
+    rc = shell_execute(NULL, basename, params, NULL);
+    okShell(rc == SE_ERR_FNF, "returned %Iu\n", rc);
+    SetCurrentDirectoryA(curdir);
 
     if (!skip_shlexec_tests)
     {
@@ -2908,7 +2973,7 @@ static void test_directory(void)
                         NULL, "test2.exe", params, NULL, NULL);
     okShell(rc > 32, "returned %Iu\n", rc);
     okChildInt("argcA", 4);
-    todo_wine okChildString("argvA0", path);
+    okChildString("argvA0", path);
     okChildString("argvA3", "Exec");
     okChildPath("longPath", path);
     SetCurrentDirectoryA(curdir);

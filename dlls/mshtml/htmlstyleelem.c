@@ -29,6 +29,7 @@
 #include "wine/debug.h"
 
 #include "mshtml_private.h"
+#include "htmlevent.h"
 #include "mshtmdid.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(mshtml);
@@ -48,58 +49,8 @@ static inline HTMLStyleElement *impl_from_IHTMLStyleElement(IHTMLStyleElement *i
     return CONTAINING_RECORD(iface, HTMLStyleElement, IHTMLStyleElement_iface);
 }
 
-static HRESULT WINAPI HTMLStyleElement_QueryInterface(IHTMLStyleElement *iface,
-        REFIID riid, void **ppv)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement(iface);
-
-    return IHTMLDOMNode_QueryInterface(&This->element.node.IHTMLDOMNode_iface, riid, ppv);
-}
-
-static ULONG WINAPI HTMLStyleElement_AddRef(IHTMLStyleElement *iface)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement(iface);
-
-    return IHTMLDOMNode_AddRef(&This->element.node.IHTMLDOMNode_iface);
-}
-
-static ULONG WINAPI HTMLStyleElement_Release(IHTMLStyleElement *iface)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement(iface);
-
-    return IHTMLDOMNode_Release(&This->element.node.IHTMLDOMNode_iface);
-}
-
-static HRESULT WINAPI HTMLStyleElement_GetTypeInfoCount(IHTMLStyleElement *iface, UINT *pctinfo)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement(iface);
-    return IDispatchEx_GetTypeInfoCount(&This->element.node.event_target.dispex.IDispatchEx_iface, pctinfo);
-}
-
-static HRESULT WINAPI HTMLStyleElement_GetTypeInfo(IHTMLStyleElement *iface, UINT iTInfo,
-        LCID lcid, ITypeInfo **ppTInfo)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement(iface);
-    return IDispatchEx_GetTypeInfo(&This->element.node.event_target.dispex.IDispatchEx_iface, iTInfo, lcid,
-            ppTInfo);
-}
-
-static HRESULT WINAPI HTMLStyleElement_GetIDsOfNames(IHTMLStyleElement *iface, REFIID riid,
-        LPOLESTR *rgszNames, UINT cNames, LCID lcid, DISPID *rgDispId)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement(iface);
-    return IDispatchEx_GetIDsOfNames(&This->element.node.event_target.dispex.IDispatchEx_iface, riid, rgszNames,
-            cNames, lcid, rgDispId);
-}
-
-static HRESULT WINAPI HTMLStyleElement_Invoke(IHTMLStyleElement *iface, DISPID dispIdMember,
-        REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS *pDispParams,
-        VARIANT *pVarResult, EXCEPINFO *pExcepInfo, UINT *puArgErr)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement(iface);
-    return IDispatchEx_Invoke(&This->element.node.event_target.dispex.IDispatchEx_iface, dispIdMember, riid,
-            lcid, wFlags, pDispParams, pVarResult, pExcepInfo, puArgErr);
-}
+DISPEX_IDISPATCH_IMPL(HTMLStyleElement, IHTMLStyleElement,
+                      impl_from_IHTMLStyleElement(iface)->element.node.event_target.dispex)
 
 static HRESULT WINAPI HTMLStyleElement_put_type(IHTMLStyleElement *iface, BSTR v)
 {
@@ -199,8 +150,7 @@ static HRESULT WINAPI HTMLStyleElement_get_styleSheet(IHTMLStyleElement *iface, 
         assert(nsres == NS_OK);
 
         if(ss) {
-            HRESULT hres = create_style_sheet(ss, dispex_compat_mode(&This->element.node.event_target.dispex),
-                                              &This->style_sheet);
+            HRESULT hres = create_style_sheet(ss, &This->element.node.event_target.dispex, &This->style_sheet);
             nsIDOMStyleSheet_Release(ss);
             if(FAILED(hres))
                 return hres;
@@ -288,58 +238,8 @@ static inline HTMLStyleElement *impl_from_IHTMLStyleElement2(IHTMLStyleElement2 
     return CONTAINING_RECORD(iface, HTMLStyleElement, IHTMLStyleElement2_iface);
 }
 
-static HRESULT WINAPI HTMLStyleElement2_QueryInterface(IHTMLStyleElement2 *iface,
-                                                       REFIID riid, void **ppv)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement2(iface);
-
-    return IHTMLDOMNode_QueryInterface(&This->element.node.IHTMLDOMNode_iface, riid, ppv);
-}
-
-static ULONG WINAPI HTMLStyleElement2_AddRef(IHTMLStyleElement2 *iface)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement2(iface);
-
-    return IHTMLDOMNode_AddRef(&This->element.node.IHTMLDOMNode_iface);
-}
-
-static ULONG WINAPI HTMLStyleElement2_Release(IHTMLStyleElement2 *iface)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement2(iface);
-
-    return IHTMLDOMNode_Release(&This->element.node.IHTMLDOMNode_iface);
-}
-
-static HRESULT WINAPI HTMLStyleElement2_GetTypeInfoCount(IHTMLStyleElement2 *iface, UINT *pctinfo)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement2(iface);
-    return IDispatchEx_GetTypeInfoCount(&This->element.node.event_target.dispex.IDispatchEx_iface, pctinfo);
-}
-
-static HRESULT WINAPI HTMLStyleElement2_GetTypeInfo(IHTMLStyleElement2 *iface, UINT iTInfo,
-                                                    LCID lcid, ITypeInfo **ppTInfo)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement2(iface);
-    return IDispatchEx_GetTypeInfo(&This->element.node.event_target.dispex.IDispatchEx_iface, iTInfo, lcid,
-                                   ppTInfo);
-}
-
-static HRESULT WINAPI HTMLStyleElement2_GetIDsOfNames(IHTMLStyleElement2 *iface, REFIID riid,
-        LPOLESTR *rgszNames, UINT cNames, LCID lcid, DISPID *rgDispId)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement2(iface);
-    return IDispatchEx_GetIDsOfNames(&This->element.node.event_target.dispex.IDispatchEx_iface, riid, rgszNames,
-                                     cNames, lcid, rgDispId);
-}
-
-static HRESULT WINAPI HTMLStyleElement2_Invoke(IHTMLStyleElement2 *iface, DISPID dispIdMember,
-        REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS *pDispParams,
-        VARIANT *pVarResult, EXCEPINFO *pExcepInfo, UINT *puArgErr)
-{
-    HTMLStyleElement *This = impl_from_IHTMLStyleElement2(iface);
-    return IDispatchEx_Invoke(&This->element.node.event_target.dispex.IDispatchEx_iface, dispIdMember, riid,
-                              lcid, wFlags, pDispParams, pVarResult, pExcepInfo, puArgErr);
-}
+DISPEX_IDISPATCH_IMPL(HTMLStyleElement2, IHTMLStyleElement2,
+                      impl_from_IHTMLStyleElement2(iface)->element.node.event_target.dispex)
 
 static HRESULT WINAPI HTMLStyleElement2_get_sheet(IHTMLStyleElement2 *iface, IHTMLStyleSheet **p)
 {
@@ -359,65 +259,40 @@ static const IHTMLStyleElement2Vtbl HTMLStyleElement2Vtbl = {
     HTMLStyleElement2_get_sheet
 };
 
-static inline HTMLStyleElement *impl_from_HTMLDOMNode(HTMLDOMNode *iface)
+static inline HTMLStyleElement *impl_from_DispatchEx(DispatchEx *iface)
 {
-    return CONTAINING_RECORD(iface, HTMLStyleElement, element.node);
+    return CONTAINING_RECORD(iface, HTMLStyleElement, element.node.event_target.dispex);
 }
 
-static HRESULT HTMLStyleElement_QI(HTMLDOMNode *iface, REFIID riid, void **ppv)
+static void *HTMLStyleElement_query_interface(DispatchEx *dispex, REFIID riid)
 {
-    HTMLStyleElement *This = impl_from_HTMLDOMNode(iface);
+    HTMLStyleElement *This = impl_from_DispatchEx(dispex);
 
-    if(IsEqualGUID(&IID_IUnknown, riid)) {
-        TRACE("(%p)->(IID_IUnknown %p)\n", This, ppv);
-        *ppv = &This->IHTMLStyleElement_iface;
-    }else if(IsEqualGUID(&IID_IDispatch, riid)) {
-        TRACE("(%p)->(IID_IDispatch %p)\n", This, ppv);
-        *ppv = &This->IHTMLStyleElement_iface;
-    }else if(IsEqualGUID(&IID_IHTMLStyleElement, riid)) {
-        TRACE("(%p)->(IID_IHTMLStyleElement %p)\n", This, ppv);
-        *ppv = &This->IHTMLStyleElement_iface;
-    }else if(IsEqualGUID(&IID_IHTMLStyleElement2, riid)) {
-        TRACE("(%p)->(IID_IHTMLStyleElement2 %p)\n", This, ppv);
-        *ppv = &This->IHTMLStyleElement2_iface;
-    }else {
-        return HTMLElement_QI(&This->element.node, riid, ppv);
-    }
+    if(IsEqualGUID(&IID_IHTMLStyleElement, riid))
+        return &This->IHTMLStyleElement_iface;
+    if(IsEqualGUID(&IID_IHTMLStyleElement2, riid))
+        return &This->IHTMLStyleElement2_iface;
 
-    IUnknown_AddRef((IUnknown*)*ppv);
-    return S_OK;
+    return HTMLElement_query_interface(&This->element.node.event_target.dispex, riid);
 }
 
-static void HTMLStyleElement_destructor(HTMLDOMNode *iface)
+static void HTMLStyleElement_traverse(DispatchEx *dispex, nsCycleCollectionTraversalCallback *cb)
 {
-    HTMLStyleElement *This = impl_from_HTMLDOMNode(iface);
+    HTMLStyleElement *This = impl_from_DispatchEx(dispex);
+    HTMLElement_traverse(dispex, cb);
 
-    if(This->style_sheet) {
-        IHTMLStyleSheet_Release(This->style_sheet);
-        This->style_sheet = NULL;
-    }
-
-    HTMLElement_destructor(iface);
-}
-
-static void HTMLStyleElement_traverse(HTMLDOMNode *iface, nsCycleCollectionTraversalCallback *cb)
-{
-    HTMLStyleElement *This = impl_from_HTMLDOMNode(iface);
-
+    if(This->style_sheet)
+        note_cc_edge((nsISupports*)This->style_sheet, "style_sheet", cb);
     if(This->nsstyle)
-        note_cc_edge((nsISupports*)This->nsstyle, "This->nsstyle", cb);
+        note_cc_edge((nsISupports*)This->nsstyle, "nsstyle", cb);
 }
 
-static void HTMLStyleElement_unlink(HTMLDOMNode *iface)
+static void HTMLStyleElement_unlink(DispatchEx *dispex)
 {
-    HTMLStyleElement *This = impl_from_HTMLDOMNode(iface);
-
-    if(This->nsstyle) {
-        nsIDOMHTMLStyleElement *nsstyle = This->nsstyle;
-
-        This->nsstyle = NULL;
-        nsIDOMHTMLStyleElement_Release(nsstyle);
-    }
+    HTMLStyleElement *This = impl_from_DispatchEx(dispex);
+    HTMLElement_unlink(dispex);
+    unlink_ref(&This->style_sheet);
+    unlink_ref(&This->nsstyle);
 }
 
 static void HTMLStyleElement_init_dispex_info(dispex_data_t *info, compat_mode_t mode)
@@ -438,36 +313,30 @@ static void HTMLStyleElement_init_dispex_info(dispex_data_t *info, compat_mode_t
 }
 
 static const NodeImplVtbl HTMLStyleElementImplVtbl = {
-    &CLSID_HTMLStyleElement,
-    HTMLStyleElement_QI,
-    HTMLStyleElement_destructor,
-    HTMLElement_cpc,
-    HTMLElement_clone,
-    HTMLElement_handle_event,
-    HTMLElement_get_attr_col,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    HTMLStyleElement_traverse,
-    HTMLStyleElement_unlink
+    .clsid                 = &CLSID_HTMLStyleElement,
+    .cpc_entries           = HTMLElement_cpc,
+    .clone                 = HTMLElement_clone,
+    .get_attr_col          = HTMLElement_get_attr_col,
 };
 
-static const tid_t HTMLStyleElement_iface_tids[] = {
-    HTMLELEMENT_TIDS,
-    0
+static const event_target_vtbl_t HTMLStyleElement_event_target_vtbl = {
+    {
+        HTMLELEMENT_DISPEX_VTBL_ENTRIES,
+        .query_interface= HTMLStyleElement_query_interface,
+        .destructor     = HTMLElement_destructor,
+        .traverse       = HTMLStyleElement_traverse,
+        .unlink         = HTMLStyleElement_unlink
+    },
+    HTMLELEMENT_EVENT_TARGET_VTBL_ENTRIES,
+    .handle_event       = HTMLElement_handle_event
 };
-static dispex_static_data_t HTMLStyleElement_dispex = {
-    L"HTMLStyleElement",
-    NULL,
-    DispHTMLStyleElement_tid,
-    HTMLStyleElement_iface_tids,
-    HTMLStyleElement_init_dispex_info
+
+dispex_static_data_t HTMLStyleElement_dispex = {
+    .id           = PROT_HTMLStyleElement,
+    .prototype_id = PROT_HTMLElement,
+    .vtbl         = &HTMLStyleElement_event_target_vtbl.dispex_vtbl,
+    .disp_tid     = DispHTMLStyleElement_tid,
+    .init_info    = HTMLStyleElement_init_dispex_info,
 };
 
 HRESULT HTMLStyleElement_Create(HTMLDocumentNode *doc, nsIDOMElement *nselem, HTMLElement **elem)

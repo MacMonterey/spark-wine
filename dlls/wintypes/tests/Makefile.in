@@ -1,5 +1,6 @@
 TESTDLL = wintypes.dll
-IMPORTS = combase uuid
+IMPORTS = wintypes combase uuid
 
-C_SRCS = \
-	wintypes.c
+SOURCES = \
+	wintypes.c \
+	wintypes_test.idl

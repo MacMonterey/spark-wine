@@ -24,35 +24,16 @@
 #include "wine/strmbase.h"
 #include "wine/debug.h"
 
-static inline const char *debugstr_time(LONGLONG time)
-{
-    ULONGLONG abstime = time >= 0 ? time : -time;
-    unsigned int i = 0, j = 0;
-    char buffer[23], rev[23];
-
-    while (abstime || i <= 8)
-    {
-        buffer[i++] = '0' + (abstime % 10);
-        abstime /= 10;
-        if (i == 7) buffer[i++] = '.';
-    }
-    if (time < 0) buffer[i++] = '-';
-
-    while (i--) rev[j++] = buffer[i];
-    while (rev[j-1] == '0' && rev[j-2] != '.') --j;
-    rev[j] = 0;
-
-    return wine_dbg_sprintf("%s", rev);
-}
-
 static inline const char *debugstr_normalized_rect(const MFVideoNormalizedRect *rect)
 {
     if (!rect) return "(null)";
     return wine_dbg_sprintf("(%.8e,%.8e)-(%.8e,%.8e)", rect->left, rect->top, rect->right, rect->bottom);
 }
 
-HRESULT evr_filter_create(IUnknown *outer_unk, void **ppv) DECLSPEC_HIDDEN;
-HRESULT evr_mixer_create(IUnknown *outer_unk, void **ppv) DECLSPEC_HIDDEN;
-HRESULT evr_presenter_create(IUnknown *outer_unk, void **ppv) DECLSPEC_HIDDEN;
+HRESULT evr_filter_create(IUnknown *outer_unk, void **ppv);
+HRESULT evr_mixer_create(IUnknown *outer_unk, void **ppv);
+HRESULT evr_presenter_create(IUnknown *outer_unk, void **ppv);
+
+HRESULT create_video_sample_allocator(BOOL lock_notify_release, REFIID riid, void **obj);
 
 #endif /* __EVR_PRIVATE_INCLUDED__ */

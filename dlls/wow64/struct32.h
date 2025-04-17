@@ -75,6 +75,13 @@ typedef struct
 
 typedef struct
 {
+    CONTEXT_CHUNK All;
+    CONTEXT_CHUNK Legacy;
+    CONTEXT_CHUNK XState;
+} CONTEXT_EX32;
+
+typedef struct
+{
     UNICODE_STRING32 ObjectName;
     UNICODE_STRING32 ObjectTypeName;
 } DIRECTORY_BASIC_INFORMATION32;
@@ -94,7 +101,11 @@ typedef struct
 
 typedef struct
 {
-    BOOLEAN ReplaceIfExists;
+    union
+    {
+        BOOLEAN ReplaceIfExists;
+        ULONG Flags;
+    };
     ULONG   RootDirectory;
     ULONG   FileNameLength;
     WCHAR   FileName[1];
@@ -216,13 +227,6 @@ typedef struct
     ULONG     UniqueProcessId;
     ULONG     InheritedFromUniqueProcessId;
 } PROCESS_BASIC_INFORMATION32;
-
-typedef struct
-{
-    ULONG Version;
-    ULONG Reserved;
-    ULONG Callback;
-} PROCESS_INSTRUMENTATION_CALLBACK_INFORMATION32;
 
 typedef struct
 {
@@ -358,6 +362,11 @@ typedef struct
 
 typedef struct
 {
+    SID_AND_ATTRIBUTES32 Label;
+} TOKEN_MANDATORY_LABEL32;
+
+typedef struct
+{
     ULONG DefaultDacl;
 } TOKEN_DEFAULT_DACL32;
 
@@ -371,6 +380,11 @@ typedef struct
 {
     ULONG Owner;
 } TOKEN_OWNER32;
+
+typedef struct
+{
+    ULONG PrimaryGroup;
+} TOKEN_PRIMARY_GROUP32;
 
 typedef struct
 {
@@ -507,6 +521,12 @@ typedef struct
     ULONG TransitionRePurposeCount;
     ULONG Flags;
 } SYSTEM_CACHE_INFORMATION32;
+
+typedef struct
+{
+    ULONG ProcessId;
+    UNICODE_STRING32 ImageName;
+} SYSTEM_PROCESS_ID_INFORMATION32;
 
 typedef struct
 {
@@ -705,5 +725,21 @@ typedef struct DECLSPEC_ALIGN(8)
         ULONG   ULong;
     };
 } MEM_EXTENDED_PARAMETER32;
+
+typedef struct
+{
+    ULONG Token;
+    ULONG Thread;
+} PROCESS_ACCESS_TOKEN32;
+
+typedef struct
+{
+    ULONG PagedPoolLimit;
+    ULONG NonPagedPoolLimit;
+    ULONG MinimumWorkingSetSize;
+    ULONG MaximumWorkingSetSize;
+    ULONG PagefileLimit;
+    LARGE_INTEGER TimeLimit;
+} QUOTA_LIMITS32;
 
 #endif /* __WOW64_STRUCT32_H */

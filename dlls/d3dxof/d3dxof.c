@@ -18,17 +18,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#include "wine/debug.h"
-
-#define COBJMACROS
-
-#include "winbase.h"
-#include "wingdi.h"
-
 #include "d3dxof_private.h"
-#include "dxfile.h"
-
-#include <stdio.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(d3dxof);
 WINE_DECLARE_DEBUG_CHANNEL(d3dxof_dump);
@@ -158,7 +148,8 @@ static HRESULT WINAPI IDirectXFileImpl_CreateEnumObject(IDirectXFile* iface, LPV
     if (hFile == INVALID_HANDLE_VALUE)
     {
       TRACE("File '%s' not found\n", (char*)pvSource);
-      return DXFILEERR_FILENOTFOUND;
+      hr = DXFILEERR_FILENOTFOUND;
+      goto error;
     }
 
     file_size = GetFileSize(hFile, NULL);

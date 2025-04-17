@@ -1,7 +1,10 @@
-MODULE = wintypes.dll
-IMPORTS = combase
+MODULE    = wintypes.dll
+IMPORTLIB = wintypes
+IMPORTS   = combase
 
-C_SRCS = \
-	main.c
-
-IDL_SRCS = classes.idl
+SOURCES = \
+	buffer.c \
+	classes.idl \
+	main.c \
+	storage.c \
+	wintypes_private.idl

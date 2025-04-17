@@ -26,6 +26,8 @@
 #include "cocoa_app.h"
 #include "cocoa_event.h"
 
+#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+
 
 @interface WineOpenGLContext ()
 @property (retain, nonatomic) NSView* latentView;
@@ -37,7 +39,7 @@
 
 
 @implementation WineOpenGLContext
-@synthesize latentView, needsUpdate, needsReattach, shouldClearToBlack;
+@synthesize latentView, needsUpdate, needsReattach;
 
     - (void) dealloc
     {
@@ -49,6 +51,7 @@
     + (NSView*) dummyView
     {
         static NSWindow* dummyWindow;
+        static NSView* dummyWindowContentView;
         static dispatch_once_t once;
 
         dispatch_once(&once, ^{
@@ -57,10 +60,11 @@
                                                           styleMask:NSWindowStyleMaskBorderless
                                                             backing:NSBackingStoreBuffered
                                                               defer:NO];
+                dummyWindowContentView = dummyWindow.contentView;
             });
         });
 
-        return dummyWindow.contentView;
+        return dummyWindowContentView;
     }
 
     // Normally, we take care that disconnecting a context from a view doesn't
@@ -81,11 +85,15 @@
             macdrv_set_view_backing_size((macdrv_view)self.view, view_backing);
 
             NSView* save = self.view;
-            OnMainThread(^{
+            if ([NSThread isMainThread])
+            {
+                [super clearDrawable];
+                [super setView:save];
+            }
+            else OnMainThread(^{
                 [super clearDrawable];
                 [super setView:save];
             });
-            shouldClearToBlack = TRUE;
         }
     }
 
@@ -161,57 +169,6 @@
         [self clearDrawable];
     }
 
-    - (void) clearToBlackIfNeeded
-    {
-        if (shouldClearToBlack)
-        {
-            NSOpenGLContext* origContext = [NSOpenGLContext currentContext];
-            const char *gl_version;
-            unsigned int major;
-            GLint draw_framebuffer_binding, draw_buffer;
-            GLboolean scissor_test, color_mask[4];
-            GLfloat clear_color[4];
-
-            [self makeCurrentContext];
-
-            gl_version = (const char *)glGetString(GL_VERSION);
-            major = gl_version[0] - '0';
-            /* FIXME: Should check for GL_ARB_framebuffer_object and GL_EXT_framebuffer_object
-             * for older GL versions. */
-            if (major >= 3)
-            {
-                glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_framebuffer_binding);
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            }
-            glGetIntegerv(GL_DRAW_BUFFER, &draw_buffer);
-            scissor_test = glIsEnabled(GL_SCISSOR_TEST);
-            glGetBooleanv(GL_COLOR_WRITEMASK, color_mask);
-            glGetFloatv(GL_COLOR_CLEAR_VALUE, clear_color);
-            glDrawBuffer(GL_FRONT_AND_BACK);
-            glDisable(GL_SCISSOR_TEST);
-            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-            glClearColor(0, 0, 0, gl_surface_mode == GL_SURFACE_IN_FRONT_TRANSPARENT ? 0 : 1);
-
-            glClear(GL_COLOR_BUFFER_BIT);
-
-            glClearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
-            glColorMask(color_mask[0], color_mask[1], color_mask[2], color_mask[3]);
-            if (scissor_test)
-                glEnable(GL_SCISSOR_TEST);
-            glDrawBuffer(draw_buffer);
-            if (major >= 3)
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_framebuffer_binding);
-            glFlush();
-
-            if (origContext)
-                [origContext makeCurrentContext];
-            else
-                [NSOpenGLContext clearCurrentContext];
-
-            shouldClearToBlack = FALSE;
-        }
-    }
-
     - (void) removeFromViews:(BOOL)removeViews
     {
         if ([self view])
@@ -242,13 +199,14 @@
  */
 macdrv_opengl_context macdrv_create_opengl_context(void* cglctx)
 {
-    NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
+@autoreleasepool
+{
     WineOpenGLContext *context;
 
     context = [[WineOpenGLContext alloc] initWithCGLContextObj:cglctx];
 
-    [pool release];
     return (macdrv_opengl_context)context;
+}
 }
 
 /***********************************************************************
@@ -259,13 +217,13 @@ macdrv_opengl_context macdrv_create_opengl_context(void* cglctx)
  */
 void macdrv_dispose_opengl_context(macdrv_opengl_context c)
 {
-    NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
+@autoreleasepool
+{
     WineOpenGLContext *context = (WineOpenGLContext*)c;
 
     [context removeFromViews:YES];
     [context release];
-
-    [pool release];
+}
 }
 
 /***********************************************************************
@@ -273,7 +231,8 @@ void macdrv_dispose_opengl_context(macdrv_opengl_context c)
  */
 void macdrv_make_context_current(macdrv_opengl_context c, macdrv_view v, CGRect r)
 {
-    NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
+@autoreleasepool
+{
     WineOpenGLContext *context = (WineOpenGLContext*)c;
     NSView* view = (NSView*)v;
 
@@ -310,9 +269,6 @@ void macdrv_make_context_current(macdrv_opengl_context c, macdrv_view v, CGRect 
         }
 
         [context makeCurrentContext];
-
-        if ([context view])
-            [context clearToBlackIfNeeded];
     }
     else
     {
@@ -328,8 +284,7 @@ void macdrv_make_context_current(macdrv_opengl_context c, macdrv_view v, CGRect 
         if (context)
             [context removeFromViews:YES];
     }
-
-    [pool release];
+}
 }
 
 /***********************************************************************
@@ -337,7 +292,8 @@ void macdrv_make_context_current(macdrv_opengl_context c, macdrv_view v, CGRect 
  */
 void macdrv_update_opengl_context(macdrv_opengl_context c)
 {
-    NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
+@autoreleasepool
+{
     WineOpenGLContext *context = (WineOpenGLContext*)c;
 
     if (context.needsUpdate)
@@ -351,7 +307,6 @@ void macdrv_update_opengl_context(macdrv_opengl_context c)
             context.latentView = nil;
 
             [context resetSurfaceIfBackingSizeChanged];
-            [context clearToBlackIfNeeded];
         }
         else
         {
@@ -367,8 +322,7 @@ void macdrv_update_opengl_context(macdrv_opengl_context c)
             [context resetSurfaceIfBackingSizeChanged];
         }
     }
-
-    [pool release];
+}
 }
 
 /***********************************************************************
@@ -379,11 +333,11 @@ void macdrv_update_opengl_context(macdrv_opengl_context c)
  */
 void macdrv_flush_opengl_context(macdrv_opengl_context c)
 {
-    NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
+@autoreleasepool
+{
     WineOpenGLContext *context = (WineOpenGLContext*)c;
 
     macdrv_update_opengl_context(c);
     [context flushBuffer];
-
-    [pool release];
+}
 }

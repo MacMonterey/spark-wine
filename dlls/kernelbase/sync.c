@@ -246,6 +246,64 @@ void WINAPI DECLSPEC_HOTPATCH QueryUnbiasedInterruptTimePrecise( ULONGLONG *time
 
 
 /***********************************************************************
+ *           QueryIdleProcessorCycleTime  (kernelbase.@)
+ */
+BOOL WINAPI QueryIdleProcessorCycleTime( ULONG *size, ULONG64 *times )
+{
+    ULONG ret_size;
+    NTSTATUS status = NtQuerySystemInformation( SystemProcessorIdleCycleTimeInformation, times, *size, &ret_size );
+
+    if (!*size || !status) *size = ret_size;
+    return TRUE;
+}
+
+
+/***********************************************************************
+ *           QueryIdleProcessorCycleTimeEx  (kernelbase.@)
+ */
+BOOL WINAPI QueryIdleProcessorCycleTimeEx( USHORT group_id, ULONG *size, ULONG64 *times )
+{
+    ULONG ret_size;
+    NTSTATUS status = NtQuerySystemInformationEx( SystemProcessorIdleCycleTimeInformation, &group_id, sizeof(group_id),
+                                                  times, *size, &ret_size );
+    if (!*size || !status) *size = ret_size;
+    return TRUE;
+}
+
+
+/***********************************************************************
+ *           ConvertAuxiliaryCounterToPerformanceCounter  (kernelbase.@)
+ */
+HRESULT WINAPI ConvertAuxiliaryCounterToPerformanceCounter( ULONGLONG from, ULONGLONG *to, ULONGLONG *error )
+{
+    NTSTATUS status;
+
+    TRACE( "%#I64x, %p, %p.\n", from, to, error );
+
+    if ((status = NtConvertBetweenAuxiliaryCounterAndPerformanceCounter( 0, &from, to, error )) == STATUS_NOT_SUPPORTED)
+        return E_NOTIMPL;
+
+    return HRESULT_FROM_NT(status);
+}
+
+
+/***********************************************************************
+ *           ConvertAuxiliaryCounterToPerformanceCounter  (kernelbase.@)
+ */
+HRESULT WINAPI ConvertPerformanceCounterToAuxiliaryCounter( ULONGLONG from, ULONGLONG *to, ULONGLONG *error )
+{
+    NTSTATUS status;
+
+    TRACE( "%#I64x, %p, %p.\n", from, to, error );
+
+    if ((status = NtConvertBetweenAuxiliaryCounterAndPerformanceCounter( 1, &from, to, error )) == STATUS_NOT_SUPPORTED)
+        return E_NOTIMPL;
+
+    return HRESULT_FROM_NT(status);
+}
+
+
+/***********************************************************************
  * Waits
  ***********************************************************************/
 
@@ -393,6 +451,45 @@ DWORD WINAPI DECLSPEC_HOTPATCH WaitForMultipleObjectsEx( DWORD count, const HAND
  *           WaitForDebugEvent   (kernelbase.@)
  */
 BOOL WINAPI DECLSPEC_HOTPATCH WaitForDebugEvent( DEBUG_EVENT *event, DWORD timeout )
+{
+    NTSTATUS status;
+    LARGE_INTEGER time;
+    DBGUI_WAIT_STATE_CHANGE state;
+
+    for (;;)
+    {
+        status = DbgUiWaitStateChange( &state, get_nt_timeout( &time, timeout ) );
+        switch (status)
+        {
+        case STATUS_SUCCESS:
+            /* continue on wide print exceptions to force resending an ANSI one. */
+            if (state.NewState == DbgExceptionStateChange)
+            {
+                DBGKM_EXCEPTION *info = &state.StateInfo.Exception;
+                DWORD code = info->ExceptionRecord.ExceptionCode;
+                if (code == DBG_PRINTEXCEPTION_WIDE_C && info->ExceptionRecord.NumberParameters >= 2)
+                {
+                    DbgUiContinue( &state.AppClientId, DBG_EXCEPTION_NOT_HANDLED );
+                    break;
+                }
+            }
+            DbgUiConvertStateChangeStructure( &state, event );
+            return TRUE;
+        case STATUS_USER_APC:
+            continue;
+        case STATUS_TIMEOUT:
+            SetLastError( ERROR_SEM_TIMEOUT );
+            return FALSE;
+        default:
+            return set_ntstatus( status );
+        }
+    }
+}
+
+/******************************************************************************
+ *           WaitForDebugEventEx   (kernelbase.@)
+ */
+BOOL WINAPI DECLSPEC_HOTPATCH WaitForDebugEventEx( DEBUG_EVENT *event, DWORD timeout )
 {
     NTSTATUS status;
     LARGE_INTEGER time;
@@ -1132,7 +1229,8 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetQueuedCompletionStatus( HANDLE port, LPDWORD co
         return FALSE;
     }
 
-    if (status == STATUS_TIMEOUT) SetLastError( WAIT_TIMEOUT );
+    if (status == STATUS_TIMEOUT)        SetLastError( WAIT_TIMEOUT );
+    else if (status == STATUS_ABANDONED) SetLastError( ERROR_ABANDONED_WAIT_0 );
     else SetLastError( RtlNtStatusToDosError(status) );
     return FALSE;
 }
@@ -1152,8 +1250,9 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetQueuedCompletionStatusEx( HANDLE port, OVERLAPP
     ret = NtRemoveIoCompletionEx( port, (FILE_IO_COMPLETION_INFORMATION *)entries, count,
                                   written, get_nt_timeout( &time, timeout ), alertable );
     if (ret == STATUS_SUCCESS) return TRUE;
-    else if (ret == STATUS_TIMEOUT) SetLastError( WAIT_TIMEOUT );
-    else if (ret == STATUS_USER_APC) SetLastError( WAIT_IO_COMPLETION );
+    else if (ret == STATUS_TIMEOUT)   SetLastError( WAIT_TIMEOUT );
+    else if (ret == STATUS_USER_APC)  SetLastError( WAIT_IO_COMPLETION );
+    else if (ret == STATUS_ABANDONED) SetLastError( ERROR_ABANDONED_WAIT_0 );
     else SetLastError( RtlNtStatusToDosError(ret) );
     return FALSE;
 }

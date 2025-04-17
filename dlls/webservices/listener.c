@@ -141,7 +141,7 @@ static struct listener *alloc_listener(void)
         free( ret );
         return NULL;
     }
-    InitializeCriticalSection( &ret->cs );
+    InitializeCriticalSectionEx( &ret->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO );
     ret->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": listener.cs");
 
     prop_init( listener_props, count, ret->prop, &ret[1] );
@@ -448,7 +448,8 @@ static HRESULT open_listener( struct listener *listener, const WS_STRING *url )
 /**************************************************************************
  *          WsOpenListener		[webservices.@]
  */
-HRESULT WINAPI WsOpenListener( WS_LISTENER *handle, WS_STRING *url, const WS_ASYNC_CONTEXT *ctx, WS_ERROR *error )
+HRESULT WINAPI WsOpenListener( WS_LISTENER *handle, const WS_STRING *url, const WS_ASYNC_CONTEXT *ctx,
+                               WS_ERROR *error )
 {
     struct listener *listener = (struct listener *)handle;
     HRESULT hr;

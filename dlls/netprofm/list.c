@@ -18,8 +18,6 @@
  */
 
 #define COBJMACROS
-#define NONAMELESSUNION
-#define NONAMELESSSTRUCT
 
 #include <stdarg.h>
 #include "windef.h"
@@ -196,7 +194,7 @@ static HRESULT WINAPI connection_point_Advise(
     if (FAILED(hr))
     {
         WARN( "iface %s not implemented by sink\n", debugstr_guid(&cp->iid) );
-        return CO_E_FAILEDTOOPENTHREADTOKEN;
+        return CONNECT_E_CANNOTCONNECT;
     }
 
     sink_entry = malloc( sizeof(*sink_entry) );
@@ -236,7 +234,7 @@ static HRESULT WINAPI connection_point_Unadvise(
     }
 
     WARN( "invalid cookie\n" );
-    return OLE_E_NOCONNECTION;
+    return CONNECT_E_NOCONNECTION;
 }
 
 static HRESULT WINAPI connection_point_EnumConnections(
@@ -686,6 +684,7 @@ struct networks_enum
     LONG                 refs;
     struct list_manager *mgr;
     struct list         *cursor;
+    NLM_ENUM_NETWORK     flags;
 };
 
 static inline struct networks_enum *impl_from_IEnumNetworks(
@@ -794,6 +793,17 @@ static HRESULT WINAPI networks_enum_get__NewEnum(
     return E_NOTIMPL;
 }
 
+static BOOL match_enum_network_flags( NLM_ENUM_NETWORK flags, struct network *network )
+{
+    if (flags == NLM_ENUM_NETWORK_ALL) return TRUE;
+    if (network->connected)
+    {
+        if (flags & NLM_ENUM_NETWORK_CONNECTED) return TRUE;
+    }
+    else if (flags & NLM_ENUM_NETWORK_DISCONNECTED) return TRUE;
+    return FALSE;
+}
+
 static HRESULT WINAPI networks_enum_Next(
     IEnumNetworks *iface, ULONG count, INetwork **ret, ULONG *fetched )
 {
@@ -802,16 +812,21 @@ static HRESULT WINAPI networks_enum_Next(
 
     TRACE( "%p, %lu %p %p\n", iter, count, ret, fetched );
 
+    if (!ret) return E_POINTER;
+    *ret = NULL;
     if (fetched) *fetched = 0;
     if (!count) return S_OK;
 
     while (iter->cursor && i < count)
     {
         struct network *network = LIST_ENTRY( iter->cursor, struct network, entry );
-        ret[i] = &network->INetwork_iface;
-        INetwork_AddRef( ret[i] );
+        if (match_enum_network_flags( iter->flags, network ))
+        {
+            ret[i] = &network->INetwork_iface;
+            INetwork_AddRef( ret[i] );
+            i++;
+        }
         iter->cursor = list_next( &iter->mgr->networks, iter->cursor );
-        i++;
     }
     if (fetched) *fetched = i;
 
@@ -828,10 +843,14 @@ static HRESULT WINAPI networks_enum_Skip(
     if (!count) return S_OK;
     if (!iter->cursor) return S_FALSE;
 
-    while (count--)
+    for (;;)
     {
+        struct network *network;
         iter->cursor = list_next( &iter->mgr->networks, iter->cursor );
         if (!iter->cursor) break;
+        network = LIST_ENTRY( iter->cursor, struct network, entry );
+        if (match_enum_network_flags( iter->flags, network )) count--;
+        if (!count) break;
     }
 
     return count ? S_FALSE : S_OK;
@@ -849,7 +868,7 @@ static HRESULT WINAPI networks_enum_Reset(
 }
 
 static HRESULT create_networks_enum(
-    struct list_manager *, IEnumNetworks** );
+    struct list_manager *, NLM_ENUM_NETWORK, IEnumNetworks ** );
 
 static HRESULT WINAPI networks_enum_Clone(
     IEnumNetworks *iface, IEnumNetworks **ret )
@@ -857,7 +876,7 @@ static HRESULT WINAPI networks_enum_Clone(
     struct networks_enum *iter = impl_from_IEnumNetworks( iface );
 
     TRACE( "%p, %p\n", iter, ret );
-    return create_networks_enum( iter->mgr, ret );
+    return create_networks_enum( iter->mgr, iter->flags, ret );
 }
 
 static const IEnumNetworksVtbl networks_enum_vtbl =
@@ -877,7 +896,7 @@ static const IEnumNetworksVtbl networks_enum_vtbl =
 };
 
 static HRESULT create_networks_enum(
-    struct list_manager *mgr, IEnumNetworks **ret )
+    struct list_manager *mgr, NLM_ENUM_NETWORK flags, IEnumNetworks **ret )
 {
     struct networks_enum *iter;
 
@@ -888,6 +907,7 @@ static HRESULT create_networks_enum(
     iter->cursor = list_head( &mgr->networks );
     iter->mgr    = mgr;
     INetworkListManager_AddRef( &mgr->INetworkListManager_iface );
+    iter->flags  = flags;
     iter->refs   = 1;
 
     *ret = &iter->IEnumNetworks_iface;
@@ -1229,9 +1249,8 @@ static HRESULT WINAPI list_manager_GetNetworks(
     struct list_manager *mgr = impl_from_INetworkListManager( iface );
 
     TRACE( "%p, %x, %p\n", iface, Flags, ppEnumNetwork );
-    if (Flags) FIXME( "flags %08x not supported\n", Flags );
 
-    return create_networks_enum( mgr, ppEnumNetwork );
+    return create_networks_enum( mgr, Flags, ppEnumNetwork );
 }
 
 static HRESULT WINAPI list_manager_GetNetwork(
@@ -1741,26 +1760,34 @@ static struct connection *create_connection( const GUID *id )
     return ret;
 }
 
+static IP_ADAPTER_ADDRESSES *get_network_adapters(void)
+{
+    ULONG err, size = 4096, flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+                                    GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_GATEWAYS;
+    IP_ADAPTER_ADDRESSES *tmp, *ret;
+
+    if (!(ret = malloc( size ))) return NULL;
+    err = GetAdaptersAddresses( AF_UNSPEC, flags, NULL, ret, &size );
+    while (err == ERROR_BUFFER_OVERFLOW)
+    {
+        if (!(tmp = realloc( ret, size ))) break;
+        ret = tmp;
+        err = GetAdaptersAddresses( AF_UNSPEC, flags, NULL, ret, &size );
+    }
+    if (err == ERROR_SUCCESS) return ret;
+    free( ret );
+    return NULL;
+}
+
 static void init_networks( struct list_manager *mgr )
 {
-    DWORD size = 0;
     IP_ADAPTER_ADDRESSES *buf, *aa;
     GUID id;
-    ULONG ret, flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
-                       GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_GATEWAYS;
 
     list_init( &mgr->networks );
     list_init( &mgr->connections );
 
-    ret = GetAdaptersAddresses( AF_UNSPEC, flags, NULL, NULL, &size );
-    if (ret != ERROR_BUFFER_OVERFLOW) return;
-
-    if (!(buf = malloc( size ))) return;
-    if (GetAdaptersAddresses( AF_UNSPEC, flags, NULL, buf, &size ))
-    {
-        free( buf );
-        return;
-    }
+    if (!(buf = get_network_adapters())) return;
 
     memset( &id, 0, sizeof(id) );
     for (aa = buf; aa; aa = aa->Next)
@@ -1769,7 +1796,7 @@ static void init_networks( struct list_manager *mgr )
         struct connection *connection;
         NET_LUID luid;
 
-        ConvertInterfaceIndexToLuid(aa->u.s.IfIndex, &luid);
+        ConvertInterfaceIndexToLuid(aa->IfIndex, &luid);
         ConvertInterfaceLuidToGuid(&luid, &id);
 
         /* assume a one-to-one mapping between networks and connections */

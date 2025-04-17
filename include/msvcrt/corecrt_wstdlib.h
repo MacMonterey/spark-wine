@@ -24,6 +24,7 @@ _ACRTIMP wchar_t*      __cdecl _ultow(__msvcrt_ulong,wchar_t*,int);
 _ACRTIMP errno_t       __cdecl _ultow_s(__msvcrt_ulong, wchar_t*, size_t, int);
 _ACRTIMP wchar_t*      __cdecl _wfullpath(wchar_t*,const wchar_t*,size_t);
 _ACRTIMP wchar_t*      __cdecl _wgetenv(const wchar_t*);
+_ACRTIMP errno_t       __cdecl _wgetenv_s(size_t *,wchar_t *,size_t,const wchar_t *);
 _ACRTIMP void          __cdecl _wmakepath(wchar_t*,const wchar_t*,const wchar_t*,const wchar_t*,const wchar_t*);
 _ACRTIMP int           __cdecl _wmakepath_s(wchar_t*,size_t,const wchar_t*,const wchar_t*,const wchar_t*,const wchar_t*);
 _ACRTIMP void          __cdecl _wperror(const wchar_t*);
@@ -45,6 +46,7 @@ _ACRTIMP errno_t       __cdecl _mbstowcs_s_l(size_t*,wchar_t*,size_t,const char*
 _ACRTIMP int           __cdecl mbtowc(wchar_t*,const char*,size_t);
 _ACRTIMP int           __cdecl _mbtowc_l(wchar_t*,const char*,size_t,_locale_t);
 _ACRTIMP float         __cdecl wcstof(const wchar_t*,wchar_t**);
+_ACRTIMP float         __cdecl _wcstof_l(const wchar_t*,wchar_t**,_locale_t);
 _ACRTIMP double        __cdecl wcstod(const wchar_t*,wchar_t**);
 _ACRTIMP __msvcrt_long __cdecl wcstol(const wchar_t*,wchar_t**,int);
 _ACRTIMP size_t        __cdecl wcstombs(char*,const wchar_t*,size_t);
@@ -62,7 +64,22 @@ _ACRTIMP __int64       __cdecl _wcstoll_l(const wchar_t*,wchar_t**,int,_locale_t
 _ACRTIMP unsigned __int64 __cdecl wcstoull(const wchar_t*,wchar_t**,int);
 _ACRTIMP unsigned __int64 __cdecl _wcstoull_l(const wchar_t*,wchar_t**,int,_locale_t);
 
+#ifdef _UCRT
+_ACRTIMP double __cdecl _wcstold_l(const wchar_t*,wchar_t**,_locale_t);
+static inline long double wcstold(const wchar_t *string, wchar_t **endptr) { return _wcstold_l(string, endptr, NULL); }
+#endif /* _UCRT */
+
 #ifdef __cplusplus
+extern "C++" {
+
+template <size_t size>
+inline errno_t _wgetenv_s(size_t *ret, wchar_t (&buf)[size], const wchar_t *var)
+{
+    return _wgetenv_s(ret, buf, size, var);
+}
+
+} /* extern "C++" */
+
 }
 #endif
 

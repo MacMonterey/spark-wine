@@ -126,10 +126,7 @@ BOOL ILGetDisplayNameExW(LPSHELLFOLDER psf, LPCITEMIDLIST pidl, LPWSTR path, DWO
     {
         ret = IShellFolder_GetDisplayNameOf(lsf, pidl, flag, &strret);
         if (SUCCEEDED(ret))
-        {
-            if(!StrRetToStrNW(path, MAX_PATH, &strret, pidl))
-                ret = E_FAIL;
-        }
+            ret = StrRetToBufW(&strret, pidl, path, MAX_PATH);
     }
     else
     {
@@ -138,10 +135,7 @@ BOOL ILGetDisplayNameExW(LPSHELLFOLDER psf, LPCITEMIDLIST pidl, LPWSTR path, DWO
         {
             ret = IShellFolder_GetDisplayNameOf(psfParent, pidllast, flag, &strret);
             if (SUCCEEDED(ret))
-            {
-                if(!StrRetToStrNW(path, MAX_PATH, &strret, pidllast))
-                    ret = E_FAIL;
-            }
+                ret = StrRetToBufW(&strret, pidllast, path, MAX_PATH);
             IShellFolder_Release(psfParent);
         }
     }
@@ -1057,13 +1051,13 @@ LPITEMIDLIST SHSimpleIDListFromPathA(LPCSTR lpszPath)
     if (lpszPath)
     {
         len = MultiByteToWideChar(CP_ACP, 0, lpszPath, -1, NULL, 0);
-        wPath = heap_alloc(len * sizeof(WCHAR));
+        wPath = malloc(len * sizeof(WCHAR));
         MultiByteToWideChar(CP_ACP, 0, lpszPath, -1, wPath, len);
     }
 
     _ILParsePathW(wPath, NULL, TRUE, &pidl, NULL);
 
-    heap_free(wPath);
+    free(wPath);
     TRACE("%s %p\n", debugstr_a(lpszPath), pidl);
     return pidl;
 }
@@ -1328,7 +1322,7 @@ HRESULT WINAPI SHBindToFolderIDListParent(IShellFolder *psf, LPCITEMIDLIST pidl,
         LPITEMIDLIST pidlParent = ILClone(pidl);
         ILRemoveLastID(pidlParent);
         hr = IShellFolder_BindToObject(psf, pidlParent, NULL, riid, ppv);
-        SHFree (pidlParent);
+        ILFree(pidlParent);
     }
 
     if (psfDesktop)

@@ -90,6 +90,7 @@ struct DirectSoundDevice
     int                         lfe_channel;
     float *tmp_buffer, *cp_buffer;
     DWORD                       tmp_buffer_len, cp_buffer_len;
+    CO_MTA_USAGE_COOKIE         mta_cookie;
 
     DSVOLUMEPAN                 volpan;
 
@@ -253,12 +254,10 @@ HRESULT IDirectSoundCaptureImpl_Create(IUnknown *outer_unk, REFIID riid, void **
 #define STATE_STOPPING  3
 
 extern CRITICAL_SECTION DSOUND_renderers_lock;
-extern CRITICAL_SECTION DSOUND_capturers_lock;
-extern struct list DSOUND_capturers;
 extern struct list DSOUND_renderers;
 
-extern GUID DSOUND_renderer_guids[MAXWAVEDRIVERS];
-extern GUID DSOUND_capture_guids[MAXWAVEDRIVERS];
+extern GUID *DSOUND_renderer_guids;
+extern GUID *DSOUND_capture_guids;
 
 extern const WCHAR wine_vxd_drv[];
 

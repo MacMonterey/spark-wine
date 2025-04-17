@@ -30,7 +30,6 @@
 #include "objbase.h"
 #include "ocidl.h"
 #include "wincodecsdk.h"
-#include "wine/heap.h"
 #include "wine/list.h"
 
 #include "gdiplus.h"
@@ -43,103 +42,114 @@
 #define VERSION_MAGIC  0xdbc01001
 #define VERSION_MAGIC2 0xdbc01002
 #define VALID_MAGIC(x) (((x) & 0xfffff000) == 0xdbc01000)
-#define TENSION_CONST (0.3)
+#define TENSION_CONST (0.333333333f)
 
 #define GIF_DISPOSE_UNSPECIFIED 0
 #define GIF_DISPOSE_DO_NOT_DISPOSE 1
 #define GIF_DISPOSE_RESTORE_TO_BKGND 2
 #define GIF_DISPOSE_RESTORE_TO_PREV 3
 
+#define PIXELFORMATBPP(x) ((x) ? ((x) >> 8) & 255 : 24)
 
-COLORREF ARGB2COLORREF(ARGB color) DECLSPEC_HIDDEN;
-HBITMAP ARGB2BMP(ARGB color) DECLSPEC_HIDDEN;
+
+COLORREF ARGB2COLORREF(ARGB color);
+HBITMAP ARGB2BMP(ARGB color);
 extern INT arc2polybezier(GpPointF * points, REAL x1, REAL y1, REAL x2, REAL y2,
-    REAL startAngle, REAL sweepAngle) DECLSPEC_HIDDEN;
-extern REAL gdiplus_atan2(REAL dy, REAL dx) DECLSPEC_HIDDEN;
-extern GpStatus hresult_to_status(HRESULT res) DECLSPEC_HIDDEN;
-extern REAL units_to_pixels(REAL units, GpUnit unit, REAL dpi, BOOL printer_display) DECLSPEC_HIDDEN;
-extern REAL pixels_to_units(REAL pixels, GpUnit unit, REAL dpi, BOOL printer_display) DECLSPEC_HIDDEN;
-extern REAL units_scale(GpUnit from, GpUnit to, REAL dpi, BOOL printer_display) DECLSPEC_HIDDEN;
+    REAL startAngle, REAL sweepAngle);
+extern REAL gdiplus_atan2(REAL dy, REAL dx);
+extern GpStatus hresult_to_status(HRESULT res);
+extern REAL units_to_pixels(REAL units, GpUnit unit, REAL dpi, BOOL printer_display);
+extern REAL pixels_to_units(REAL pixels, GpUnit unit, REAL dpi, BOOL printer_display);
+extern REAL units_scale(GpUnit from, GpUnit to, REAL dpi, BOOL printer_display);
 
 #define WineCoordinateSpaceGdiDevice ((GpCoordinateSpace)4)
 
+extern GpStatus gdi_dc_acquire(GpGraphics *graphics, HDC *hdc);
+extern void gdi_dc_release(GpGraphics *graphics, HDC hdc);
 extern GpStatus gdi_transform_acquire(GpGraphics *graphics);
 extern GpStatus gdi_transform_release(GpGraphics *graphics);
 extern GpStatus get_graphics_transform(GpGraphics *graphics, GpCoordinateSpace dst_space,
-        GpCoordinateSpace src_space, GpMatrix *matrix) DECLSPEC_HIDDEN;
+        GpCoordinateSpace src_space, GpMatrix *matrix);
 extern GpStatus gdip_transform_points(GpGraphics *graphics, GpCoordinateSpace dst_space,
-        GpCoordinateSpace src_space, GpPointF *points, INT count) DECLSPEC_HIDDEN;
+        GpCoordinateSpace src_space, GpPointF *points, INT count);
+void transform_properties(GpGraphics *, GDIPCONST GpMatrix *, BOOL, REAL *, REAL *, REAL *);
 
-extern GpStatus graphics_from_image(GpImage *image, GpGraphics **graphics) DECLSPEC_HIDDEN;
-extern GpStatus encode_image_png(GpImage *image, IStream* stream, GDIPCONST EncoderParameters* params) DECLSPEC_HIDDEN;
-extern GpStatus terminate_encoder_wic(GpImage *image) DECLSPEC_HIDDEN;
+extern GpStatus graphics_from_image(GpImage *image, GpGraphics **graphics);
+extern GpStatus encode_image_png(GpImage *image, IStream* stream, GDIPCONST EncoderParameters* params);
+extern GpStatus terminate_encoder_wic(GpImage *image);
 
-extern GpStatus METAFILE_GetGraphicsContext(GpMetafile* metafile, GpGraphics **result) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_GetDC(GpMetafile* metafile, HDC *hdc) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_ReleaseDC(GpMetafile* metafile, HDC hdc) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_GraphicsClear(GpMetafile* metafile, ARGB color) DECLSPEC_HIDDEN;
+extern GpStatus METAFILE_GetGraphicsContext(GpMetafile* metafile, GpGraphics **result);
+extern GpStatus METAFILE_GetDC(GpMetafile* metafile, HDC *hdc);
+extern GpStatus METAFILE_ReleaseDC(GpMetafile* metafile, HDC hdc);
+extern GpStatus METAFILE_GraphicsClear(GpMetafile* metafile, ARGB color);
 extern GpStatus METAFILE_FillRectangles(GpMetafile* metafile, GpBrush* brush,
-    GDIPCONST GpRectF* rects, INT count) DECLSPEC_HIDDEN;
+    GDIPCONST GpRectF* rects, INT count);
 extern GpStatus METAFILE_SetClipRect(GpMetafile* metafile,
-    REAL x, REAL y, REAL width, REAL height, CombineMode mode) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_SetClipRegion(GpMetafile* metafile, GpRegion* region, CombineMode mode) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_SetPageTransform(GpMetafile* metafile, GpUnit unit, REAL scale) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_SetWorldTransform(GpMetafile* metafile, GDIPCONST GpMatrix* transform) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_ScaleWorldTransform(GpMetafile* metafile, REAL sx, REAL sy, MatrixOrder order) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_MultiplyWorldTransform(GpMetafile* metafile, GDIPCONST GpMatrix* matrix, MatrixOrder order) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_RotateWorldTransform(GpMetafile* metafile, REAL angle, MatrixOrder order) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_TranslateWorldTransform(GpMetafile* metafile, REAL dx, REAL dy, MatrixOrder order) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_ResetWorldTransform(GpMetafile* metafile) DECLSPEC_HIDDEN;
+    REAL x, REAL y, REAL width, REAL height, CombineMode mode);
+extern GpStatus METAFILE_SetClipRegion(GpMetafile* metafile, GpRegion* region, CombineMode mode);
+extern GpStatus METAFILE_SetPageTransform(GpMetafile* metafile, GpUnit unit, REAL scale);
+extern GpStatus METAFILE_SetWorldTransform(GpMetafile* metafile, GDIPCONST GpMatrix* transform);
+extern GpStatus METAFILE_ScaleWorldTransform(GpMetafile* metafile, REAL sx, REAL sy, MatrixOrder order);
+extern GpStatus METAFILE_MultiplyWorldTransform(GpMetafile* metafile, GDIPCONST GpMatrix* matrix, MatrixOrder order);
+extern GpStatus METAFILE_RotateWorldTransform(GpMetafile* metafile, REAL angle, MatrixOrder order);
+extern GpStatus METAFILE_TranslateWorldTransform(GpMetafile* metafile, REAL dx, REAL dy, MatrixOrder order);
+extern GpStatus METAFILE_ResetWorldTransform(GpMetafile* metafile);
 extern GpStatus METAFILE_BeginContainer(GpMetafile* metafile, GDIPCONST GpRectF *dstrect,
-    GDIPCONST GpRectF *srcrect, GpUnit unit, DWORD StackIndex) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_BeginContainerNoParams(GpMetafile* metafile, DWORD StackIndex) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_EndContainer(GpMetafile* metafile, DWORD StackIndex) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_SaveGraphics(GpMetafile* metafile, DWORD StackIndex) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_RestoreGraphics(GpMetafile* metafile, DWORD StackIndex) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_GraphicsDeleted(GpMetafile* metafile) DECLSPEC_HIDDEN;
+    GDIPCONST GpRectF *srcrect, GpUnit unit, DWORD StackIndex);
+extern GpStatus METAFILE_BeginContainerNoParams(GpMetafile* metafile, DWORD StackIndex);
+extern GpStatus METAFILE_EndContainer(GpMetafile* metafile, DWORD StackIndex);
+extern GpStatus METAFILE_SaveGraphics(GpMetafile* metafile, DWORD StackIndex);
+extern GpStatus METAFILE_RestoreGraphics(GpMetafile* metafile, DWORD StackIndex);
+extern GpStatus METAFILE_GraphicsDeleted(GpMetafile* metafile);
 extern GpStatus METAFILE_DrawImagePointsRect(GpMetafile* metafile, GpImage *image,
      GDIPCONST GpPointF *points, INT count, REAL srcx, REAL srcy, REAL srcwidth,
      REAL srcheight, GpUnit srcUnit, GDIPCONST GpImageAttributes* imageAttributes,
-     DrawImageAbort callback, VOID *callbackData) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_AddSimpleProperty(GpMetafile *metafile, SHORT prop, SHORT val) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_DrawPath(GpMetafile *metafile, GpPen *pen, GpPath *path) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_FillPath(GpMetafile *metafile, GpBrush *brush, GpPath *path) DECLSPEC_HIDDEN;
+     DrawImageAbort callback, VOID *callbackData);
+extern GpStatus METAFILE_AddSimpleProperty(GpMetafile *metafile, SHORT prop, SHORT val);
+extern GpStatus METAFILE_DrawPath(GpMetafile *metafile, GpPen *pen, GpPath *path);
+extern GpStatus METAFILE_FillPath(GpMetafile *metafile, GpBrush *brush, GpPath *path);
 extern GpStatus METAFILE_DrawDriverString(GpMetafile *metafile, GDIPCONST UINT16 *text, INT length,
     GDIPCONST GpFont *font, GDIPCONST GpStringFormat *format, GDIPCONST GpBrush *brush,
-    GDIPCONST PointF *positions, INT flags, GDIPCONST GpMatrix *matrix) DECLSPEC_HIDDEN;
+    GDIPCONST PointF *positions, INT flags, GDIPCONST GpMatrix *matrix);
 extern GpStatus METAFILE_FillRegion(GpMetafile* metafile, GpBrush* brush,
-    GpRegion* region) DECLSPEC_HIDDEN;
-extern void METAFILE_Free(GpMetafile *metafile) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_DrawEllipse(GpMetafile *metafile, GpPen *pen, GpRectF *rect) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_FillEllipse(GpMetafile *metafile, GpBrush *brush, GpRectF *rect) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_DrawRectangles(GpMetafile *metafile, GpPen *pen, const GpRectF *rects, INT count) DECLSPEC_HIDDEN;
+    GpRegion* region);
+extern void METAFILE_Free(GpMetafile *metafile);
+extern GpStatus METAFILE_DrawEllipse(GpMetafile *metafile, GpPen *pen, GpRectF *rect);
+extern GpStatus METAFILE_FillEllipse(GpMetafile *metafile, GpBrush *brush, GpRectF *rect);
+extern GpStatus METAFILE_DrawRectangles(GpMetafile *metafile, GpPen *pen, const GpRectF *rects, INT count);
 extern GpStatus METAFILE_FillPie(GpMetafile *metafile, GpBrush *brush, const GpRectF *rect,
-    REAL startAngle, REAL sweepAngle) DECLSPEC_HIDDEN;
+    REAL startAngle, REAL sweepAngle);
 extern GpStatus METAFILE_DrawArc(GpMetafile *metafile, GpPen *pen, const GpRectF *rect,
-    REAL startAngle, REAL sweepAngle) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_OffsetClip(GpMetafile *metafile, REAL dx, REAL dy) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_ResetClip(GpMetafile *metafile) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_SetClipPath(GpMetafile *metafile, GpPath *path, CombineMode mode) DECLSPEC_HIDDEN;
-extern GpStatus METAFILE_SetRenderingOrigin(GpMetafile *metafile, INT x, INT y) DECLSPEC_HIDDEN;
+    REAL startAngle, REAL sweepAngle);
+extern GpStatus METAFILE_OffsetClip(GpMetafile *metafile, REAL dx, REAL dy);
+extern GpStatus METAFILE_ResetClip(GpMetafile *metafile);
+extern GpStatus METAFILE_SetClipPath(GpMetafile *metafile, GpPath *path, CombineMode mode);
+extern GpStatus METAFILE_SetRenderingOrigin(GpMetafile *metafile, INT x, INT y);
 
 extern void calc_curve_bezier(const GpPointF *pts, REAL tension, REAL *x1,
-    REAL *y1, REAL *x2, REAL *y2) DECLSPEC_HIDDEN;
+    REAL *y1, REAL *x2, REAL *y2);
 extern void calc_curve_bezier_endp(REAL xend, REAL yend, REAL xadj, REAL yadj,
-    REAL tension, REAL *x, REAL *y) DECLSPEC_HIDDEN;
+    REAL tension, REAL *x, REAL *y);
 
-extern void free_installed_fonts(void) DECLSPEC_HIDDEN;
+extern void get_font_hfont(GpGraphics *graphics, GDIPCONST GpFont *font,
+                           GDIPCONST GpStringFormat *format, HFONT *hfont,
+                           LOGFONTW *lfw_return, GDIPCONST GpMatrix *matrix);
 
-extern BOOL lengthen_path(GpPath *path, INT len) DECLSPEC_HIDDEN;
+extern void free_installed_fonts(void);
 
-extern DWORD write_region_data(const GpRegion *region, void *data) DECLSPEC_HIDDEN;
-extern DWORD write_path_data(GpPath *path, void *data) DECLSPEC_HIDDEN;
+extern BOOL lengthen_path(GpPath *path, INT len);
 
-extern GpStatus trace_path(GpGraphics *graphics, GpPath *path) DECLSPEC_HIDDEN;
+extern GpStatus widen_flat_path_anchors(GpPath *flat_path, GpPen *pen, REAL pen_width, GpPath **anchors);
+
+extern DWORD write_region_data(const GpRegion *region, void *data);
+extern DWORD write_path_data(GpPath *path, void *data);
+
+extern GpStatus trace_path(GpGraphics *graphics, GpPath *path);
 
 typedef struct region_element region_element;
-extern void delete_element(region_element *element) DECLSPEC_HIDDEN;
+extern void delete_element(region_element *element);
 
-extern GpStatus get_hatch_data(GpHatchStyle hatchstyle, const unsigned char **result) DECLSPEC_HIDDEN;
+extern GpStatus get_hatch_data(GpHatchStyle hatchstyle, const unsigned char **result);
 
 static inline INT gdip_round(REAL x)
 {
@@ -199,19 +209,21 @@ static inline ARGB color_over_fgpremult(ARGB bg, ARGB fg)
     return (a<<24)|(r<<16)|(g<<8)|b;
 }
 
-extern const char *debugstr_rectf(const RectF* rc) DECLSPEC_HIDDEN;
+extern const char *debugstr_rectf(const RectF* rc);
 
-extern const char *debugstr_pointf(const PointF* pt) DECLSPEC_HIDDEN;
+extern const char *debugstr_pointf(const PointF* pt);
+
+extern const char *debugstr_matrix(const GpMatrix* matrix);
 
 extern void convert_32bppARGB_to_32bppPARGB(UINT width, UINT height,
-    BYTE *dst_bits, INT dst_stride, const BYTE *src_bits, INT src_stride) DECLSPEC_HIDDEN;
+    BYTE *dst_bits, INT dst_stride, const BYTE *src_bits, INT src_stride);
 
 extern GpStatus convert_pixels(INT width, INT height,
     INT dst_stride, BYTE *dst_bits, PixelFormat dst_format, ColorPalette *dst_palette,
-    INT src_stride, const BYTE *src_bits, PixelFormat src_format, ColorPalette *src_palette) DECLSPEC_HIDDEN;
+    INT src_stride, const BYTE *src_bits, PixelFormat src_format, ColorPalette *src_palette);
 
 extern PixelFormat apply_image_attributes(const GpImageAttributes *attributes, LPBYTE data,
-    UINT width, UINT height, INT stride, ColorAdjustType type, PixelFormat fmt) DECLSPEC_HIDDEN;
+    UINT width, UINT height, INT stride, ColorAdjustType type, PixelFormat fmt);
 
 struct GpMatrix{
     REAL matrix[6];
@@ -242,6 +254,7 @@ struct GpPen{
 struct GpGraphics{
     HDC hdc;
     HWND hwnd;
+    INT hdc_refs;
     BOOL owndc;
     BOOL alpha_hdc;
     BOOL printer_display;
@@ -366,6 +379,38 @@ struct GpAdjustableArrowCap{
     REAL width;
 };
 
+typedef enum EffectType {
+    NoneEffect,
+    BlurEffect,
+    SharpenEffect,
+    TintEffect,
+    RedEyeCorrectionEffect,
+    ColorMatrixEffect,
+    ColorLUTEffect,
+    BrightnessContrastEffect,
+    HueSaturationLightnessEffect,
+    ColorBalanceEffect,
+    LevelsEffect,
+    ColorCurveEffect,
+} EffectType;
+
+typedef struct CGpEffect{
+    EffectType type;
+    union {
+        BYTE data[1];
+        struct BlurParams blur;
+        struct TintParams tint;
+        struct RedEyeCorrectionParams redeye;
+        ColorMatrix matrix;
+        struct ColorLUTParams lut;
+        struct BrightnessContrastParams brightness;
+        struct HueSaturationLightnessParams hue;
+        struct ColorBalanceParams balance;
+        struct LevelsParams levels;
+        struct ColorCurveParams curve;
+    } params;
+} CGpEffect;
+
 struct GpImage{
     IWICBitmapDecoder *decoder;
     IWICBitmapEncoder *encoder;
@@ -456,8 +501,6 @@ struct GpBitmap{
     PixelFormat format;
     ImageLockMode lockmode;
     BYTE *bitmapbits;   /* pointer to the buffer we passed in BitmapLockBits */
-    HBITMAP hbitmap;
-    HDC hdc;
     BYTE *bits; /* actual image bits if this is a DIB */
     INT stride; /* stride of bits if this is a DIB */
     BYTE *own_bits; /* image bits that need to be freed with this object */
@@ -515,7 +558,7 @@ struct GpFont{
     Unit unit;
 };
 
-extern const struct GpStringFormat default_drawstring_format DECLSPEC_HIDDEN;
+extern const struct GpStringFormat default_drawstring_format;
 
 struct GpStringFormat{
     INT attr;
@@ -534,8 +577,8 @@ struct GpStringFormat{
     BOOL generic_typographic;
 };
 
-extern void init_generic_string_formats(void) DECLSPEC_HIDDEN;
-extern void free_generic_string_formats(void) DECLSPEC_HIDDEN;
+extern void init_generic_string_formats(void);
+extern void free_generic_string_formats(void);
 
 struct GpFontCollection{
     GpFontFamily **FontFamilies;
@@ -604,18 +647,43 @@ static inline const void *buffer_read(struct memory_buffer *mbuf, INT size)
     return NULL;
 }
 
-typedef GpStatus (*gdip_format_string_callback)(HDC hdc,
-    GDIPCONST WCHAR *string, INT index, INT length, GDIPCONST GpFont *font,
-    GDIPCONST RectF *rect, GDIPCONST GpStringFormat *format,
-    INT lineno, const RectF *bounds, INT *underlined_indexes,
-    INT underlined_index_count, void *user_data);
+/* Represents a string section and the font it should use. */
+struct gdip_font_link_section {
+    struct list entry;
+    DWORD start; /* The starting index of the string where the font applies. */
+    DWORD end; /* The end index of the string. */
+    GpFont *font;
+};
 
-GpStatus gdip_format_string(HDC hdc,
+struct gdip_font_link_info {
+    GDIPCONST GpFont *base_font;
+    struct list sections;
+};
+
+struct gdip_format_string_info {
+    GpGraphics *graphics;
+    HDC hdc;
+    GDIPCONST WCHAR *string;
+    INT index;
+    INT length;
+    struct gdip_font_link_info font_link_info;
+    GDIPCONST RectF *rect;
+    GDIPCONST GpStringFormat *format;
+    INT lineno;
+    const RectF *bounds;
+    INT *underlined_indexes;
+    INT underlined_index_count;
+    void *user_data;
+};
+
+typedef GpStatus (*gdip_format_string_callback)(struct gdip_format_string_info *info);
+
+GpStatus gdip_format_string(GpGraphics *graphics, HDC hdc,
     GDIPCONST WCHAR *string, INT length, GDIPCONST GpFont *font,
     GDIPCONST RectF *rect, GDIPCONST GpStringFormat *format, int ignore_empty_clip,
-    gdip_format_string_callback callback, void *user_data) DECLSPEC_HIDDEN;
+    gdip_format_string_callback callback, void *user_data);
 
-void get_log_fontW(const GpFont *, GpGraphics *, LOGFONTW *) DECLSPEC_HIDDEN;
+void get_log_fontW(const GpFont *, GpGraphics *, LOGFONTW *);
 
 static inline BOOL image_lock(GpImage *image)
 {
@@ -625,6 +693,11 @@ static inline BOOL image_lock(GpImage *image)
 static inline void image_unlock(GpImage *image)
 {
     ReleaseSRWLockExclusive(&image->lock);
+}
+
+static inline BOOL has_gdi_dc(GpGraphics *graphics)
+{
+    return graphics->hdc != NULL || graphics->owndc;
 }
 
 static inline void set_rect(GpRectF *rect, REAL x, REAL y, REAL width, REAL height)

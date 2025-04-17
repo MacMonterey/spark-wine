@@ -18,9 +18,6 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#define NONAMELESSUNION
-#define NONAMELESSSTRUCT
-
 #include "quartz_private.h"
 
 #include "wine/debug.h"
@@ -336,13 +333,14 @@ static void async_reader_destroy(struct strmbase_filter *iface)
             free(filter->requests);
         }
         CloseHandle(filter->file);
-        filter->sample_cs.DebugInfo->Spare[0] = 0;
-        DeleteCriticalSection(&filter->sample_cs);
         strmbase_source_cleanup(&filter->source);
 
         free(filter->pszFileName);
         FreeMediaType(&filter->mt);
     }
+
+    filter->sample_cs.DebugInfo->Spare[0] = 0;
+    DeleteCriticalSection(&filter->sample_cs);
 
     PostQueuedCompletionStatus(filter->port, 0, 1, NULL);
     WaitForSingleObject(filter->io_thread, INFINITE);
@@ -383,6 +381,8 @@ static DWORD CALLBACK io_thread(void *arg)
     DWORD size;
     BOOL ret;
 
+    SetThreadDescription(GetCurrentThread(), L"wine_qz_async_reader_io");
+
     for (;;)
     {
         ret = GetQueuedCompletionStatus(filter->port, &size, &key, &ovl, INFINITE);
@@ -422,7 +422,7 @@ HRESULT async_reader_create(IUnknown *outer, IUnknown **out)
     object->IFileSourceFilter_iface.lpVtbl = &FileSource_Vtbl;
     object->IAsyncReader_iface.lpVtbl = &FileAsyncReader_Vtbl;
 
-    InitializeCriticalSection(&object->sample_cs);
+    InitializeCriticalSectionEx(&object->sample_cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO);
     object->sample_cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": FileAsyncReader.sample_cs");
     InitializeConditionVariable(&object->sample_cv);
     object->port = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
@@ -740,8 +740,8 @@ static HRESULT WINAPI FileAsyncReader_Request(IAsyncReader *iface, IMediaSample 
     assert(i < filter->max_requests);
     req = &filter->requests[i];
 
-    req->ovl.u.s.Offset = BYTES_FROM_MEDIATIME(start);
-    req->ovl.u.s.OffsetHigh = BYTES_FROM_MEDIATIME(start) >> 32;
+    req->ovl.Offset = BYTES_FROM_MEDIATIME(start);
+    req->ovl.OffsetHigh = BYTES_FROM_MEDIATIME(start) >> 32;
     /* No reference is taken. */
 
     if (ReadFile(filter->file, data, BYTES_FROM_MEDIATIME(end - start), NULL, &req->ovl)
@@ -789,7 +789,7 @@ static HRESULT WINAPI FileAsyncReader_WaitForNext(IAsyncReader *iface,
                 REFERENCE_TIME start, end;
 
                 IMediaSample_SetActualDataLength(req->sample, size);
-                start = MEDIATIME_FROM_BYTES(((ULONGLONG)req->ovl.u.s.OffsetHigh << 32) + req->ovl.u.s.Offset);
+                start = MEDIATIME_FROM_BYTES(((ULONGLONG)req->ovl.OffsetHigh << 32) + req->ovl.Offset);
                 end = start + MEDIATIME_FROM_BYTES(size);
                 IMediaSample_SetTime(req->sample, &start, &end);
 
@@ -814,8 +814,8 @@ static BOOL sync_read(HANDLE file, LONGLONG offset, LONG length, BYTE *buffer, D
     BOOL ret;
 
     ovl.hEvent = (HANDLE)((ULONG_PTR)CreateEventW(NULL, TRUE, FALSE, NULL) | 1);
-    ovl.u.s.Offset = (DWORD)offset;
-    ovl.u.s.OffsetHigh = offset >> 32;
+    ovl.Offset = (DWORD)offset;
+    ovl.OffsetHigh = offset >> 32;
 
     *read_len = 0;
 

@@ -21,6 +21,7 @@
 #include <mshtmdid.h>
 
 import "ocidl.idl";
+import "mshtml.idl";
 
 [
     version(1.0),
@@ -81,6 +82,23 @@ interface IWineMSHTMLConsole : IDispatch
     oleautomation,
     dual,
     hidden,
+    uuid(6ac5491e-1758-4b82-98a2-83e31a7c8871)
+]
+interface IWineMSHTMLMutationObserver : IDispatch
+{
+    [id(1)]
+    HRESULT disconnect();
+    [id(2)]
+    HRESULT observe([in] IHTMLDOMNode *target, [in] IDispatch *options);
+    [id(3)]
+    HRESULT takeRecords([retval, out] IDispatch **records);
+}
+
+[
+    odl,
+    oleautomation,
+    dual,
+    hidden,
     uuid(fd55b4b6-2813-4fb4-829d-380099474ab0)
 ]
 interface IWineMSHTMLMediaQueryList : IDispatch
@@ -112,8 +130,6 @@ interface IWineHTMLWindowPrivate : IDispatch
     HRESULT console([retval, out] IDispatch **console);
     [id(53)]
     HRESULT matchMedia([in] BSTR media_query, [retval, out] IDispatch **media_query_list);
-    [id(54)]
-    HRESULT postMessage([in] VARIANT msg, [in] BSTR targetOrigin, [in, optional] VARIANT transfer);
 }
 
 [
@@ -137,12 +153,71 @@ interface IWineHTMLWindowCompatPrivate : IDispatch
     oleautomation,
     dual,
     hidden,
+    uuid(465908fd-f394-489f-b7a3-4c00fbbe9eea)
+]
+interface IWineHTMLDOMNodePrivate : IDispatch
+{
+    [id(DISPID_IHTMLELEMENT6_IE9_HASATTRIBUTES)]
+    HRESULT hasAttributes([retval, out] VARIANT_BOOL *p);
+    [id(DISPID_IHTMLELEMENT4_NORMALIZE)]
+    HRESULT normalize();
+}
+
+[
+    odl,
+    oleautomation,
+    dual,
+    hidden,
+    uuid(465908fd-f394-489f-b7a3-4c00fbbe9eeb)
+]
+interface IWineHTMLCharacterData : IDispatch
+{
+    [propput, id(32)]
+    HRESULT data([in] BSTR v);
+    [propget, id(32)]
+    HRESULT data([out, retval] BSTR *p);
+    [propget, id(33)]
+    HRESULT length([out, retval] LONG *p);
+    [id(34)]
+    HRESULT substringData([in] LONG offset, [in] LONG count, [out, retval] BSTR *p);
+    [id(35)]
+    HRESULT appendData([in] BSTR string);
+    [id(36)]
+    HRESULT insertData([in] LONG offset, [in] BSTR string);
+    [id(37)]
+    HRESULT deleteData([in] LONG offset, [in] LONG count);
+    [id(38)]
+    HRESULT replaceData([in] LONG offset, [in] LONG count, [in] BSTR string);
+}
+
+[
+    odl,
+    oleautomation,
+    dual,
+    hidden,
     uuid(465908fd-f394-489f-b7a3-4c00fbbe9eec)
 ]
 interface IWineHTMLElementPrivate : IDispatch
 {
     [propget, id(1)]
     HRESULT classList([retval, out] IDispatch **class_list);
+}
+
+[
+    odl,
+    oleautomation,
+    dual,
+    hidden,
+    uuid(465908fd-f394-489f-b7a3-4c00fbbe9eed)
+]
+interface IWineCSSProperties : IDispatch
+{
+    [id(DISPID_IHTMLSTYLE_SETATTRIBUTE)]
+    HRESULT setAttribute([in] BSTR name, [in] VARIANT value, [defaultvalue(1), in] LONG flags);
+    [id(DISPID_IHTMLSTYLE_GETATTRIBUTE)]
+    HRESULT getAttribute([in] BSTR name, [defaultvalue(0), in] LONG flags, [out, retval] VARIANT *p);
+    [id(DISPID_IHTMLSTYLE_REMOVEATTRIBUTE)]
+    HRESULT removeAttribute([in] BSTR name, [defaultvalue(1), in] LONG flags, [out, retval] VARIANT_BOOL *p);
 }
 
 [

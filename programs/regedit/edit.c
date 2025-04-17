@@ -121,7 +121,7 @@ static BOOL update_registry_value(HWND hwndDlg, struct edit_params *params)
         {
             if (buf[i] == '\r' && buf[i + 1] == '\n')
             {
-                if (tmp[j - 1]) tmp[j++] = 0;
+                if (j && tmp[j - 1]) tmp[j++] = 0;
                 i++;
             }
             else tmp[j++] = buf[i];
@@ -637,8 +637,7 @@ BOOL RenameKey(HWND hwnd, HKEY hRootKey, LPCWSTR keyPath, LPCWSTR newName)
     } else {
 	LPWSTR srcSubKey_copy;
 
-	parentPath = malloc((lstrlenW(keyPath) + 1) * sizeof(WCHAR));
-	lstrcpyW(parentPath, keyPath);
+	parentPath = wcsdup(keyPath);
 	srcSubKey_copy = wcsrchr(parentPath, '\\');
 	*srcSubKey_copy = 0;
 	srcSubKey = srcSubKey_copy + 1;

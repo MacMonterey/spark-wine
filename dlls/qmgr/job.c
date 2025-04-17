@@ -831,7 +831,8 @@ static HRESULT WINAPI BackgroundCopyJob_RemoveCredentials(
 
     EnterCriticalSection(&job->cs);
 
-    new_cred->Target = new_cred->Scheme = 0;
+    new_cred->Target = 0;
+    new_cred->Scheme = 0;
     free(new_cred->Credentials.Basic.UserName);
     new_cred->Credentials.Basic.UserName = NULL;
     free(new_cred->Credentials.Basic.Password);
@@ -1144,7 +1145,7 @@ HRESULT BackgroundCopyJobConstructor(LPCWSTR displayName, BG_JOB_TYPE type, GUID
 
     This->IBackgroundCopyJob4_iface.lpVtbl = &BackgroundCopyJobVtbl;
     This->IBackgroundCopyJobHttpOptions_iface.lpVtbl = &http_options_vtbl;
-    InitializeCriticalSection(&This->cs);
+    InitializeCriticalSectionEx(&This->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO);
     This->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": BackgroundCopyJobImpl.cs");
 
     This->ref = 1;

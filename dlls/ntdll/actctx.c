@@ -29,6 +29,7 @@
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "winternl.h"
+#include "ddk/ntddk.h"
 #include "ddk/wdm.h"
 #include "ntdll_misc.h"
 #include "wine/exception.h"
@@ -595,12 +596,12 @@ static const xmlstr_t empty_xmlstr;
 
 #ifdef __i386__
 static const WCHAR current_archW[] = L"x86";
+#elif defined __aarch64__ || defined __arm64ec__
+static const WCHAR current_archW[] = L"arm64";
 #elif defined __x86_64__
 static const WCHAR current_archW[] = L"amd64";
 #elif defined __arm__
 static const WCHAR current_archW[] = L"arm";
-#elif defined __aarch64__
-static const WCHAR current_archW[] = L"arm64";
 #else
 static const WCHAR current_archW[] = L"none";
 #endif
@@ -2564,6 +2565,15 @@ static void parse_application_elem( xmlbuf_t *xmlbuf, struct assembly *assembly,
                                     struct actctx_loader *acl, const struct xml_elem *parent )
 {
     struct xml_elem elem;
+    struct xml_attr attr;
+    BOOL end = FALSE;
+
+    while (next_xml_attr(xmlbuf, &attr, &end))
+    {
+        if (!is_xmlns_attr( &attr )) WARN( "unknown attr %s\n", debugstr_xml_attr(&attr) );
+    }
+
+    if (end) return;
 
     while (next_xml_elem( xmlbuf, &elem, parent ))
     {
@@ -2708,11 +2718,14 @@ static void parse_assembly_elem( xmlbuf_t *xmlbuf, struct assembly* assembly,
         }
     }
 
-    if (end || !version)
+    if (!version)
     {
         set_error( xmlbuf );
         return;
     }
+
+    if (end)
+        return;
 
     while (next_xml_elem(xmlbuf, &elem, parent))
     {
@@ -2918,12 +2931,7 @@ static NTSTATUS open_nt_file( HANDLE *handle, UNICODE_STRING *name )
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK io;
 
-    attr.Length = sizeof(attr);
-    attr.RootDirectory = 0;
-    attr.Attributes = OBJ_CASE_INSENSITIVE;
-    attr.ObjectName = name;
-    attr.SecurityDescriptor = NULL;
-    attr.SecurityQualityOfService = NULL;
+    InitializeObjectAttributes( &attr, name, OBJ_CASE_INSENSITIVE, 0, NULL );
     return NtOpenFile( handle, GENERIC_READ | SYNCHRONIZE, &attr, &io,
                        FILE_SHARE_READ | FILE_SHARE_DELETE, FILE_SYNCHRONOUS_IO_ALERT );
 }
@@ -3020,13 +3028,7 @@ static NTSTATUS get_manifest_in_pe_file( struct actctx_loader* acl, struct assem
 
     TRACE( "looking for res %s in %s\n", debugstr_w(resname), debugstr_w(filename) );
 
-    attr.Length                   = sizeof(attr);
-    attr.RootDirectory            = 0;
-    attr.ObjectName               = NULL;
-    attr.Attributes               = OBJ_CASE_INSENSITIVE | OBJ_OPENIF;
-    attr.SecurityDescriptor       = NULL;
-    attr.SecurityQualityOfService = NULL;
-
+    InitializeObjectAttributes( &attr, NULL, OBJ_CASE_INSENSITIVE, 0, NULL );
     size.QuadPart = 0;
     status = NtCreateSection( &mapping, STANDARD_RIGHTS_REQUIRED | SECTION_QUERY | SECTION_MAP_READ,
                               &attr, &size, PAGE_READONLY, SEC_COMMIT, file );
@@ -3066,13 +3068,7 @@ static NTSTATUS get_manifest_in_manifest_file( struct actctx_loader* acl, struct
 
     TRACE( "loading manifest file %s\n", debugstr_w(filename) );
 
-    attr.Length                   = sizeof(attr);
-    attr.RootDirectory            = 0;
-    attr.ObjectName               = NULL;
-    attr.Attributes               = OBJ_CASE_INSENSITIVE | OBJ_OPENIF;
-    attr.SecurityDescriptor       = NULL;
-    attr.SecurityQualityOfService = NULL;
-
+    InitializeObjectAttributes( &attr, NULL, OBJ_CASE_INSENSITIVE, 0, NULL );
     size.QuadPart = 0;
     status = NtCreateSection( &mapping, STANDARD_RIGHTS_REQUIRED | SECTION_QUERY | SECTION_MAP_READ,
                               &attr, &size, PAGE_READONLY, SEC_COMMIT, file );
@@ -3163,6 +3159,10 @@ static WCHAR *lookup_manifest_file( HANDLE dir, struct assembly_identity *ai )
               ai->version.major, ai->version.minor, lang );
     RtlInitUnicodeString( &lookup_us, lookup );
 
+#ifdef __arm64ec__
+    if (!wcsncmp( lookup, L"amd64_", 6 )) memcpy( lookup, L"a??", 3 * sizeof(WCHAR) );
+#endif
+
     if (!NtQueryDirectoryFile( dir, 0, NULL, NULL, &io, buffer, sizeof(buffer),
                                FileBothDirectoryInformation, FALSE, &lookup_us, TRUE ))
     {
@@ -3247,14 +3247,7 @@ static NTSTATUS lookup_winsxs(struct actctx_loader* acl, struct assembly_identit
         return STATUS_NO_SUCH_FILE;
     }
     RtlFreeHeap( GetProcessHeap(), 0, path );
-
-    attr.Length = sizeof(attr);
-    attr.RootDirectory = 0;
-    attr.Attributes = OBJ_CASE_INSENSITIVE;
-    attr.ObjectName = &path_us;
-    attr.SecurityDescriptor = NULL;
-    attr.SecurityQualityOfService = NULL;
-
+    InitializeObjectAttributes( &attr, &path_us, OBJ_CASE_INSENSITIVE, 0, NULL );
     if (!NtOpenFile( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE,
                      FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT ))
     {
@@ -3294,30 +3287,69 @@ static NTSTATUS lookup_winsxs(struct actctx_loader* acl, struct assembly_identit
     return io.Status;
 }
 
+static NTSTATUS open_manifest_file( struct actctx_loader *acl, struct assembly_identity *ai,
+                                    const WCHAR *lang, const WCHAR *directory, WCHAR *buffer, DWORD len )
+{
+    UNICODE_STRING nameW;
+    NTSTATUS status;
+    HANDLE file;
+    WCHAR *p = buffer + wcslen(buffer);
+
+    nameW.Buffer = NULL;
+    if (*lang) p += swprintf( p, len - (p - buffer), L"%s\\", lang );
+
+    swprintf( p, len - (p - buffer), L"%s.dll", ai->name );
+    if (RtlDosPathNameToNtPathName_U( buffer, &nameW, NULL, NULL ))
+    {
+        status = open_nt_file( &file, &nameW );
+        if (!status)
+        {
+            status = get_manifest_in_pe_file( acl, ai, nameW.Buffer, directory, FALSE, file, NULL, 0 );
+            NtClose( file );
+            if (status == STATUS_SUCCESS) goto done;
+        }
+        RtlFreeUnicodeString( &nameW );
+    }
+
+    swprintf( p, len - (p - buffer), L"%s.manifest", ai->name );
+    if (RtlDosPathNameToNtPathName_U( buffer, &nameW, NULL, NULL ))
+    {
+        status = open_nt_file( &file, &nameW );
+        if (!status)
+        {
+            status = get_manifest_in_manifest_file( acl, ai, nameW.Buffer, directory, FALSE, file );
+            NtClose( file );
+            goto done;
+        }
+        RtlFreeUnicodeString( &nameW );
+    }
+    status = STATUS_SXS_ASSEMBLY_NOT_FOUND;
+done:
+    RtlFreeUnicodeString( &nameW );
+    return status;
+}
+
 static NTSTATUS lookup_assembly(struct actctx_loader* acl,
                                 struct assembly_identity* ai)
 {
-    unsigned int i;
     WCHAR *buffer, *p, *directory;
+    const WCHAR *lang = ai->language;
     NTSTATUS status;
-    UNICODE_STRING nameW;
-    HANDLE file;
-    DWORD len;
+    DWORD len, total;
 
-    TRACE( "looking for name=%s version=%s arch=%s\n",
-           debugstr_w(ai->name), debugstr_version(&ai->version), debugstr_w(ai->arch) );
+    TRACE( "looking for name=%s version=%s arch=%s lang=%s\n",
+           debugstr_w(ai->name), debugstr_version(&ai->version),
+           debugstr_w(ai->arch), debugstr_w(ai->language) );
 
     if ((status = lookup_winsxs(acl, ai)) != STATUS_NO_SUCH_FILE) return status;
 
-    /* FIXME: add support for language specific lookup */
+    if (!lang || !wcsicmp( lang, L"neutral" ) || !wcscmp( lang, L"*")) lang = L"";
 
     len = max(RtlGetFullPathName_U(acl->actctx->assemblies->manifest.info, 0, NULL, NULL) / sizeof(WCHAR),
         wcslen(acl->actctx->appdir.info));
+    total = len + 2 * wcslen(ai->name) + wcslen(lang) + 12;
 
-    nameW.Buffer = NULL;
-    if (!(buffer = RtlAllocateHeap( GetProcessHeap(), 0,
-                                    (len + 2 * wcslen(ai->name) + 2) * sizeof(WCHAR) + sizeof(L".manifest") )))
-        return STATUS_NO_MEMORY;
+    if (!(buffer = RtlAllocateHeap( GetProcessHeap(), 0, total * sizeof(WCHAR) ))) return STATUS_NO_MEMORY;
 
     if (!(directory = build_assembly_dir( ai )))
     {
@@ -3335,47 +3367,25 @@ static NTSTATUS lookup_assembly(struct actctx_loader* acl,
      */
     wcscpy( buffer, acl->actctx->appdir.info );
     p = buffer + wcslen(buffer);
-    for (i = 0; i < 4; i++)
+
+    status = open_manifest_file( acl, ai, lang, directory, buffer, total );
+    if (status != STATUS_SXS_ASSEMBLY_NOT_FOUND) goto done;
+
+    swprintf( buffer, total, L"%s%s\\", acl->actctx->appdir.info, ai->name );
+    status = open_manifest_file( acl, ai, lang, directory, buffer, total );
+    if (status != STATUS_SXS_ASSEMBLY_NOT_FOUND) goto done;
+
+    if (RtlGetFullPathName_U( acl->actctx->assemblies->manifest.info, len * sizeof(WCHAR), buffer, &p ))
     {
-        if (i == 2)
-        {
-            struct assembly *assembly = acl->actctx->assemblies;
-            if (!RtlGetFullPathName_U(assembly->manifest.info, len * sizeof(WCHAR), buffer, &p)) break;
-        }
-        else *p++ = '\\';
+        *p = 0;
+        status = open_manifest_file( acl, ai, lang, directory, buffer, total );
+        if (status != STATUS_SXS_ASSEMBLY_NOT_FOUND) goto done;
 
-        wcscpy( p, ai->name );
-        p += wcslen(p);
-
-        wcscpy( p, L".dll" );
-        if (RtlDosPathNameToNtPathName_U( buffer, &nameW, NULL, NULL ))
-        {
-            status = open_nt_file( &file, &nameW );
-            if (!status)
-            {
-                status = get_manifest_in_pe_file( acl, ai, nameW.Buffer, directory, FALSE, file, NULL, 0 );
-                NtClose( file );
-                if (status == STATUS_SUCCESS)
-                    break;
-            }
-            RtlFreeUnicodeString( &nameW );
-        }
-
-        wcscpy( p, L".manifest" );
-        if (RtlDosPathNameToNtPathName_U( buffer, &nameW, NULL, NULL ))
-        {
-            status = open_nt_file( &file, &nameW );
-            if (!status)
-            {
-                status = get_manifest_in_manifest_file( acl, ai, nameW.Buffer, directory, FALSE, file );
-                NtClose( file );
-                break;
-            }
-            RtlFreeUnicodeString( &nameW );
-        }
-        status = STATUS_SXS_ASSEMBLY_NOT_FOUND;
+        swprintf( p, total - (p - buffer), L"%s\\", ai->name );
+        status = open_manifest_file( acl, ai, lang, directory, buffer, total );
     }
-    RtlFreeUnicodeString( &nameW );
+
+done:
     RtlFreeHeap( GetProcessHeap(), 0, directory );
     RtlFreeHeap( GetProcessHeap(), 0, buffer );
     return status;
@@ -3453,7 +3463,8 @@ static NTSTATUS build_dllredirect_section(ACTIVATION_CONTEXT* actctx, struct str
 {
     unsigned int i, j, total_len = 0, dll_count = 0;
     struct strsection_header *header;
-    struct dllredirect_data *data;
+    ACTIVATION_CONTEXT_DATA_DLL_REDIRECTION *data;
+    ACTIVATION_CONTEXT_DATA_DLL_REDIRECTION_PATH_SEGMENT *path;
     struct string_index *index;
     ULONG name_offset;
 
@@ -3468,12 +3479,12 @@ static NTSTATUS build_dllredirect_section(ACTIVATION_CONTEXT* actctx, struct str
             /* each entry needs index, data and string data */
             total_len += sizeof(*index);
             total_len += aligned_string_len((wcslen(dll->name)+1)*sizeof(WCHAR));
+            total_len += sizeof(*data);
             if (dll->load_from)
             {
-                total_len += offsetof( struct dllredirect_data, paths[1] );
+                total_len += sizeof(*path);
                 total_len += aligned_string_len( wcslen(dll->load_from) * sizeof(WCHAR) );
             }
-            else total_len += offsetof( struct dllredirect_data, paths[0] );
         }
 
         dll_count += assembly->num_dlls;
@@ -3511,7 +3522,7 @@ static NTSTATUS build_dllredirect_section(ACTIVATION_CONTEXT* actctx, struct str
             index->name_offset = name_offset;
             index->name_len = str.Length;
             index->data_offset = index->name_offset + aligned_string_len(str.MaximumLength);
-            index->data_len = offsetof( struct dllredirect_data, paths[0] );
+            index->data_len = sizeof(*data);
             index->rosterindex = i + 1;
 
             /* dll name */
@@ -3521,30 +3532,32 @@ static NTSTATUS build_dllredirect_section(ACTIVATION_CONTEXT* actctx, struct str
             name_offset += aligned_string_len(str.MaximumLength);
 
             /* setup data */
-            data = (struct dllredirect_data*)((BYTE*)header + index->data_offset);
+            data = (ACTIVATION_CONTEXT_DATA_DLL_REDIRECTION *)((BYTE *)header + index->data_offset);
             if (dll->load_from)
             {
                 ULONG len = wcslen(dll->load_from) * sizeof(WCHAR);
-                data->size = offsetof( struct dllredirect_data, paths[1] );
-                data->flags = 0;
-                data->total_len = aligned_string_len( len );
-                data->paths_count = 1;
-                data->paths_offset = index->data_offset + offsetof( struct dllredirect_data, paths[0] );
-                data->paths[0].offset = index->data_offset + data->size;
-                data->paths[0].len = len;
-                ptrW = (WCHAR *)((BYTE *)header + data->paths[0].offset);
+                data->Size = sizeof(*data) + sizeof(*path);
+                data->Flags = 0;
+                data->TotalPathLength = aligned_string_len( len );
+                data->PathSegmentCount = 1;
+                data->PathSegmentOffset = index->data_offset + sizeof(*data);
+                path = (ACTIVATION_CONTEXT_DATA_DLL_REDIRECTION_PATH_SEGMENT *)(data + 1);
+                path->Offset = index->data_offset + data->Size;
+                path->Length = len;
+                ptrW = (WCHAR *)((BYTE *)header + path->Offset);
                 memcpy( ptrW, dll->load_from, len );
-                if (wcschr( dll->load_from, '%' )) data->flags |= DLL_REDIRECT_PATH_EXPAND;
+                if (wcschr( dll->load_from, '%' ))
+                    data->Flags |= ACTIVATION_CONTEXT_DATA_DLL_REDIRECTION_PATH_EXPAND;
             }
             else
             {
-                data->size = offsetof( struct dllredirect_data, paths[0] );
-                data->flags = DLL_REDIRECT_PATH_OMITS_ASSEMBLY_ROOT;
-                data->total_len = 0;
-                data->paths_count = 0;
-                data->paths_offset = 0;
+                data->Size = sizeof(*data);
+                data->Flags = ACTIVATION_CONTEXT_DATA_DLL_REDIRECTION_PATH_OMITS_ASSEMBLY_ROOT;
+                data->TotalPathLength = 0;
+                data->PathSegmentCount = 0;
+                data->PathSegmentOffset = 0;
             }
-            name_offset += data->size + data->total_len;
+            name_offset += data->Size + data->TotalPathLength;
 
             index++;
         }
@@ -3604,15 +3617,15 @@ static struct guid_index *find_guid_index(const struct guidsection_header *secti
     return index;
 }
 
-static inline struct dllredirect_data *get_dllredirect_data(ACTIVATION_CONTEXT *ctxt, struct string_index *index)
+static inline ACTIVATION_CONTEXT_DATA_DLL_REDIRECTION *get_dllredirect_data(ACTIVATION_CONTEXT *ctxt, struct string_index *index)
 {
-    return (struct dllredirect_data*)((BYTE*)ctxt->dllredirect_section + index->data_offset);
+    return (ACTIVATION_CONTEXT_DATA_DLL_REDIRECTION *)((BYTE *)ctxt->dllredirect_section + index->data_offset);
 }
 
 static NTSTATUS find_dll_redirection(ACTIVATION_CONTEXT* actctx, const UNICODE_STRING *name,
                                      PACTCTX_SECTION_KEYED_DATA data)
 {
-    struct dllredirect_data *dll;
+    ACTIVATION_CONTEXT_DATA_DLL_REDIRECTION *dll;
     struct string_index *index;
 
     if (!(actctx->sections & DLLREDIRECT_SECTION)) return STATUS_SXS_KEY_NOT_FOUND;
@@ -3637,7 +3650,7 @@ static NTSTATUS find_dll_redirection(ACTIVATION_CONTEXT* actctx, const UNICODE_S
 
         data->ulDataFormatVersion = 1;
         data->lpData = dll;
-        data->ulLength = dll->size;
+        data->ulLength = dll->Size;
         data->lpSectionGlobalData = NULL;
         data->ulSectionGlobalDataLength = 0;
         data->lpSectionBase = actctx->dllredirect_section;
@@ -5248,9 +5261,17 @@ NTSTATUS WINAPI RtlCreateActivationContext( HANDLE *handle, const void *ptr )
 
     TRACE("%p %08lx\n", pActCtx, pActCtx ? pActCtx->dwFlags : 0);
 
-    if (!pActCtx || pActCtx->cbSize < sizeof(*pActCtx) ||
-        (pActCtx->dwFlags & ~ACTCTX_FLAGS_ALL))
+#define CHECK_LIMIT( field ) (pActCtx->cbSize >= RTL_SIZEOF_THROUGH_FIELD( ACTCTXW, field ))
+    if (!pActCtx || (pActCtx->dwFlags & ~ACTCTX_FLAGS_ALL) ||
+        !CHECK_LIMIT( lpSource ) ||
+        ((pActCtx->dwFlags & ACTCTX_FLAG_PROCESSOR_ARCHITECTURE_VALID) && !CHECK_LIMIT( wProcessorArchitecture )) ||
+        ((pActCtx->dwFlags & ACTCTX_FLAG_LANGID_VALID) && !CHECK_LIMIT( wLangId )) ||
+        ((pActCtx->dwFlags & ACTCTX_FLAG_ASSEMBLY_DIRECTORY_VALID) && !CHECK_LIMIT( lpAssemblyDirectory )) ||
+        ((pActCtx->dwFlags & ACTCTX_FLAG_RESOURCE_NAME_VALID) && !CHECK_LIMIT( lpResourceName )) ||
+        ((pActCtx->dwFlags & ACTCTX_FLAG_APPLICATION_NAME_VALID) && !CHECK_LIMIT( lpApplicationName )) ||
+        ((pActCtx->dwFlags & ACTCTX_FLAG_HMODULE_VALID) && !CHECK_LIMIT( hModule )))
         return STATUS_INVALID_PARAMETER;
+#undef CHECK_LIMIT
 
     if ((pActCtx->dwFlags & ACTCTX_FLAG_RESOURCE_NAME_VALID) && !pActCtx->lpResourceName)
         return STATUS_INVALID_PARAMETER;
@@ -5291,7 +5312,7 @@ NTSTATUS WINAPI RtlCreateActivationContext( HANDLE *handle, const void *ptr )
         BOOLEAN ret;
 
         if (pActCtx->dwFlags & ACTCTX_FLAG_ASSEMBLY_DIRECTORY_VALID &&
-            RtlDetermineDosPathNameType_U(pActCtx->lpSource) == RELATIVE_PATH)
+            RtlDetermineDosPathNameType_U(pActCtx->lpSource) == RtlPathTypeRelative)
         {
             DWORD dir_len, source_len;
 
@@ -5423,9 +5444,7 @@ NTSTATUS WINAPI RtlActivateActivationContextEx( ULONG flags, TEB *teb, HANDLE ha
     ACTIVATION_CONTEXT_STACK *actctx_stack = teb->ActivationContextStackPointer;
     RTL_ACTIVATION_CONTEXT_STACK_FRAME *frame;
 
-    if (!(frame = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(*frame) )))
-        return STATUS_NO_MEMORY;
-
+    frame = RtlAllocateHeap( GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS, sizeof(*frame) );
     frame->Previous = actctx_stack->ActiveFrame;
     frame->ActivationContext = handle;
     frame->Flags = 0;

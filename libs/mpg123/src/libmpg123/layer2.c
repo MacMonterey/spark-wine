@@ -29,7 +29,7 @@
 // The layer12_table is already in real format (fixed or float), just needs
 // a little scaling in the MMX/SSE case.
 
-void init_layer12_stuff(mpg123_handle *fr, real* (*init_table)(mpg123_handle *fr, real *table, int m))
+void INT123_init_layer12_stuff(mpg123_handle *fr, real* (*init_table)(mpg123_handle *fr, real *table, int m))
 {
 	int k;
 	real *table;
@@ -40,7 +40,7 @@ void init_layer12_stuff(mpg123_handle *fr, real* (*init_table)(mpg123_handle *fr
 	}
 }
 
-real* init_layer12_table(mpg123_handle *fr, real *table, int m)
+real* INT123_init_layer12_table(mpg123_handle *fr, real *table, int m)
 {
 	int i;
 	for(i=0;i<63;i++)
@@ -49,7 +49,7 @@ real* init_layer12_table(mpg123_handle *fr, real *table, int m)
 }
 
 #ifdef OPT_MMXORSSE
-real* init_layer12_table_mmx(mpg123_handle *fr, real *table, int m)
+real* INT123_init_layer12_table_mmx(mpg123_handle *fr, real *table, int m)
 {
 	int i,j;
 	if(!fr->p.down_sample) 
@@ -313,10 +313,10 @@ static void II_select_table(mpg123_handle *fr)
 	const struct al_table *tables[5] = { alloc_0, alloc_1, alloc_2, alloc_3 , alloc_4 };
 	const int sblims[5] = { 27 , 30 , 8, 12 , 30 };
 
-	if(fr->sampling_frequency >= 3)	/* Or equivalent: (fr->lsf == 1) */
+	if(fr->hdr.sampling_frequency >= 3)	/* Or equivalent: (fr->lsf == 1) */
 	table = 4;
 	else
-	table = translate[fr->sampling_frequency][2-fr->stereo][fr->bitrate_index];
+	table = translate[fr->hdr.sampling_frequency][2-fr->stereo][fr->hdr.bitrate_index];
 
 	sblim = sblims[table];
 	fr->alloc      = tables[table];
@@ -324,7 +324,7 @@ static void II_select_table(mpg123_handle *fr)
 }
 
 
-int do_layer2(mpg123_handle *fr)
+int INT123_do_layer2(mpg123_handle *fr)
 {
 	int clip=0;
 	int i,j;
@@ -337,7 +337,7 @@ int do_layer2(mpg123_handle *fr)
 	int single = fr->single;
 
 	II_select_table(fr);
-	fr->jsbound = (fr->mode == MPG_MD_JOINT_STEREO) ? (fr->mode_ext<<2)+4 : fr->II_sblimit;
+	fr->jsbound = (fr->hdr.mode == MPG_MD_JOINT_STEREO) ? (fr->hdr.mode_ext<<2)+4 : fr->II_sblimit;
 
 	if(fr->jsbound > fr->II_sblimit)
 	{

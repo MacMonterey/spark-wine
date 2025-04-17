@@ -18,7 +18,6 @@
 
 #include <stdarg.h>
 
-#define NONAMELESSUNION
 #define COBJMACROS
 
 #include "windef.h"
@@ -131,7 +130,7 @@ static ULONG WINAPI CommonEncoderFrame_Release(IWICBitmapFrameEncode *iface)
     if (ref == 0)
     {
         IWICBitmapEncoder_Release(&This->parent->IWICBitmapEncoder_iface);
-        HeapFree(GetProcessHeap(), 0, This);
+        free(This);
     }
 
     return ref;
@@ -480,7 +479,7 @@ static HRESULT WINAPI CommonEncoderFrame_GetMetadataQueryWriter(IWICBitmapFrameE
     if (!(encoder->parent->encoder_info.flags & ENCODER_FLAGS_SUPPORTS_METADATA))
         return WINCODEC_ERR_UNSUPPORTEDOPERATION;
 
-    return MetadataQueryWriter_CreateInstance(&encoder->IWICMetadataBlockWriter_iface, NULL, ppIMetadataQueryWriter);
+    return MetadataQueryWriter_CreateInstanceFromBlockWriter(&encoder->IWICMetadataBlockWriter_iface, ppIMetadataQueryWriter);
 }
 
 static const IWICBitmapFrameEncodeVtbl CommonEncoderFrame_Vtbl = {
@@ -547,7 +546,7 @@ static ULONG WINAPI CommonEncoder_Release(IWICBitmapEncoder *iface)
         if (This->stream)
             IStream_Release(This->stream);
         encoder_destroy(This->encoder);
-        HeapFree(GetProcessHeap(), 0, This);
+        free(This);
     }
 
     return ref;
@@ -780,7 +779,7 @@ static HRESULT WINAPI CommonEncoder_CreateNewFrame(IWICBitmapEncoder *iface,
         return WINCODEC_ERR_NOTINITIALIZED;
     }
 
-    result = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*result));
+    result = calloc(1, sizeof(*result));
     if (!result)
     {
         LeaveCriticalSection(&This->lock);
@@ -803,7 +802,7 @@ static HRESULT WINAPI CommonEncoder_CreateNewFrame(IWICBitmapEncoder *iface,
         if (FAILED(hr))
         {
             LeaveCriticalSection(&This->lock);
-            HeapFree(GetProcessHeap(), 0, result);
+            free(result);
             return hr;
         }
     }
@@ -875,7 +874,7 @@ HRESULT CommonEncoder_CreateInstance(struct encoder *encoder,
 
     *ppv = NULL;
 
-    This = HeapAlloc(GetProcessHeap(), 0, sizeof(CommonEncoder));
+    This = malloc(sizeof(CommonEncoder));
     if (!This)
     {
         encoder_destroy(encoder);
@@ -890,7 +889,7 @@ HRESULT CommonEncoder_CreateInstance(struct encoder *encoder,
     This->frame_count = 0;
     This->uncommitted_frame = FALSE;
     This->committed = FALSE;
-    InitializeCriticalSection(&This->lock);
+    InitializeCriticalSectionEx(&This->lock, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO);
     This->lock.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": CommonEncoder.lock");
 
     ret = IWICBitmapEncoder_QueryInterface(&This->IWICBitmapEncoder_iface, iid, ppv);

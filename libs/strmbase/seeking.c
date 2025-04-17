@@ -49,13 +49,15 @@ HRESULT strmbase_seeking_init(SourceSeeking *pSeeking, const IMediaSeekingVtbl *
     pSeeking->llDuration = pSeeking->llStop;
     pSeeking->dRate = 1.0;
     pSeeking->timeformat = TIME_FORMAT_MEDIA_TIME;
-    InitializeCriticalSection(&pSeeking->cs);
+    if (!InitializeCriticalSectionEx(&pSeeking->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO))
+        InitializeCriticalSection(&pSeeking->cs);
     pSeeking->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": SourceSeeking.cs");
     return S_OK;
 }
 
 void strmbase_seeking_cleanup(SourceSeeking *seeking)
 {
+    seeking->cs.DebugInfo->Spare[0] = 0;
     DeleteCriticalSection(&seeking->cs);
 }
 

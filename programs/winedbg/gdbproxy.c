@@ -64,6 +64,7 @@ struct reply_buffer
 struct gdb_context
 {
     /* gdb information */
+    HANDLE                      gdb_ctrl_thread;
     SOCKET                      sock;
     /* incoming buffer */
     char*                       in_buf;
@@ -586,7 +587,7 @@ static BOOL handle_debug_event(struct gdb_context* gdbctx, BOOL stop_on_dll_load
         return TRUE;
 
     case UNLOAD_DLL_DEBUG_EVENT:
-        fprintf(stderr, "%08lx:%08lx: unload DLL @%p\n",
+        fprintf(stderr, "%04lx:%04lx: unload DLL @%p\n",
                 de->dwProcessId, de->dwThreadId, de->u.UnloadDll.lpBaseOfDll);
         SymUnloadModule(gdbctx->process->handle,
                         (DWORD_PTR)de->u.UnloadDll.lpBaseOfDll);
@@ -595,16 +596,16 @@ static BOOL handle_debug_event(struct gdb_context* gdbctx, BOOL stop_on_dll_load
         return TRUE;
 
     case EXCEPTION_DEBUG_EVENT:
-        TRACE("%08lx:%08lx: exception code=0x%08lx\n", de->dwProcessId,
-            de->dwThreadId, de->u.Exception.ExceptionRecord.ExceptionCode);
+        TRACE("%04lx:%04lx: exception code=0x%08lx\n", de->dwProcessId,
+              de->dwThreadId, de->u.Exception.ExceptionRecord.ExceptionCode);
 
         if (handle_exception(gdbctx, &de->u.Exception))
             return TRUE;
         break;
 
     case CREATE_THREAD_DEBUG_EVENT:
-        fprintf(stderr, "%08lx:%08lx: create thread D @%p\n", de->dwProcessId,
-            de->dwThreadId, de->u.CreateThread.lpStartAddress);
+        fprintf(stderr, "%04lx:%04lx: create thread D @%p\n", de->dwProcessId,
+                de->dwThreadId, de->u.CreateThread.lpStartAddress);
 
         dbg_add_thread(gdbctx->process,
                        de->dwThreadId,
@@ -613,14 +614,14 @@ static BOOL handle_debug_event(struct gdb_context* gdbctx, BOOL stop_on_dll_load
         return TRUE;
 
     case EXIT_THREAD_DEBUG_EVENT:
-        fprintf(stderr, "%08lx:%08lx: exit thread (%lu)\n",
+        fprintf(stderr, "%04lx:%04lx: exit thread (%lu)\n",
                 de->dwProcessId, de->dwThreadId, de->u.ExitThread.dwExitCode);
         if ((thread = dbg_get_thread(gdbctx->process, de->dwThreadId)))
             dbg_del_thread(thread);
         return TRUE;
 
     case EXIT_PROCESS_DEBUG_EVENT:
-        fprintf(stderr, "%08lx:%08lx: exit process (%lu)\n",
+        fprintf(stderr, "%04lx:%04lx: exit process (%lu)\n",
                 de->dwProcessId, de->dwThreadId, de->u.ExitProcess.dwExitCode);
 
         dbg_del_process(gdbctx->process);
@@ -631,18 +632,18 @@ static BOOL handle_debug_event(struct gdb_context* gdbctx, BOOL stop_on_dll_load
         memory_get_string(gdbctx->process,
                           de->u.DebugString.lpDebugStringData, TRUE,
                           de->u.DebugString.fUnicode, u.bufferA, sizeof(u.bufferA));
-        fprintf(stderr, "%08lx:%08lx: output debug string (%s)\n",
-            de->dwProcessId, de->dwThreadId, debugstr_a(u.bufferA));
+        fprintf(stderr, "%04lx:%04lx: output debug string (%s)\n",
+                de->dwProcessId, de->dwThreadId, debugstr_a(u.bufferA));
         return TRUE;
 
     case RIP_EVENT:
-        fprintf(stderr, "%08lx:%08lx: rip error=%lu type=%lu\n", de->dwProcessId,
-            de->dwThreadId, de->u.RipInfo.dwError, de->u.RipInfo.dwType);
+        fprintf(stderr, "%04lx:%04lx: rip error=%lu type=%lu\n", de->dwProcessId,
+                de->dwThreadId, de->u.RipInfo.dwError, de->u.RipInfo.dwType);
         return TRUE;
 
     default:
-        FIXME("%08lx:%08lx: unknown event (%lu)\n",
-            de->dwProcessId, de->dwThreadId, de->dwDebugEventCode);
+        FIXME("%04lx:%04lx: unknown event (%lu)\n",
+              de->dwProcessId, de->dwThreadId, de->dwDebugEventCode);
     }
 
     LIST_FOR_EACH_ENTRY(thread, &gdbctx->process->threads, struct dbg_thread, entry)
@@ -1630,15 +1631,12 @@ static void packet_query_monitor_mem(struct gdb_context* gdbctx, int len, const 
         packet_reply_add(gdbctx, "O");
         packet_reply_hex_to_str(gdbctx, buffer);
         packet_reply_close(gdbctx);
-
-        if (addr + mbi.RegionSize < addr) /* wrap around ? */
-            break;
         addr += mbi.RegionSize;
     }
     packet_reply(gdbctx, "OK");
 }
 
-struct query_detail
+static const struct query_detail
 {
     int         with_arg;
     const char* name;
@@ -1658,7 +1656,7 @@ static enum packet_return packet_query_remote_command(struct gdb_context* gdbctx
                                                       const char* hxcmd, size_t len)
 {
     char                        buffer[128];
-    struct query_detail*        qd;
+    const struct query_detail*  qd;
 
     assert((len & 1) == 0 && len < 2 * sizeof(buffer));
     len /= 2;
@@ -1985,7 +1983,7 @@ static enum packet_return packet_query_exec_file(struct gdb_context* gdbctx)
     return packet_send_buffer;
 }
 
-struct qxfer
+static const struct qxfer
 {
     const char*        name;
     enum packet_return (*handler)(struct gdb_context* gdbctx);
@@ -2259,7 +2257,7 @@ struct packet_entry
     enum packet_return  (*handler)(struct gdb_context* gdbctx);
 };
 
-static struct packet_entry packet_entries[] =
+static const struct packet_entry packet_entries[] =
 {
         {'?', packet_last_signal},
         {'c', packet_continue},
@@ -2391,21 +2389,28 @@ static int fetch_data(struct gdb_context* gdbctx)
     return gdbctx->in_len - in_len;
 }
 
+static DWORD WINAPI gdb_ctrl_thread(void *pmt)
+{
+    /* don't bother freeing passed memory, we're terminating anyway */
+    return __wine_unix_spawnvp( (char **)pmt, TRUE );
+}
+
 #define FLAG_NO_START   1
 #define FLAG_WITH_XTERM 2
 
-static BOOL gdb_exec(unsigned port, unsigned flags)
+static HANDLE gdb_exec(unsigned port, unsigned flags)
 {
     WCHAR tmp[MAX_PATH], buf[MAX_PATH];
-    const char *argv[6];
+    const char **argv;
     char *unix_tmp;
     const char      *gdb_path;
     FILE*           f;
 
+    if (!(argv = HeapAlloc( GetProcessHeap(), 0, 6 * sizeof(argv[0]) ))) return NULL;
     if (!(gdb_path = getenv("WINE_GDB"))) gdb_path = "gdb";
     GetTempPathW( MAX_PATH, buf );
     GetTempFileNameW( buf, L"gdb", 0, tmp );
-    if ((f = _wfopen( tmp, L"w+" )) == NULL) return FALSE;
+    if ((f = _wfopen( tmp, L"w+" )) == NULL) return NULL;
     unix_tmp = wine_get_unix_file_name( tmp );
     fprintf(f, "target remote localhost:%d\n", ntohs(port));
     fprintf(f, "set prompt Wine-gdb>\\ \n");
@@ -2428,12 +2433,7 @@ static BOOL gdb_exec(unsigned port, unsigned flags)
     argv[3] = "-x";
     argv[4] = unix_tmp;
     argv[5] = NULL;
-    if (flags & FLAG_WITH_XTERM)
-        __wine_unix_spawnvp( (char **)argv, FALSE );
-    else
-        __wine_unix_spawnvp( (char **)argv + 2, FALSE );
-    HeapFree( GetProcessHeap(), 0, unix_tmp );
-    return TRUE;
+    return CreateThread( NULL, 0, gdb_ctrl_thread, (char **)argv + ((flags & FLAG_WITH_XTERM) ? 0 : 2), 0, NULL );
 }
 
 static BOOL gdb_startup(struct gdb_context* gdbctx, unsigned flags, unsigned port)
@@ -2473,7 +2473,7 @@ static BOOL gdb_startup(struct gdb_context* gdbctx, unsigned flags, unsigned por
     if (flags & FLAG_NO_START)
         fprintf(stderr, "target remote localhost:%d\n", ntohs(s_addrs.sin_port));
     else
-        gdb_exec(s_addrs.sin_port, flags);
+        gdbctx->gdb_ctrl_thread = gdb_exec(s_addrs.sin_port, flags);
 
     /* step 4: wait for gdb to connect actually */
     FD_ZERO( &read_fds );
@@ -2505,6 +2505,7 @@ static BOOL gdb_init_context(struct gdb_context* gdbctx, unsigned flags, unsigne
 {
     int                 i;
 
+    gdbctx->gdb_ctrl_thread = NULL;
     gdbctx->sock = INVALID_SOCKET;
     gdbctx->in_buf = NULL;
     gdbctx->in_buf_alloc = 0;
@@ -2575,6 +2576,8 @@ static int gdb_remote(unsigned flags, unsigned port)
             }
         }
     }
+    /* wait for gdb to terminate */
+    WaitForSingleObject(gdbctx.gdb_ctrl_thread, INFINITE);
     return 0;
 }
 

@@ -229,7 +229,7 @@ LPDIOBJECTDATAFORMAT dataformat_to_odf_by_type(LPCDIDATAFORMAT df, int n, DWORD 
 }
 
 static BOOL match_device_object( const DIDATAFORMAT *device_format, DIDATAFORMAT *user_format,
-                                 const DIOBJECTDATAFORMAT *match_obj, DWORD version )
+                                 const DIOBJECTDATAFORMAT *match_obj, DWORD version, BOOL *identical )
 {
     DWORD i, device_instance, instance = DIDFT_GETINSTANCE( match_obj->dwType );
     DIOBJECTDATAFORMAT *device_obj, *user_obj;
@@ -251,6 +251,7 @@ static BOOL match_device_object( const DIDATAFORMAT *device_format, DIDATAFORMAT
                debugstr_diobjectdataformat( device_obj ) );
 
         *user_obj = *device_obj;
+        if (user_obj->dwOfs != match_obj->dwOfs) *identical = FALSE;
         user_obj->dwOfs = match_obj->dwOfs;
         return TRUE;
     }
@@ -262,6 +263,7 @@ static HRESULT dinput_device_init_user_format( struct dinput_device *impl, const
 {
     DIDATAFORMAT *user_format = &impl->user_format, *device_format = &impl->device_format;
     DIOBJECTDATAFORMAT *user_obj, *match_obj;
+    BOOL identical = TRUE;
     DWORD i;
 
     *user_format = *device_format;
@@ -280,17 +282,24 @@ static HRESULT dinput_device_init_user_format( struct dinput_device *impl, const
     {
         match_obj = format->rgodf + i;
 
-        if (!match_device_object( device_format, user_format, match_obj, impl->dinput->dwVersion ))
+        if (!match_device_object( device_format, user_format, match_obj, impl->dinput->dwVersion, &identical ))
         {
             WARN( "object %s not found\n", debugstr_diobjectdataformat( match_obj ) );
             if (!(match_obj->dwType & DIDFT_OPTIONAL)) goto failed;
             user_obj = user_format->rgodf + device_format->dwNumObjs + i;
             *user_obj = *match_obj;
+            identical = FALSE;
         }
     }
 
     user_obj = user_format->rgodf + user_format->dwNumObjs;
     while (user_obj-- > user_format->rgodf) user_obj->dwType &= ~DIDFT_OPTIONAL;
+
+    if (identical && device_format->dwDataSize <= user_format->dwDataSize)
+    {
+        memcpy( user_format->rgodf, device_format->rgodf, device_format->dwNumObjs * sizeof(*user_format->rgodf) );
+        user_format->dwNumObjs = device_format->dwNumObjs;
+    }
 
     return DI_OK;
 
@@ -406,16 +415,17 @@ static BOOL load_mapping_settings( struct dinput_device *This, LPDIACTIONFORMATW
     /* Try to read each action in the DIACTIONFORMAT from registry */
     for (i = 0; i < lpdiaf->dwNumActions; i++)
     {
+        DIACTIONW *action = lpdiaf->rgoAction + i;
         DWORD id, size = sizeof(DWORD);
         WCHAR label[9];
 
         swprintf( label, 9, L"%x", lpdiaf->rgoAction[i].dwSemantic );
 
-        if (!RegQueryValueExW(hkey, label, 0, NULL, (LPBYTE) &id, &size))
+        if (!action->dwHow && !RegQueryValueExW( hkey, label, 0, NULL, (BYTE *)&id, &size ))
         {
-            lpdiaf->rgoAction[i].dwObjID = id;
-            lpdiaf->rgoAction[i].guidInstance = didev.guidInstance;
-            lpdiaf->rgoAction[i].dwHow = DIAH_DEFAULT;
+            action->dwObjID = id;
+            action->guidInstance = didev.guidInstance;
+            action->dwHow = DIAH_DEFAULT;
             mapped += 1;
         }
     }
@@ -812,6 +822,7 @@ static HRESULT check_property( struct dinput_device *impl, const GUID *guid, con
     case (DWORD_PTR)DIPROP_LOGICALRANGE:
     case (DWORD_PTR)DIPROP_PHYSICALRANGE:
     case (DWORD_PTR)DIPROP_APPDATA:
+    case (DWORD_PTR)DIPROP_SCANCODE:
         if (impl->dinput->dwVersion < 0x0800) return DIERR_UNSUPPORTED;
         break;
     }
@@ -885,10 +896,10 @@ static HRESULT check_property( struct dinput_device *impl, const GUID *guid, con
         break;
 
     case (DWORD_PTR)DIPROP_KEYNAME:
+    case (DWORD_PTR)DIPROP_SCANCODE:
         if (header->dwHow == DIPH_DEVICE) return DIERR_INVALIDPARAM;
         break;
 
-    case (DWORD_PTR)DIPROP_SCANCODE:
     case (DWORD_PTR)DIPROP_APPDATA:
         if (header->dwHow == DIPH_DEVICE) return DIERR_UNSUPPORTED;
         break;
@@ -899,7 +910,7 @@ static HRESULT check_property( struct dinput_device *impl, const GUID *guid, con
         switch (LOWORD( guid ))
         {
         case (DWORD_PTR)DIPROP_AUTOCENTER:
-            if (impl->status == STATUS_ACQUIRED && !is_exclusively_acquired( impl )) return DIERR_ACQUIRED;
+            if (impl->status == STATUS_ACQUIRED) return DIERR_ACQUIRED;
             break;
         case (DWORD_PTR)DIPROP_AXISMODE:
         case (DWORD_PTR)DIPROP_BUFFERSIZE:
@@ -1061,6 +1072,12 @@ static BOOL get_object_property( struct dinput_device *device, UINT index, struc
         value->uData = properties->app_data;
         return DIENUM_STOP;
     }
+    case (DWORD_PTR)DIPROP_SCANCODE:
+    {
+        DIPROPDWORD *value = (DIPROPDWORD *)params->header;
+        value->dwData = properties->scan_code;
+        return DI_OK;
+    }
     }
 
     return DIENUM_STOP;
@@ -1097,6 +1114,7 @@ static HRESULT dinput_device_get_property( IDirectInputDevice8W *iface, const GU
     case (DWORD_PTR)DIPROP_KEYNAME:
     case (DWORD_PTR)DIPROP_CALIBRATIONMODE:
     case (DWORD_PTR)DIPROP_APPDATA:
+    case (DWORD_PTR)DIPROP_SCANCODE:
         hr = impl->vtbl->enum_objects( iface, &filter, object_mask, get_object_property, &params );
         if (FAILED(hr)) return hr;
         if (hr == DIENUM_CONTINUE) return DIERR_NOTFOUND;
@@ -1290,8 +1308,6 @@ static HRESULT dinput_device_set_property( IDirectInputDevice8W *iface, const GU
     {
         const DIPROPDWORD *value = (const DIPROPDWORD *)header;
         if (!(impl->caps.dwFlags & DIDC_FORCEFEEDBACK)) return DIERR_UNSUPPORTED;
-
-        FIXME( "DIPROP_AUTOCENTER stub!\n" );
         impl->autocenter = value->dwData;
         return DI_OK;
     }
@@ -1787,7 +1803,7 @@ static HRESULT WINAPI dinput_device_WriteEffectToFile( IDirectInputDevice8W *ifa
 BOOL device_object_matches_semantic( const DIDEVICEINSTANCEW *instance, const DIOBJECTDATAFORMAT *object,
                                      DWORD semantic, BOOL exact )
 {
-    DWORD value = semantic & 0xff, axis = (semantic >> 15) & 3, type;
+    DWORD value = semantic & 0xff, axis = (semantic >> 15) & 15, type;
 
     switch (semantic & 0x700)
     {
@@ -1799,17 +1815,20 @@ BOOL device_object_matches_semantic( const DIDEVICEINSTANCEW *instance, const DI
     }
 
     if (!(DIDFT_GETTYPE( object->dwType ) & type)) return FALSE;
-    if ((semantic & 0xf0000000) == 0x80000000)
+    switch (semantic & 0xff000000)
     {
-        switch (semantic & 0x0f000000)
-        {
-        case 0x01000000: return (instance->dwDevType & 0xf) == DIDEVTYPE_KEYBOARD && object->dwOfs == value;
-        case 0x02000000: return (instance->dwDevType & 0xf) == DIDEVTYPE_MOUSE && object->dwOfs == value;
-        default: return FALSE;
-        }
+    case 0x81000000: return (instance->dwDevType & 0xf) == DIDEVTYPE_KEYBOARD && object->dwOfs == value;
+    case 0x82000000: return (instance->dwDevType & 0xf) == DIDEVTYPE_MOUSE && object->dwOfs == value;
+    case 0x83000000: return FALSE;
+
+    default:
+        if ((instance->dwDevType & 0xf) == DIDEVTYPE_KEYBOARD) return FALSE;
+        if ((instance->dwDevType & 0xf) == DIDEVTYPE_MOUSE) return FALSE;
+        /* fallthrough */
+    case 0xff000000:
+        if (axis && (axis - 1) != DIDFT_GETINSTANCE( object->dwType )) return FALSE;
+        return !exact || !value || value == DIDFT_GETINSTANCE( object->dwType ) + 1;
     }
-    if (axis && (axis - 1) != DIDFT_GETINSTANCE( object->dwType )) return FALSE;
-    return !exact || !value || value == DIDFT_GETINSTANCE( object->dwType ) + 1;
 }
 
 static HRESULT WINAPI dinput_device_BuildActionMap( IDirectInputDevice8W *iface, DIACTIONFORMATW *format,
@@ -1848,11 +1867,14 @@ static HRESULT WINAPI dinput_device_BuildActionMap( IDirectInputDevice8W *iface,
         if (!action->dwSemantic) return DIERR_INVALIDPARAM;
         if (flags == DIDBAM_PRESERVE && !IsEqualCLSID( &action->guidInstance, &GUID_NULL ) &&
             !IsEqualCLSID( &action->guidInstance, &impl->guid )) continue;
-        if (action->dwFlags & DIA_APPMAPPED) action->dwHow = DIAH_APPREQUESTED;
-        else action->dwHow = 0;
-        if (action->dwHow == DIAH_APPREQUESTED || action->dwHow == DIAH_USERCONFIG) continue;
+        if (action->dwFlags & DIA_APPMAPPED)
+        {
+            action->dwHow = DIAH_APPREQUESTED;
+            continue;
+        }
         if ((action->dwSemantic & 0xf0000000) == 0x80000000) action->dwFlags &= ~DIA_APPNOMAP;
         if (!(action->dwFlags & DIA_APPNOMAP)) action->guidInstance = GUID_NULL;
+        action->dwHow = 0;
     }
 
     /* Unless asked the contrary by these flags, try to load a previous mapping */
@@ -2131,8 +2153,9 @@ void dinput_device_init( struct dinput_device *device, const struct dinput_devic
     device->caps.dwSize = sizeof(DIDEVCAPS);
     device->caps.dwFlags = DIDC_ATTACHED | DIDC_EMULATED;
     device->device_gain = 10000;
+    device->autocenter = DIPROPAUTOCENTER_ON;
     device->force_feedback_state = DIGFFS_STOPPED | DIGFFS_EMPTY;
-    InitializeCriticalSection( &device->crit );
+    InitializeCriticalSectionEx( &device->crit, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO );
     dinput_internal_addref( (device->dinput = dinput) );
     device->vtbl = vtbl;
 

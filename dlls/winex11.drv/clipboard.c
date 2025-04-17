@@ -1048,7 +1048,7 @@ static void *import_text_html( Atom type, const void *data, size_t size, size_t 
 /**************************************************************************
  *      file_list_to_drop_files
  */
-void *file_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
+DROPFILES *file_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
 {
     size_t buf_size = 4096, path_size;
     DROPFILES *drop = NULL;
@@ -1100,7 +1100,7 @@ void *file_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
 /**************************************************************************
  *      uri_list_to_drop_files
  */
-void *uri_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
+DROPFILES *uri_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
 {
     const char *uriList = data;
     char *uri;
@@ -1308,7 +1308,7 @@ struct format_entry *import_xdnd_selection( Display *display, Window win, Atom s
         if (!(data = import_selection( display, win, selection, format, &size ))) continue;
 
         entry_size = (FIELD_OFFSET( struct format_entry, data[size] ) + 7) & ~7;
-        if (buf_size < size + entry_size)
+        if (buf_size < *ret_size + entry_size)
         {
             if (!(tmp = realloc( ret, *ret_size + entry_size + 1024 ))) continue;
             ret = tmp;
@@ -1622,7 +1622,7 @@ static BOOL export_hdrop( Display *display, Window win, Atom prop, Atom target, 
         {
             static const char hex_table[] = "0123456789abcdef";
             textUriList[next++] = '%';
-            textUriList[next++] = hex_table[unixFilename[u] >> 4];
+            textUriList[next++] = hex_table[(unsigned char)unixFilename[u] >> 4];
             textUriList[next++] = hex_table[unixFilename[u] & 0xf];
         }
         textUriList[next++] = '\r';
@@ -1850,7 +1850,7 @@ static BOOL X11DRV_CLIPBOARD_GetProperty(Display *display, Window w, Atom prop,
 {
     int aformat;
     unsigned long pos = 0, nitems, remain, count;
-    unsigned char *val = NULL, *buffer;
+    unsigned char *val = NULL, *new_val, *buffer;
 
     for (;;)
     {
@@ -1863,15 +1863,13 @@ static BOOL X11DRV_CLIPBOARD_GetProperty(Display *display, Window w, Atom prop,
         }
 
         count = get_property_size( aformat, nitems );
-        *data = realloc( val, pos * sizeof(int) + count + 1 );
-
-        if (!*data)
+        if (!(new_val = realloc( val, pos * sizeof(int) + count + 1 )))
         {
             XFree( buffer );
             free( val );
             return FALSE;
         }
-        val = *data;
+        val = new_val;
         memcpy( (int *)val + pos, buffer, count );
         XFree( buffer );
         if (!remain)
@@ -1889,6 +1887,7 @@ static BOOL X11DRV_CLIPBOARD_GetProperty(Display *display, Window w, Atom prop,
     /* Delete the property on the window now that we are done
      * This will send a PropertyNotify event to the selection owner. */
     XDeleteProperty(display, w, prop);
+    *data = val;
     return TRUE;
 }
 

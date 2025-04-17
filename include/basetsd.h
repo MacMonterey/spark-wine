@@ -65,12 +65,20 @@ extern "C" {
 #  endif
 #endif /* !defined(_MSC_VER) */
 
+#ifndef __has_declspec_attribute
+# if defined(_MSC_VER)
+#  define __has_declspec_attribute(x) 1
+# else
+#  define __has_declspec_attribute(x) 0
+# endif
+#endif
+
 /* FIXME: DECLSPEC_ALIGN should be declared only in winnt.h, but we need it here too */
 #ifndef DECLSPEC_ALIGN
-# if defined(_MSC_VER) && (_MSC_VER >= 1300) && !defined(MIDL_PASS)
-#  define DECLSPEC_ALIGN(x) __declspec(align(x))
-# elif defined(__GNUC__)
+# ifdef __GNUC__
 #  define DECLSPEC_ALIGN(x) __attribute__((aligned(x)))
+# elif __has_declspec_attribute(align) && !defined(MIDL_PASS)
+#  define DECLSPEC_ALIGN(x) __declspec(align(x))
 # else
 #  define DECLSPEC_ALIGN(x)
 # endif
@@ -124,7 +132,8 @@ typedef unsigned __int64 ULONG_PTR, *PULONG_PTR;
 
 typedef int           INT_PTR, *PINT_PTR;
 typedef unsigned int  UINT_PTR, *PUINT_PTR;
-#if defined(__clang__) && defined(__MINGW32__)  /* llvm-mingw warns about long type in %I formats */
+/* clang warns about long type in %I formats */
+#if defined(__WINESRC__) && defined(__clang__) && (defined(__MINGW32__) || defined(_MSC_VER))
 typedef int           LONG_PTR, *PLONG_PTR;
 typedef unsigned int  ULONG_PTR, *PULONG_PTR;
 #else
@@ -294,38 +303,6 @@ typedef ULONG_PTR DWORD_PTR, *PDWORD_PTR;
 typedef ULONG_PTR KAFFINITY, *PKAFFINITY;
 
 #define MINLONGLONG             ((LONGLONG)~MAXLONGLONG)
-
-/* Some Wine-specific definitions */
-
-/* Architecture dependent settings. */
-/* These are hardcoded to avoid dependencies on config.h in Winelib apps. */
-#if defined(__i386__)
-# undef  WORDS_BIGENDIAN
-#elif defined(__x86_64__)
-# undef  WORDS_BIGENDIAN
-#elif defined(__powerpc64__) && defined(__BIG_ENDIAN__)
-# define WORDS_BIGENDIAN
-#elif defined(__powerpc64__)
-# undef  WORDS_BIGENDIAN
-#elif defined(__powerpc__)
-# define WORDS_BIGENDIAN
-#elif defined(__ALPHA__)
-# undef  WORDS_BIGENDIAN
-#elif defined(__ARMEB__)
-# define WORDS_BIGENDIAN
-#elif defined(__ARMEL__) || defined(__arm__)
-# undef  WORDS_BIGENDIAN
-#elif defined(__AARCH64EB__)
-# define WORDS_BIGENDIAN
-#elif defined(__AARCH64EL__) || defined(__aarch64__)
-# undef  WORDS_BIGENDIAN
-#elif defined(__MIPSEB__)
-# define WORDS_BIGENDIAN
-#elif defined(__MIPSEL__)
-# undef  WORDS_BIGENDIAN
-#elif !defined(RC_INVOKED) && !defined(__WIDL__) && !defined(__midl)
-# error Unknown CPU architecture!
-#endif
 
 #ifdef __cplusplus
 } /* extern "C" */

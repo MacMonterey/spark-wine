@@ -30,9 +30,6 @@
 #include <ctype.h>
 #include <stddef.h>
 
-#define NONAMELESSSTRUCT
-#define NONAMELESSUNION
-
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "windef.h"
@@ -639,7 +636,7 @@ static BOOL add_printer_driver( const WCHAR *name, const WCHAR *ppd_dir )
     DRIVER_INFO_3W di3;
     unsigned int i;
     BOOL res = FALSE;
-    WCHAR raw[] = L"RAW", driver_nt[] = L"wineps.drv";
+    WCHAR raw[] = L"RAW", driver_nt[] = L"wineps.drv", driver_9x[] = L"wineps16.drv";
 
     if (!ppd) return FALSE;
     if (!RtlDosPathNameToNtPathName_U( ppd, &nt_ppd, NULL, NULL )) goto end;
@@ -664,7 +661,6 @@ static BOOL add_printer_driver( const WCHAR *name, const WCHAR *ppd_dir )
         di3.pEnvironment = (WCHAR *)all_printenv[i]->envname;
         if (all_printenv[i]->driverversion == 0)
         {
-            WCHAR driver_9x[] = L"wineps16.drv";
             /* We use wineps16.drv as driver for 16 bit */
             di3.pDriverPath = driver_9x;
             di3.pConfigFile = driver_9x;
@@ -1898,17 +1894,17 @@ BOOL WINAPI IsValidDevmodeW(PDEVMODEW dm, SIZE_T size)
     } map[] =
     {
 #define F_SIZE(field) FIELD_OFFSET(DEVMODEW, field) + sizeof(dm->field)
-        { DM_ORIENTATION, F_SIZE(u1.s1.dmOrientation) },
-        { DM_PAPERSIZE, F_SIZE(u1.s1.dmPaperSize) },
-        { DM_PAPERLENGTH, F_SIZE(u1.s1.dmPaperLength) },
-        { DM_PAPERWIDTH, F_SIZE(u1.s1.dmPaperWidth) },
-        { DM_SCALE, F_SIZE(u1.s1.dmScale) },
-        { DM_COPIES, F_SIZE(u1.s1.dmCopies) },
-        { DM_DEFAULTSOURCE, F_SIZE(u1.s1.dmDefaultSource) },
-        { DM_PRINTQUALITY, F_SIZE(u1.s1.dmPrintQuality) },
-        { DM_POSITION, F_SIZE(u1.s2.dmPosition) },
-        { DM_DISPLAYORIENTATION, F_SIZE(u1.s2.dmDisplayOrientation) },
-        { DM_DISPLAYFIXEDOUTPUT, F_SIZE(u1.s2.dmDisplayFixedOutput) },
+        { DM_ORIENTATION, F_SIZE(dmOrientation) },
+        { DM_PAPERSIZE, F_SIZE(dmPaperSize) },
+        { DM_PAPERLENGTH, F_SIZE(dmPaperLength) },
+        { DM_PAPERWIDTH, F_SIZE(dmPaperWidth) },
+        { DM_SCALE, F_SIZE(dmScale) },
+        { DM_COPIES, F_SIZE(dmCopies) },
+        { DM_DEFAULTSOURCE, F_SIZE(dmDefaultSource) },
+        { DM_PRINTQUALITY, F_SIZE(dmPrintQuality) },
+        { DM_POSITION, F_SIZE(dmPosition) },
+        { DM_DISPLAYORIENTATION, F_SIZE(dmDisplayOrientation) },
+        { DM_DISPLAYFIXEDOUTPUT, F_SIZE(dmDisplayFixedOutput) },
         { DM_COLOR, F_SIZE(dmColor) },
         { DM_DUPLEX, F_SIZE(dmDuplex) },
         { DM_YRESOLUTION, F_SIZE(dmYResolution) },
@@ -1919,8 +1915,8 @@ BOOL WINAPI IsValidDevmodeW(PDEVMODEW dm, SIZE_T size)
         { DM_BITSPERPEL, F_SIZE(dmBitsPerPel) },
         { DM_PELSWIDTH, F_SIZE(dmPelsWidth) },
         { DM_PELSHEIGHT, F_SIZE(dmPelsHeight) },
-        { DM_DISPLAYFLAGS, F_SIZE(u2.dmDisplayFlags) },
-        { DM_NUP, F_SIZE(u2.dmNup) },
+        { DM_DISPLAYFLAGS, F_SIZE(dmDisplayFlags) },
+        { DM_NUP, F_SIZE(dmNup) },
         { DM_DISPLAYFREQUENCY, F_SIZE(dmDisplayFrequency) },
         { DM_ICMMETHOD, F_SIZE(dmICMMethod) },
         { DM_ICMINTENT, F_SIZE(dmICMIntent) },
@@ -3283,10 +3279,19 @@ BOOL WINAPI ResetPrinterA(HANDLE hPrinter, LPPRINTER_DEFAULTSA pDefault)
 /*****************************************************************************
  *          ResetPrinterW  [WINSPOOL.@]
  */
-BOOL WINAPI ResetPrinterW(HANDLE hPrinter, LPPRINTER_DEFAULTSW pDefault)
+BOOL WINAPI ResetPrinterW(HANDLE printer, PRINTER_DEFAULTSW *def)
 {
-    FIXME("(%p, %p): stub\n", hPrinter, pDefault);
-    return FALSE;
+    HANDLE handle  = get_backend_handle(printer);
+
+    TRACE("(%p, %p)\n", printer, def);
+
+    if (!handle)
+    {
+        SetLastError( ERROR_INVALID_HANDLE );
+        return FALSE;
+    }
+
+    return backend->fpResetPrinter(handle, def);
 }
 
 /*****************************************************************************

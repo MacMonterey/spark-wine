@@ -853,10 +853,20 @@ static VOID test_thread_processor(void)
    HANDLE curthread,curproc;
    DWORD_PTR processMask,systemMask,retMask;
    SYSTEM_INFO sysInfo;
-   BOOL is_wow64;
+   BOOL is_wow64, old_wow64 = FALSE;
    DWORD ret;
 
    if (!pIsWow64Process || !pIsWow64Process( GetCurrentProcess(), &is_wow64 )) is_wow64 = FALSE;
+
+    if (is_wow64)
+    {
+        TEB64 *teb64 = ULongToPtr(NtCurrentTeb()->GdiBatchCount);
+        if (teb64)
+        {
+            PEB64 *peb64 = ULongToPtr(teb64->Peb);
+            old_wow64 = !peb64->LdrData;
+        }
+    }
 
    sysInfo.dwNumberOfProcessors=0;
    GetSystemInfo(&sysInfo);
@@ -904,7 +914,7 @@ static VOID test_thread_processor(void)
     {
         SetLastError(0xdeadbeef);
         ret = SetThreadIdealProcessor(GetCurrentThread(), MAXIMUM_PROCESSORS + 1);
-        todo_wine
+        todo_wine_if(old_wow64)
         ok(ret != ~0u, "Unexpected return value %lu.\n", ret);
 
         SetLastError(0xdeadbeef);
@@ -1177,9 +1187,6 @@ static DWORD WINAPI test_stack( void *arg )
     ok( stack == NtCurrentTeb()->Tib.StackBase, "wrong stack %p/%p\n",
         stack, NtCurrentTeb()->Tib.StackBase );
     ok( !stack[-1], "wrong data %p = %08lx\n", stack - 1, stack[-1] );
-    ok( stack[-2] == (DWORD)arg, "wrong data %p = %08lx\n", stack - 2, stack[-2] );
-    ok( stack[-3] == (DWORD)test_stack, "wrong data %p = %08lx\n", stack - 3, stack[-3] );
-    ok( !stack[-4], "wrong data %p = %08lx\n", stack - 4, stack[-4] );
     return 0;
 }
 
@@ -1882,7 +1889,13 @@ struct fpu_thread_ctx
 
 static inline unsigned long get_fpu_cw(void)
 {
-#if defined(__i386__) || defined(__x86_64__)
+#ifdef __arm64ec__
+    extern NTSTATUS (*__os_arm64x_get_x64_information)(ULONG,void*,void*);
+    unsigned int cw, sse;
+    __os_arm64x_get_x64_information( 0, &sse, NULL );
+    __os_arm64x_get_x64_information( 2, &cw, NULL );
+    return MAKELONG( cw, sse );
+#elif defined(__i386__) || defined(__x86_64__)
     WORD cw = 0;
     unsigned int sse = 0;
 #ifdef _MSC_VER
@@ -1921,7 +1934,7 @@ static inline void fpu_invalid_operation(void)
 
     d = acos(2.0);
     ok(_isnan(d), "d = %lf\n", d);
-    ok(_statusfp() == _SW_INVALID, "_statusfp() = %x\n", _statusfp());
+    ok(_statusfp() & _SW_INVALID, "_statusfp() = %x\n", _statusfp());
 }
 
 static DWORD WINAPI fpu_thread(void *param)

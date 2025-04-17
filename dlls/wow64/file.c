@@ -414,6 +414,26 @@ NTSTATUS WINAPI wow64_NtFlushBuffersFile( UINT *args )
 
 
 /**********************************************************************
+ *           wow64_NtFlushBuffersFileEx
+ */
+NTSTATUS WINAPI wow64_NtFlushBuffersFileEx( UINT *args )
+{
+    HANDLE handle = get_handle( &args );
+    ULONG flags = get_ulong( &args );
+    void *params = get_ptr( &args );
+    ULONG size = get_ulong( &args );
+    IO_STATUS_BLOCK32 *io32 = get_ptr( &args );
+
+    IO_STATUS_BLOCK io;
+    NTSTATUS status;
+
+    status = NtFlushBuffersFileEx( handle, flags, params, size, iosb_32to64( &io, io32 ) );
+    put_iosb( io32, &io );
+    return status;
+}
+
+
+/**********************************************************************
  *           wow64_NtFsControlFile
  */
 NTSTATUS WINAPI wow64_NtFsControlFile( UINT *args )
@@ -657,8 +677,10 @@ NTSTATUS WINAPI wow64_NtReadFile( UINT *args )
     IO_STATUS_BLOCK io;
     NTSTATUS status;
 
+    if (pBTCpuNotifyReadFile) pBTCpuNotifyReadFile( handle, buffer, len, FALSE, 0 );
     status = NtReadFile( handle, event, apc_32to64( apc ), apc_param_32to64( apc, apc_param ),
                          iosb_32to64( &io, io32 ), buffer, len, offset, key );
+    if (pBTCpuNotifyReadFile) pBTCpuNotifyReadFile( handle, buffer, len, TRUE, status );
     put_iosb( io32, &io );
     return status;
 }
@@ -729,7 +751,11 @@ NTSTATUS WINAPI wow64_NtRemoveIoCompletionEx( UINT *args )
 
     NTSTATUS status;
     ULONG i;
-    FILE_IO_COMPLETION_INFORMATION *info = Wow64AllocateTemp( count * sizeof(*info) );
+    FILE_IO_COMPLETION_INFORMATION *info;
+
+    if (!count) return STATUS_INVALID_PARAMETER;
+
+    info = Wow64AllocateTemp( count * sizeof(*info) );
 
     status = NtRemoveIoCompletionEx( handle, info, count, written, timeout, alertable );
     for (i = 0; i < *written; i++)
@@ -792,7 +818,9 @@ NTSTATUS WINAPI wow64_NtSetInformationFile( UINT *args )
         break;
 
     case FileRenameInformation:   /* FILE_RENAME_INFORMATION */
+    case FileRenameInformationEx:   /* FILE_RENAME_INFORMATION */
     case FileLinkInformation:   /* FILE_LINK_INFORMATION */
+    case FileLinkInformationEx:   /* FILE_LINK_INFORMATION */
         if (len >= sizeof(FILE_RENAME_INFORMATION32))
         {
             OBJECT_ATTRIBUTES attr;
@@ -807,7 +835,7 @@ NTSTATUS WINAPI wow64_NtSetInformationFile( UINT *args )
             get_file_redirect( &attr );
             size = offsetof( FILE_RENAME_INFORMATION, FileName[name.Length/sizeof(WCHAR)] );
             info = Wow64AllocateTemp( size );
-            info->ReplaceIfExists = info32->ReplaceIfExists;
+            info->Flags           = info32->Flags;
             info->RootDirectory   = attr.RootDirectory;
             info->FileNameLength  = name.Length;
             memcpy( info->FileName, name.Buffer, info->FileNameLength );

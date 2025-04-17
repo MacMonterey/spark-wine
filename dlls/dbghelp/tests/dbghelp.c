@@ -31,6 +31,42 @@ static WCHAR wow64_directory[MAX_PATH];
 
 static BOOL (*WINAPI pIsWow64Process2)(HANDLE, USHORT*, USHORT*);
 
+struct startup_cb
+{
+    DWORD pid;
+    HWND wnd;
+};
+
+static BOOL CALLBACK startup_cb_window(HWND wnd, LPARAM lParam)
+{
+    struct startup_cb *info = (struct startup_cb*)lParam;
+    DWORD pid;
+
+    if (GetWindowThreadProcessId(wnd, &pid) && info->pid == pid && IsWindowVisible(wnd))
+    {
+        info->wnd = wnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static BOOL wait_process_window_visible(HANDLE proc, DWORD pid, DWORD timeout)
+{
+    DWORD max_tc = GetTickCount() + timeout;
+    BOOL ret = WaitForInputIdle(proc, timeout);
+    struct startup_cb info = {pid, NULL};
+
+    if (!ret)
+    {
+        do
+        {
+            if (EnumWindows(startup_cb_window, (LPARAM)&info))
+                Sleep(100);
+        } while (!info.wnd && GetTickCount() < max_tc);
+    }
+    return info.wnd != NULL;
+}
+
 #if defined(__i386__) || defined(__x86_64__)
 
 static DWORD CALLBACK stack_walk_thread(void *arg)
@@ -336,6 +372,29 @@ static unsigned get_native_module_count(HANDLE proc)
     return count;
 }
 
+struct module_present
+{
+    const WCHAR* module_name;
+    BOOL found;
+};
+
+static BOOL CALLBACK is_module_present_cb(const WCHAR* name, DWORD64 base, void* usr)
+{
+    struct module_present* present = usr;
+    if (!wcsicmp(name, present->module_name))
+    {
+        present->found = TRUE;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static BOOL is_module_present(HANDLE proc, const WCHAR* module_name)
+{
+    struct module_present present = { .module_name = module_name };
+    return SymEnumerateModulesW64(proc, is_module_present_cb, &present) && present.found;
+}
+
 struct nth_module
 {
     HANDLE              proc;
@@ -373,14 +432,40 @@ static BOOL wrapper_EnumerateLoadedModulesW64(HANDLE proc, PENUMLOADED_MODULES_C
 {
     BOOL ret;
     int retry;
+    int retry_count = !strcmp(winetest_platform, "wine") ? 1 : 5;
 
-    for (retry = !strcmp(winetest_platform, "wine") ? 1 : 5; retry >= 0; retry--)
+    for (retry = retry_count - 1; retry >= 0; retry--)
     {
         ret = EnumerateLoadedModulesW64(proc, cb, usr);
         if (ret || GetLastError() != STATUS_INFO_LENGTH_MISMATCH)
             break;
         Sleep(10);
     }
+    if (retry + 1 < retry_count)
+        trace("used wrapper retry: ret=%d retry=%d top=%d\n", ret, retry, retry_count);
+
+    return ret;
+}
+
+/* wrapper around SymRefreshModuleList which sometimes fails (it's very likely implemented on top
+ * of EnumerateLoadedModulesW64 on native too)
+ */
+static BOOL wrapper_SymRefreshModuleList(HANDLE proc)
+{
+    BOOL ret;
+    int retry;
+    int retry_count = !strcmp(winetest_platform, "wine") ? 1 : 5;
+
+    for (retry = retry_count - 1; retry >= 0; retry--)
+    {
+        ret = SymRefreshModuleList(proc);
+        if (ret || (GetLastError() != STATUS_INFO_LENGTH_MISMATCH && GetLastError() == STATUS_PARTIAL_COPY))
+            break;
+        Sleep(10);
+    }
+    if (retry + 1 < retry_count)
+        trace("used wrapper retry: ret=%d retry=%d top=%d\n", ret, retry, retry_count);
+
     return ret;
 }
 
@@ -452,6 +537,7 @@ static BOOL test_modules(void)
 
     ret = SymRefreshModuleList(dummy);
     ok(!ret, "SymRefreshModuleList should have failed\n");
+    ok(GetLastError() == STATUS_INVALID_CID, "Unexpected last error %lx\n", GetLastError());
 
     count = get_module_count(dummy);
     ok(count == 0, "Unexpected count (%u instead of 0)\n", count);
@@ -472,27 +558,60 @@ static BOOL test_modules(void)
     return TRUE;
 }
 
+struct test_module
+{
+    DWORD64             base;
+    DWORD               size;
+    const char*         name;
+};
+
+static struct test_module get_test_module(const char* path)
+{
+    struct test_module tm;
+    HANDLE dummy = (HANDLE)(ULONG_PTR)0xcafef00d;
+    IMAGEHLP_MODULEW64 im;
+    BOOL ret;
+
+    ret = SymInitialize(dummy, NULL, FALSE);
+    ok(ret, "SymInitialize failed: %lu\n", GetLastError());
+
+    tm.base = SymLoadModuleEx(dummy, NULL, path, NULL, 0, 0, NULL, 0);
+    ok(tm.base != 0, "SymLoadModuleEx failed: %lu\n", GetLastError());
+
+    im.SizeOfStruct = sizeof(im);
+    ret = SymGetModuleInfoW64(dummy, tm.base, &im);
+    ok(ret, "SymGetModuleInfoW64 failed: %lu\n", GetLastError());
+
+    tm.size = im.ImageSize;
+    ok(tm.base == im.BaseOfImage, "Unexpected image base\n");
+    ok(tm.size == get_module_size(path), "Unexpected size\n");
+    tm.name = path;
+
+    ret = SymCleanup(dummy);
+    ok(ret, "SymCleanup failed: %lu\n", GetLastError());
+
+    return tm;
+}
+
 static void test_modules_overlap(void)
 {
     BOOL ret;
-    DWORD64 base;
+    DWORD64 base[2];
     const DWORD64 base1 = 0x00010000;
     HANDLE dummy = (HANDLE)(ULONG_PTR)0xcafef00d;
     const char* target1_dll = "c:\\windows\\system32\\kernel32.dll";
     const char* target2_dll = "c:\\windows\\system32\\winmm.dll";
-    DWORD imsize = get_module_size(target1_dll);
+    const char* target3_dll = "c:\\windows\\system32\\idontexist.dll";
     char buffer[512];
     IMAGEHLP_SYMBOL64* sym = (void*)buffer;
 
     int i, j;
-    struct test_module
-    {
-        DWORD64             base;
-        DWORD               size;
-        const char*         name;
-    };
+    struct test_module target1_dflt = get_test_module(target1_dll);
+    DWORD64 base0 = target1_dflt.base;
+    DWORD64 imsize0 = target1_dflt.size;
     const struct test
     {
+        DWORD64             first_base;
         struct test_module  input;
         DWORD               error_code;
         struct test_module  outputs[2];
@@ -500,48 +619,86 @@ static void test_modules_overlap(void)
     tests[] =
     {
         /* cases where first module is left "untouched" and second not loaded */
-        {{base1,              0,          target1_dll}, ERROR_SUCCESS, {{base1, imsize, "kernel32"},{0}}},
-        {{base1,              imsize,     target1_dll}, ERROR_SUCCESS, {{base1, imsize, "kernel32"},{0}}},
-        {{base1,              imsize / 2, target1_dll}, ERROR_SUCCESS, {{base1, imsize, "kernel32"},{0}}},
-        {{base1,              imsize * 2, target1_dll}, ERROR_SUCCESS, {{base1, imsize, "kernel32"},{0}}},
+/* 0*/  {base1, {base1,               0,           target1_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+        {base1, {base1,               imsize0,     target1_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+        {base1, {base1,               imsize0 / 2, target1_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+        {base1, {base1,               imsize0 * 2, target1_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+
+        {base1, {base1,               0,           target2_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+/* 5*/  {base1, {base1,               imsize0,     target2_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+        {base1, {base1,               imsize0 / 2, target2_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+        {base1, {base1,               imsize0 * 2, target2_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+
+        {base1, {base1,               0,           target3_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+        {base1, {base1,               imsize0,     target3_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+/*10*/  {base1, {base1,               imsize0 / 2, target3_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+        {base1, {base1,               imsize0 * 2, target3_dll}, ERROR_SUCCESS, {{base1, imsize0, "kernel32"}, {0}}},
+
+        {base0, {base0,               0,           target1_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {base0,               imsize0,     target1_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {base0,               imsize0 / 2, target1_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+/*15*/  {base0, {base0,               imsize0 * 2, target1_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+
+        {base0, {base0,               0,           target2_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {base0,               imsize0,     target2_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {base0,               imsize0 / 2, target2_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {base0,               imsize0 * 2, target2_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+
+/*20*/  {base0, {base0,               0,           target3_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {base0,               imsize0,     target3_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {base0,               imsize0 / 2, target3_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {base0,               imsize0 * 2, target3_dll}, ERROR_SUCCESS, {{base0, imsize0, "kernel32"}, {0}}},
+
+        /* error cases for second module */
+        {base0, {0,                   0,           target1_dll}, ERROR_INVALID_ADDRESS, {{base0, imsize0, "kernel32"}, {0}}},
+/*25*/  {base0, {0,                   imsize0,     target1_dll}, ERROR_INVALID_ADDRESS, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {0,                   imsize0 / 2, target1_dll}, ERROR_INVALID_ADDRESS, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {0,                   imsize0 * 2, target1_dll}, ERROR_INVALID_ADDRESS, {{base0, imsize0, "kernel32"}, {0}}},
+
+        {base0, {0,                   0,           target3_dll}, ERROR_NO_MORE_FILES, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {0,                   imsize0,     target3_dll}, ERROR_NO_MORE_FILES, {{base0, imsize0, "kernel32"}, {0}}},
+/*30*/  {base0, {0,                   imsize0 / 2, target3_dll}, ERROR_NO_MORE_FILES, {{base0, imsize0, "kernel32"}, {0}}},
+        {base0, {0,                   imsize0 * 2, target3_dll}, ERROR_NO_MORE_FILES, {{base0, imsize0, "kernel32"}, {0}}},
 
         /* cases where first module is unloaded and replaced by second module */
-        {{base1 + imsize / 2, imsize,     target1_dll}, ~0,            {{base1 + imsize / 2, imsize,     "kernel32"},{0}}},
-        {{base1 + imsize / 3, imsize / 3, target1_dll}, ~0,            {{base1 + imsize / 3, imsize / 3, "kernel32"},{0}}},
-        {{base1 + imsize / 2, imsize,     target2_dll}, ~0,            {{base1 + imsize / 2, imsize,     "winmm"},{0}}},
-        {{base1 + imsize / 3, imsize / 3, target2_dll}, ~0,            {{base1 + imsize / 3, imsize / 3, "winmm"},{0}}},
+        {base1, {base1 + imsize0 / 2, imsize0,     target1_dll}, ~0,            {{base1 + imsize0 / 2, imsize0,     "kernel32"}, {0}}},
+        {base1, {base1 + imsize0 / 3, imsize0 / 3, target1_dll}, ~0,            {{base1 + imsize0 / 3, imsize0 / 3, "kernel32"}, {0}}},
+        {base1, {base1 + imsize0 / 2, imsize0,     target2_dll}, ~0,            {{base1 + imsize0 / 2, imsize0,     "winmm"}, {0}}},
+/*35*/  {base1, {base1 + imsize0 / 3, imsize0 / 3, target2_dll}, ~0,            {{base1 + imsize0 / 3, imsize0 / 3, "winmm"}, {0}}},
 
         /* cases where second module is actually loaded */
-        {{base1 + imsize,     imsize,     target1_dll}, ~0,            {{base1, imsize, "kernel32"}, {base1 + imsize, imsize, "kernel32"}}},
-        {{base1 - imsize / 2, imsize,     target1_dll}, ~0,            {{base1, imsize, "kernel32"}, {base1 - imsize / 2, imsize, NULL}}},
+        {base1, {base1 + imsize0,     imsize0,     target1_dll}, ~0,            {{base1, imsize0, "kernel32"}, {base1 + imsize0, imsize0, "kernel32"}}},
+        {base1, {base1 - imsize0 / 2, imsize0,     target1_dll}, ~0,            {{base1, imsize0, "kernel32"}, {base1 - imsize0 / 2, imsize0, NULL}}},
         /* we mark with a NULL modulename the cases where the module is loaded, but isn't visible
          * (SymGetModuleInfo fails in callback) as it's base address is inside the first loaded module.
          */
-        {{base1 + imsize,     imsize,     target2_dll}, ~0,            {{base1, imsize, "kernel32"}, {base1 + imsize, imsize, "winmm"}}},
-        {{base1 - imsize / 2, imsize,     target2_dll}, ~0,            {{base1, imsize, "kernel32"}, {base1 - imsize / 2, imsize, NULL}}},
+        {base1, {base1 + imsize0,     imsize0,     target2_dll}, ~0,            {{base1, imsize0, "kernel32"}, {base1 + imsize0, imsize0, "winmm"}}},
+        {base1, {base1 - imsize0 / 2, imsize0,     target2_dll}, ~0,            {{base1, imsize0, "kernel32"}, {base1 - imsize0 / 2, imsize0, NULL}}},
     };
-
-    ok(imsize, "Cannot get image size\n");
 
     for (i = 0; i < ARRAY_SIZE(tests); i++)
     {
+        winetest_push_context("overlap tests[%d]", i);
         ret = SymInitialize(dummy, NULL, FALSE);
         ok(ret, "SymInitialize failed: %lu\n", GetLastError());
 
-        base = SymLoadModuleEx(dummy, NULL, target1_dll, NULL, base1, 0, NULL, 0);
-        ok(base == base1, "SymLoadModuleEx failed: %lu\n", GetLastError());
-        ret = SymAddSymbol(dummy, base1, "winetest_symbol_virtual", base1 + (3 * imsize) / 4, 13, 0);
+        base[0] = SymLoadModuleEx(dummy, NULL, target1_dll, NULL, tests[i].first_base, 0, NULL, 0);
+        ok(base[0] == tests[i].first_base ? tests[i].first_base : base0, "SymLoadModuleEx failed: %lu\n", GetLastError());
+        ret = SymAddSymbol(dummy, base[0], "winetest_symbol_virtual", base[0] + (3 * imsize0) / 4, 13, 0);
         ok(ret, "SymAddSymbol failed: %lu\n", GetLastError());
 
-        base = SymLoadModuleEx(dummy, NULL, tests[i].input.name, NULL, tests[i].input.base, tests[i].input.size, NULL, 0);
+        base[1] = SymLoadModuleEx(dummy, NULL, tests[i].input.name, NULL, tests[i].input.base, tests[i].input.size, NULL, 0);
         if (tests[i].error_code != ~0)
         {
-            ok(base == 0, "SymLoadModuleEx should have failed\n");
-            ok(GetLastError() == tests[i].error_code, "Wrong error %lu\n", GetLastError());
+            ok(base[1] == 0, "SymLoadModuleEx should have failed\n");
+            ok(GetLastError() == tests[i].error_code ||
+               /* Win8 returns this */
+               (tests[i].error_code == ERROR_NO_MORE_FILES && broken(GetLastError() == ERROR_INVALID_HANDLE)),
+               "Wrong error %lu\n", GetLastError());
         }
         else
         {
-            ok(base == tests[i].input.base, "SymLoadModuleEx failed: %lu\n", GetLastError());
+            ok(base[1] == tests[i].input.base, "SymLoadModuleEx failed: %lu\n", GetLastError());
         }
         for (j = 0; j < ARRAY_SIZE(tests[i].outputs); j++)
         {
@@ -566,11 +723,11 @@ static void test_modules_overlap(void)
         sym->SizeOfStruct = sizeof(*sym);
         sym->MaxNameLength = sizeof(buffer) - sizeof(*sym);
         ret = SymGetSymFromName64(dummy, "winetest_symbol_virtual", sym);
-        if (tests[i].error_code == ERROR_SUCCESS || tests[i].outputs[1].base)
+        if (tests[i].error_code != ~0 || tests[i].outputs[1].base)
         {
             /* first module is not unloaded, so our added symbol should be present, with right attributes */
             ok(ret, "SymGetSymFromName64 has failed: %lu (%d, %d)\n", GetLastError(), i, j);
-            ok(sym->Address == base1 + (3 * imsize) / 4, "Unexpected size %lu\n", sym->Size);
+            ok(sym->Address == base[0] + (3 * imsize0) / 4, "Unexpected size %lu\n", sym->Size);
             ok(sym->Size == 13, "Unexpected size %lu\n", sym->Size);
             ok(sym->Flags & SYMFLAG_VIRTUAL, "Unexpected flag %lx\n", sym->Flags);
         }
@@ -581,6 +738,7 @@ static void test_modules_overlap(void)
         }
         ret = SymCleanup(dummy);
         ok(ret, "SymCleanup failed: %lu\n", GetLastError());
+        winetest_pop_context();
     }
 }
 
@@ -713,12 +871,17 @@ static void test_loaded_modules(void)
     ok(ret, "got error %lu\n", GetLastError());
     strcat(buffer, "\\msinfo32.exe");
 
+    /* testing invalid process handle */
+    ret = wrapper_EnumerateLoadedModulesW64((HANDLE)(ULONG_PTR)0xffffffc0, NULL, FALSE);
+    ok(!ret, "EnumerateLoadedModulesW64 should have failed\n");
+    ok(GetLastError() == STATUS_INVALID_CID, "Unexpected last error %lx\n", GetLastError());
+
     /* testing with child process of different machines */
     ret = CreateProcessA(NULL, buffer, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
     ok(ret, "CreateProcess failed: %lu\n", GetLastError());
 
-    ret = WaitForInputIdle(pi.hProcess, 5000);
-    ok(!ret, "wait timed out\n");
+    ret = wait_process_window_visible(pi.hProcess, pi.dwProcessId, 5000);
+    ok(ret, "wait timed out\n");
 
     ret = SymInitialize(pi.hProcess, NULL, FALSE);
     ok(ret, "SymInitialize failed: %lu\n", GetLastError());
@@ -764,6 +927,7 @@ static void test_loaded_modules(void)
                aggregation.count_systemdir, aggregation.count_wowdir);
             break;
         case PCSKIND_WINE_OLD_WOW64:
+            todo_wine
             ok(aggregation.count_systemdir == 1 && aggregation.count_wowdir > 2, "Wrong directory aggregation count %u %u\n",
                aggregation.count_systemdir, aggregation.count_wowdir);
             break;
@@ -772,9 +936,10 @@ static void test_loaded_modules(void)
 
     pcskind = get_process_kind(pi.hProcess);
 
-    ret = SymRefreshModuleList(pi.hProcess);
-    todo_wine_if(pcskind == PCSKIND_WOW64)
-    ok(ret || broken(GetLastError() == STATUS_PARTIAL_COPY /* Win11 in some cases */), "SymRefreshModuleList failed: %lu\n", GetLastError());
+    ret = wrapper_SymRefreshModuleList(pi.hProcess);
+    ok(ret || broken(GetLastError() == STATUS_PARTIAL_COPY /* Win11 in some cases */ ||
+                             GetLastError() == STATUS_INFO_LENGTH_MISMATCH /* Win11 in some cases */),
+       "SymRefreshModuleList failed: %lx\n", GetLastError());
 
     if (!strcmp(winetest_platform, "wine"))
     {
@@ -797,8 +962,8 @@ static void test_loaded_modules(void)
         ret = CreateProcessA(NULL, buffer, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
         if (ret)
         {
-            ret = WaitForInputIdle(pi.hProcess, 5000);
-            ok(!ret, "wait timed out\n");
+            ret = wait_process_window_visible(pi.hProcess, pi.dwProcessId, 5000);
+            ok(ret, "wait timed out\n");
 
             ret = SymInitialize(pi.hProcess, NULL, FALSE);
             ok(ret, "SymInitialize failed: %lu\n", GetLastError());
@@ -832,8 +997,8 @@ static void test_loaded_modules(void)
                    "Wrong directory aggregation count %u %u\n",
                    aggregation.count_systemdir, aggregation.count_wowdir);
             }
-            ret = SymRefreshModuleList(pi.hProcess);
-            ok(ret, "SymRefreshModuleList failed: %lu\n", GetLastError());
+            ret = wrapper_SymRefreshModuleList(pi.hProcess);
+            ok(ret, "SymRefreshModuleList failed: %lx\n", GetLastError());
 
             if (!strcmp(winetest_platform, "wine"))
             {
@@ -894,8 +1059,8 @@ static void test_loaded_modules(void)
                 break;
             }
 
-            ret = SymRefreshModuleList(pi.hProcess);
-            ok(ret, "SymRefreshModuleList failed: %lu\n", GetLastError());
+            ret = wrapper_SymRefreshModuleList(pi.hProcess);
+            ok(ret, "SymRefreshModuleList failed: %lx\n", GetLastError());
 
             if (!strcmp(winetest_platform, "wine"))
             {
@@ -1241,6 +1406,7 @@ static void test_live_modules_proc(WCHAR* exename, BOOL with_32)
         ok(aggregation_event.count_exe == 1,                    "Unexpected event.count_exe %u\n",       aggregation_event.count_exe);
         ok(aggregation_event.count_32bit >= MODCOUNT,           "Unexpected event.count_32bit %u\n",     aggregation_event.count_32bit);
         ok(aggregation_event.count_64bit == 0,                  "Unexpected event.count_64bit %u\n",     aggregation_event.count_64bit);
+        todo_wine
         ok(aggregation_event.count_systemdir == 0,              "Unexpected event.count_systemdir %u\n", aggregation_event.count_systemdir);
         ok(aggregation_event.count_wowdir >= MODCOUNT,          "Unexpected event.count_wowdir %u\n",    aggregation_event.count_wowdir);
         ok(aggregation_event.count_ntdll == 1,                  "Unexpected event.count_ntdll %u\n",     aggregation_event.count_ntdll);
@@ -1306,6 +1472,7 @@ static void test_live_modules_proc(WCHAR* exename, BOOL with_32)
         ok(aggregation_event.count_exe == 1,                    "Unexpected event.count_exe %u\n",       aggregation_event.count_exe);
         ok(aggregation_event.count_32bit >= MODCOUNT,           "Unexpected event.count_32bit %u\n",     aggregation_event.count_32bit);
         ok(aggregation_event.count_64bit == 0,                  "Unexpected event.count_64bit %u\n",     aggregation_event.count_64bit);
+        todo_wine
         ok(aggregation_event.count_systemdir == 1,              "Unexpected event.count_systemdir %u\n", aggregation_event.count_systemdir);
         ok(aggregation_event.count_wowdir >= MODCOUNT,          "Unexpected event.count_wowdir %u\n",    aggregation_event.count_wowdir);
         ok(aggregation_event.count_ntdll == 1,                  "Unexpected event.count_ntdll %u\n",     aggregation_event.count_ntdll);
@@ -1377,6 +1544,112 @@ static void test_live_modules(void)
     }
 }
 
+#define test_function_table_main_module(b) _test_function_table_entry(__LINE__, NULL, #b, (DWORD64)(DWORD_PTR)&(b))
+#define test_function_table_module(a, b)   _test_function_table_entry(__LINE__, a,    #b, (DWORD64)(DWORD_PTR)GetProcAddress(GetModuleHandleA(a), (b)))
+static void *_test_function_table_entry(unsigned lineno, const char *modulename, const char *name, DWORD64 addr)
+{
+    DWORD64 base_module = (DWORD64)(DWORD_PTR)GetModuleHandleA(modulename);
+
+    if (RtlImageNtHeader(GetModuleHandleW(NULL))->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64)
+    {
+        IMAGE_AMD64_RUNTIME_FUNCTION_ENTRY *func;
+
+        func = SymFunctionTableAccess64(GetCurrentProcess(), addr);
+        ok_(__FILE__, lineno)(func != NULL, "Couldn't find function table for %s\n", name);
+        if (func)
+        {
+            ok_(__FILE__, lineno)(func->BeginAddress == addr - base_module, "Unexpected start of function\n");
+            ok_(__FILE__, lineno)(func->BeginAddress < func->EndAddress, "Unexpected end of function\n");
+            ok_(__FILE__, lineno)((func->UnwindData & 1) == 0, "Unexpected chained runtime function\n");
+        }
+
+        return func;
+    }
+    return NULL;
+}
+
+static void test_function_tables(void)
+{
+    void *ptr1, *ptr2;
+
+    SymInitialize(GetCurrentProcess(), NULL, TRUE);
+    ptr1 = test_function_table_main_module(test_live_modules);
+    ptr2 = test_function_table_main_module(test_function_tables);
+    ok(ptr1 == ptr2, "Expecting unique storage area\n");
+    ptr2 = test_function_table_module("kernel32.dll", "CreateFileMappingA");
+    ok(ptr1 == ptr2, "Expecting unique storage area\n");
+    SymCleanup(GetCurrentProcess());
+}
+
+static void test_refresh_modules(void)
+{
+    BOOL ret;
+    unsigned count, count_current;
+    HMODULE hmod;
+    IMAGEHLP_MODULEW64 module_info = { .SizeOfStruct = sizeof(module_info) };
+
+    /* pick a DLL: which isn't already loaded by test, and that will not load other DLLs for deps */
+    static const WCHAR* unused_dll = L"psapi";
+
+    ret = SymInitialize(GetCurrentProcess(), 0, TRUE);
+    ok(ret, "SymInitialize failed: %lu\n", GetLastError());
+
+    count = get_module_count(GetCurrentProcess());
+    ok(count, "Unexpected module count %u\n", count);
+
+    ret = SymCleanup(GetCurrentProcess());
+    ok(ret, "SymCleanup failed: %lu\n", GetLastError());
+
+    ret = SymInitialize(GetCurrentProcess(), 0, FALSE);
+    ok(ret, "SymInitialize failed: %lu\n", GetLastError());
+
+    count_current = get_module_count(GetCurrentProcess());
+    ok(!count_current, "Unexpected module count %u\n", count_current);
+
+    ret = wrapper_SymRefreshModuleList(GetCurrentProcess());
+    ok(ret, "SymRefreshModuleList failed: %lx\n", GetLastError());
+
+    count_current = get_module_count(GetCurrentProcess());
+    ok(count == count_current, "Unexpected module count %u, %u\n", count, count_current);
+
+    hmod = GetModuleHandleW(unused_dll);
+    ok(hmod == NULL, "Expecting DLL %ls not be loaded\n", unused_dll);
+
+    hmod = LoadLibraryW(unused_dll);
+    ok(hmod != NULL, "LoadLibraryW failed: %lu\n", GetLastError());
+
+    count_current = get_module_count(GetCurrentProcess());
+    ok(count == count_current, "Unexpected module count %u, %u\n", count, count_current);
+    ret = is_module_present(GetCurrentProcess(), unused_dll);
+    ok(!ret, "Couldn't find module %ls\n", unused_dll);
+
+    ret = wrapper_SymRefreshModuleList(GetCurrentProcess());
+    ok(ret, "SymRefreshModuleList failed: %lx\n", GetLastError());
+
+    count_current = get_module_count(GetCurrentProcess());
+    ok(count + 1 == count_current, "Unexpected module count %u, %u\n", count, count_current);
+    ret = is_module_present(GetCurrentProcess(), unused_dll);
+    ok(ret, "Couldn't find module %ls\n", unused_dll);
+
+    ret = FreeLibrary(hmod);
+    ok(ret, "LoadLibraryW failed: %lu\n", GetLastError());
+
+    count_current = get_module_count(GetCurrentProcess());
+    ok(count + 1 == count_current, "Unexpected module count %u, %u\n", count, count_current);
+
+    ret = wrapper_SymRefreshModuleList(GetCurrentProcess());
+    ok(ret, "SymRefreshModuleList failed: %lx\n", GetLastError());
+
+    /* SymRefreshModuleList() doesn't remove the unloaded modules... */
+    count_current = get_module_count(GetCurrentProcess());
+    ok(count + 1 == count_current, "Unexpected module count %u != %u\n", count, count_current);
+    ret = is_module_present(GetCurrentProcess(), unused_dll);
+    ok(ret, "Couldn't find module %ls\n", unused_dll);
+
+    ret = SymCleanup(GetCurrentProcess());
+    ok(ret, "SymCleanup failed: %lu\n", GetLastError());
+}
+
 START_TEST(dbghelp)
 {
     BOOL ret;
@@ -1407,5 +1680,7 @@ START_TEST(dbghelp)
         test_modules_overlap();
         test_loaded_modules();
         test_live_modules();
+        test_refresh_modules();
     }
+    test_function_tables();
 }

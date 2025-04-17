@@ -111,14 +111,14 @@ static HRESULT WINAPI testD3DXInclude_open(ID3DXInclude *iface, D3DXINCLUDE_TYPE
     if (!strcmp(filename, "shader.vsh"))
     {
         size = test_include->terminated_data ? sizeof(shader) : sizeof(shader) - 1;
-        buffer = HeapAlloc(GetProcessHeap(), 0, size);
+        buffer = malloc(size);
         memcpy(buffer, shader, size);
         *bytes = size;
     }
     else if (!strcmp(filename, "incl.vsh"))
     {
         size = test_include->terminated_data ? sizeof(include) : sizeof(include) - 1;
-        buffer = HeapAlloc(GetProcessHeap(), 0, size);
+        buffer = malloc(size);
         memcpy(buffer, include, size);
         *bytes = size;
         /* This is included from the first D3DXAssembleShader with non-null ID3DXInclude test
@@ -129,14 +129,14 @@ static HRESULT WINAPI testD3DXInclude_open(ID3DXInclude *iface, D3DXINCLUDE_TYPE
     else if (!strcmp(filename, "incl2.vsh"))
     {
         size = test_include->terminated_data ? sizeof(include2) : sizeof(include2) - 1;
-        buffer = HeapAlloc(GetProcessHeap(), 0, size);
+        buffer = malloc(size);
         memcpy(buffer, include2, size);
         *bytes = size;
     }
     else if (!strcmp(filename, "incl3.vsh"))
     {
         size = test_include->terminated_data ? sizeof(include3) : sizeof(include3) - 1;
-        buffer = HeapAlloc(GetProcessHeap(), 0, size);
+        buffer = malloc(size);
         memcpy(buffer, include3, size);
         *bytes = size;
         ok(parent_data != NULL && !strncmp(include2, parent_data, strlen(include2)), "wrong parent_data value.\n");
@@ -144,7 +144,7 @@ static HRESULT WINAPI testD3DXInclude_open(ID3DXInclude *iface, D3DXINCLUDE_TYPE
     else if (!strcmp(filename, "include/incl3.vsh"))
     {
         size = test_include->terminated_data ? sizeof(include) : sizeof(include) - 1;
-        buffer = HeapAlloc(GetProcessHeap(), 0, size);
+        buffer = malloc(size);
         memcpy(buffer, include, size);
         *bytes = size;
         ok(!parent_data, "wrong parent_data value.\n");
@@ -160,7 +160,7 @@ static HRESULT WINAPI testD3DXInclude_open(ID3DXInclude *iface, D3DXINCLUDE_TYPE
 
 static HRESULT WINAPI testD3DXInclude_close(ID3DXInclude *iface, const void *data)
 {
-    HeapFree(GetProcessHeap(), 0, (void *)data);
+    free((void *)data);
     return S_OK;
 }
 
@@ -348,13 +348,18 @@ static void assembleshader_test(void)
             hr = D3DXAssembleShaderFromFileA(shader3_vsh_path, NULL, NULL,
                                              D3DXSHADER_SKIPVALIDATION,
                                              &shader, &messages);
-            ok(hr == D3D_OK, "Unexpected hr %#lx.\n", hr);
+            if (D3DX_SDK_VERSION < 42)
+                ok(hr == D3D_OK, "Unexpected hr %#lx.\n", hr);
+            else
+                todo_wine ok(hr == D3DXERR_INVALIDDATA, "Unexpected hr %#lx.\n", hr);
             if(messages) {
                 trace("D3DXAssembleShaderFromFile path search messages:\n%s", (char *)ID3DXBuffer_GetBufferPointer(messages));
                 ID3DXBuffer_Release(messages);
             }
             if(shader) ID3DXBuffer_Release(shader);
-        } else skip("Couldn't create \"include\" directory\n");
+        }
+        else
+            skip("Couldn't create \"include\" directory, error %#lx\n", GetLastError());
 
         delete_file("shader.vsh");
         delete_file("incl.vsh");
@@ -483,13 +488,18 @@ static void d3dxpreprocess_test(void)
             messages = NULL;
             hr = D3DXPreprocessShaderFromFileA(shader3_vsh_path, NULL, NULL,
                                                &shader, &messages);
-            ok(hr == D3D_OK, "Unexpected hr %#lx.\n", hr);
+            if (D3DX_SDK_VERSION < 42)
+                ok(hr == D3D_OK, "Unexpected hr %#lx.\n", hr);
+            else
+                todo_wine ok(hr == E_FAIL, "Unexpected hr %#lx.\n", hr);
             if(messages) {
                 trace("D3DXPreprocessShaderFromFile path search messages:\n%s", (char *)ID3DXBuffer_GetBufferPointer(messages));
                 ID3DXBuffer_Release(messages);
             }
             if(shader) ID3DXBuffer_Release(shader);
-        } else skip("Couldn't create \"include\" directory\n");
+        }
+        else
+            skip("Couldn't create \"include\" directory, error %#lx\n", GetLastError());
 
         /* D3DXPreprocessShaderFromFile + #include test */
         shader = NULL;

@@ -18,7 +18,8 @@
  */
 
 #include "wined3d_private.h"
-#include "wined3d_shaders.h"
+#include "wined3d_gl.h"
+#include "wined3d_vk.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(d3d);
 
@@ -43,7 +44,6 @@ static GLenum get_texture_view_target(const struct wined3d_gl_info *gl_info,
     view_types[] =
     {
         {GL_TEXTURE_CUBE_MAP,  0, GL_TEXTURE_CUBE_MAP},
-        {GL_TEXTURE_RECTANGLE, 0, GL_TEXTURE_RECTANGLE},
         {GL_TEXTURE_3D,        0, GL_TEXTURE_3D},
 
         {GL_TEXTURE_2D,       0,                          GL_TEXTURE_2D},
@@ -81,11 +81,28 @@ static GLenum get_texture_view_target(const struct wined3d_gl_info *gl_info,
     return texture_gl->target;
 }
 
+static bool find_format_plane_idx(const struct wined3d_format *resource_format,
+        const struct wined3d_format *plane_format, unsigned int *plane_idx)
+{
+    if (plane_format->id == resource_format->plane_formats[0])
+    {
+        *plane_idx = 0;
+        return true;
+    }
+    if (plane_format->id == resource_format->plane_formats[1])
+    {
+        *plane_idx = 1;
+        return true;
+    }
+    return false;
+}
+
 static const struct wined3d_format *validate_resource_view(const struct wined3d_view_desc *desc,
         struct wined3d_resource *resource, BOOL mip_slice, BOOL allow_srgb_toggle)
 {
     const struct wined3d_adapter *adapter = resource->device->adapter;
     const struct wined3d_format *format;
+    unsigned int plane_idx;
 
     format = wined3d_get_format(adapter, desc->format_id, resource->bind_flags);
     if (resource->type == WINED3D_RTYPE_BUFFER && (desc->flags & WINED3D_VIEW_BUFFER_RAW))
@@ -138,7 +155,16 @@ static const struct wined3d_format *validate_resource_view(const struct wined3d_
         struct wined3d_texture *texture = texture_from_resource(resource);
         unsigned int depth_or_layer_count;
 
-        if (resource->format->id != format->id && !wined3d_format_is_typeless(resource->format)
+        if (resource->format->attrs & WINED3D_FORMAT_ATTR_PLANAR)
+        {
+            if (!find_format_plane_idx(resource->format, format, &plane_idx))
+            {
+                WARN("Invalid view format %s for planar format %s.\n",
+                        debug_d3dformat(format->id), debug_d3dformat(resource->format->id));
+                return NULL;
+            }
+        }
+        else if (resource->format->id != format->id && !wined3d_format_is_typeless(resource->format)
                 && (!allow_srgb_toggle || !wined3d_formats_are_srgb_variants(resource->format->id, format->id)))
         {
             WARN("Trying to create incompatible view for non typeless format %s.\n",
@@ -175,6 +201,12 @@ static void create_texture_view(struct wined3d_gl_view *view, GLenum view_target
 
     view_format_gl = wined3d_format_gl(view_format);
     view->target = view_target;
+
+    if (texture_gl->t.resource.format->attrs & WINED3D_FORMAT_ATTR_PLANAR)
+    {
+        FIXME("Planar views are not implemented for OpenGL.\n");
+        return;
+    }
 
     context = context_acquire(texture_gl->t.resource.device, NULL, 0);
     context_gl = wined3d_context_gl(context);
@@ -267,7 +299,9 @@ static void create_buffer_texture(struct wined3d_gl_view *view, struct wined3d_c
 
     view->target = GL_TEXTURE_BUFFER;
     if (!view->name)
+    {
         gl_info->gl_ops.gl.p_glGenTextures(1, &view->name);
+    }
 
     wined3d_context_gl_bind_texture(context_gl, GL_TEXTURE_BUFFER, view->name);
     if (gl_info->supported[ARB_TEXTURE_BUFFER_RANGE])
@@ -371,10 +405,7 @@ ULONG CDECL wined3d_rendertarget_view_incref(struct wined3d_rendertarget_view *v
 
 void wined3d_rendertarget_view_cleanup(struct wined3d_rendertarget_view *view)
 {
-    /* Call wined3d_object_destroyed() before releasing the resource,
-     * since releasing the resource may end up destroying the parent. */
     view->parent_ops->wined3d_object_destroyed(view->parent);
-    wined3d_resource_decref(view->resource);
 }
 
 ULONG CDECL wined3d_rendertarget_view_decref(struct wined3d_rendertarget_view *view)
@@ -385,9 +416,14 @@ ULONG CDECL wined3d_rendertarget_view_decref(struct wined3d_rendertarget_view *v
 
     if (!refcount)
     {
+        struct wined3d_resource *resource = view->resource;
+
+        /* Release the resource after destroying the view.
+         * See wined3d_shader_resource_view_decref(). */
         wined3d_mutex_lock();
-        view->resource->device->adapter->adapter_ops->adapter_destroy_rendertarget_view(view);
+        resource->device->adapter->adapter_ops->adapter_destroy_rendertarget_view(view);
         wined3d_mutex_unlock();
+        wined3d_resource_decref(resource);
     }
 
     return refcount;
@@ -451,24 +487,14 @@ void wined3d_rendertarget_view_get_drawable_size(const struct wined3d_rendertarg
         *width = texture->resource.width;
         *height = texture->resource.height;
     }
-    else if (wined3d_settings.offscreen_rendering_mode == ORM_BACKBUFFER)
-    {
-        const struct wined3d_swapchain_desc *desc = &context->swapchain->state.desc;
-
-        /* The drawable size of a backbuffer / aux buffer offscreen target is
-         * the size of the current context's drawable, which is the size of
-         * the back buffer of the swapchain the active context belongs to. */
-        *width = desc->backbuffer_width;
-        *height = desc->backbuffer_height;
-    }
     else
     {
         unsigned int level_idx = view->sub_resource_idx % texture->level_count;
 
         /* The drawable size of an FBO target is the OpenGL texture size,
          * which is the power of two size. */
-        *width = wined3d_texture_get_level_pow2_width(texture, level_idx);
-        *height = wined3d_texture_get_level_pow2_height(texture, level_idx);
+        *width = wined3d_texture_get_level_width(texture, level_idx);
+        *height = wined3d_texture_get_level_height(texture, level_idx);
     }
 }
 
@@ -747,11 +773,13 @@ static VkBufferView wined3d_view_vk_create_vk_buffer_view(struct wined3d_context
 
 static VkImageView wined3d_view_vk_create_vk_image_view(struct wined3d_context_vk *context_vk,
         const struct wined3d_view_desc *desc, struct wined3d_texture_vk *texture_vk,
-        const struct wined3d_format_vk *view_format_vk, struct color_fixup_desc fixup, bool rtv)
+        const struct wined3d_format_vk *view_format_vk, struct color_fixup_desc fixup, bool rtv,
+        VkImageUsageFlags usage)
 {
     const struct wined3d_resource *resource = &texture_vk->t.resource;
     const struct wined3d_vk_info *vk_info = context_vk->vk_info;
     const struct wined3d_format_vk *format_vk;
+    VkImageViewUsageCreateInfoKHR usage_info;
     struct wined3d_device_vk *device_vk;
     VkImageViewCreateInfo create_info;
     VkImageView vk_image_view;
@@ -824,6 +852,13 @@ static VkImageView wined3d_view_vk_create_vk_image_view(struct wined3d_context_v
         if (view_format_vk->f.green_size)
             create_info.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
     }
+    else if (resource->format->attrs & WINED3D_FORMAT_ATTR_PLANAR)
+    {
+        unsigned int plane_idx = 0;
+
+        find_format_plane_idx(resource->format, &view_format_vk->f, &plane_idx);
+        create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT << plane_idx;
+    }
     else
     {
         create_info.subresourceRange.aspectMask = vk_aspect_mask_from_format(&format_vk->f);
@@ -843,6 +878,13 @@ static VkImageView wined3d_view_vk_create_vk_image_view(struct wined3d_context_v
         create_info.subresourceRange.baseArrayLayer = desc->u.texture.layer_idx;
         create_info.subresourceRange.layerCount = desc->u.texture.layer_count;
     }
+    if (vk_info->supported[WINED3D_VK_KHR_MAINTENANCE2] || vk_info->api_version >= VK_API_VERSION_1_1)
+    {
+        usage_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO_KHR;
+        usage_info.pNext = NULL;
+        usage_info.usage = usage;
+        create_info.pNext = &usage_info;
+    }
     if ((vr = VK_CALL(vkCreateImageView(device_vk->vk_device, &create_info, NULL, &vk_image_view))) < 0)
     {
         ERR("Failed to create Vulkan image view, vr %s.\n", wined3d_debug_vkresult(vr));
@@ -860,6 +902,7 @@ static void wined3d_render_target_view_vk_cs_init(void *object)
     struct wined3d_texture_vk *texture_vk;
     struct wined3d_resource *resource;
     struct wined3d_context *context;
+    VkImageUsageFlags vk_usage = 0;
     uint32_t default_flags = 0;
 
     TRACE("view_vk %p.\n", view_vk);
@@ -893,9 +936,14 @@ static void wined3d_render_target_view_vk_cs_init(void *object)
         return;
     }
 
+    if (resource->bind_flags & WINED3D_BIND_RENDER_TARGET)
+        vk_usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (resource->bind_flags & WINED3D_BIND_DEPTH_STENCIL)
+        vk_usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
     context = context_acquire(resource->device, NULL, 0);
     view_vk->vk_image_view = wined3d_view_vk_create_vk_image_view(wined3d_context_vk(context),
-            desc, texture_vk, format_vk, COLOR_FIXUP_IDENTITY, true);
+            desc, texture_vk, format_vk, COLOR_FIXUP_IDENTITY, true, vk_usage);
     context_release(context);
 
     if (!view_vk->vk_image_view)
@@ -955,8 +1003,12 @@ HRESULT CDECL wined3d_rendertarget_view_create_from_sub_resource(struct wined3d_
 
 ULONG CDECL wined3d_shader_resource_view_incref(struct wined3d_shader_resource_view *view)
 {
-    unsigned int refcount = InterlockedIncrement(&view->refcount);
+    unsigned int refcount;
 
+    if (view->desc.flags & WINED3D_VIEW_FORWARD_REFERENCE)
+        return wined3d_resource_incref(view->resource);
+
+    refcount = InterlockedIncrement(&view->refcount);
     TRACE("%p increasing refcount to %u.\n", view, refcount);
 
     return refcount;
@@ -964,23 +1016,37 @@ ULONG CDECL wined3d_shader_resource_view_incref(struct wined3d_shader_resource_v
 
 void wined3d_shader_resource_view_cleanup(struct wined3d_shader_resource_view *view)
 {
-    /* Call wined3d_object_destroyed() before releasing the resource,
-     * since releasing the resource may end up destroying the parent. */
     view->parent_ops->wined3d_object_destroyed(view->parent);
-    wined3d_resource_decref(view->resource);
+}
+
+void wined3d_shader_resource_view_destroy(struct wined3d_shader_resource_view *view)
+{
+    wined3d_mutex_lock();
+    view->resource->device->adapter->adapter_ops->adapter_destroy_shader_resource_view(view);
+    wined3d_mutex_unlock();
 }
 
 ULONG CDECL wined3d_shader_resource_view_decref(struct wined3d_shader_resource_view *view)
 {
-    unsigned int refcount = InterlockedDecrement(&view->refcount);
+    unsigned int refcount;
 
+    if (view->desc.flags & WINED3D_VIEW_FORWARD_REFERENCE)
+        return wined3d_resource_decref(view->resource);
+
+    refcount = InterlockedDecrement(&view->refcount);
     TRACE("%p decreasing refcount to %u.\n", view, refcount);
 
     if (!refcount)
     {
-        wined3d_mutex_lock();
-        view->resource->device->adapter->adapter_ops->adapter_destroy_shader_resource_view(view);
-        wined3d_mutex_unlock();
+        struct wined3d_resource *resource = view->resource;
+
+        /* Release the resource after destroying the view:
+         * - adapter_destroy_shader_resource_view() needs a reference to the
+         *   device, which the resource implicitly provides.
+         * - We shouldn't free buffer resources until after we've removed the
+         *   view from its bo_user list. */
+        wined3d_shader_resource_view_destroy(view);
+        wined3d_resource_decref(resource);
     }
 
     return refcount;
@@ -996,9 +1062,13 @@ void * CDECL wined3d_shader_resource_view_get_parent(const struct wined3d_shader
 void wined3d_shader_resource_view_gl_update(struct wined3d_shader_resource_view_gl *srv_gl,
         struct wined3d_context_gl *context_gl)
 {
-    create_buffer_view(&srv_gl->gl_view, &context_gl->c, &srv_gl->v.desc,
-            buffer_from_resource(srv_gl->v.resource), srv_gl->v.format);
+    struct wined3d_buffer *buffer = buffer_from_resource(srv_gl->v.resource);
+
+    assert(!srv_gl->bo_user.valid);
+
+    create_buffer_view(&srv_gl->gl_view, &context_gl->c, &srv_gl->v.desc, buffer, srv_gl->v.format);
     srv_gl->bo_user.valid = true;
+    list_add_head(&buffer->buffer_object->users, &srv_gl->bo_user.entry);
 }
 
 static void wined3d_shader_resource_view_gl_cs_init(void *object)
@@ -1013,7 +1083,7 @@ static void wined3d_shader_resource_view_gl_cs_init(void *object)
     TRACE("view_gl %p.\n", view_gl);
 
     view_format = view_gl->v.format;
-    gl_info = &resource->device->adapter->gl_info;
+    gl_info = &wined3d_adapter_gl(resource->device->adapter)->gl_info;
     desc = &view_gl->v.desc;
 
     if (resource->type == WINED3D_RTYPE_BUFFER)
@@ -1078,6 +1148,10 @@ static HRESULT wined3d_shader_resource_view_init(struct wined3d_shader_resource_
         return E_INVALIDARG;
     view->desc = *desc;
 
+    /* If WINED3D_VIEW_FORWARD_REFERENCE, the view shouldn't take a reference
+     * to the resource. However, the reference to the view returned by this
+     * function should translate to a resource reference, so we increment the
+     * resource's reference count anyway. */
     wined3d_resource_incref(view->resource = resource);
 
     return WINED3D_OK;
@@ -1111,12 +1185,15 @@ void wined3d_shader_resource_view_vk_update_buffer(struct wined3d_shader_resourc
     struct wined3d_buffer_vk *buffer_vk;
     VkBufferView vk_buffer_view;
 
+    assert(!view_vk->bo_user.valid);
+
     buffer_vk = wined3d_buffer_vk(buffer_from_resource(resource));
     wined3d_context_vk_destroy_vk_buffer_view(context_vk, view_vk->u.vk_buffer_view, view_vk->command_buffer_id);
     if ((vk_buffer_view = wined3d_view_vk_create_vk_buffer_view(context_vk, desc, buffer_vk, view_format_vk)))
     {
         view_vk->u.vk_buffer_view = vk_buffer_view;
         view_vk->bo_user.valid = true;
+        list_add_head(&buffer_vk->b.buffer_object->users, &view_vk->bo_user.entry);
     }
 }
 
@@ -1186,7 +1263,7 @@ static void wined3d_shader_resource_view_vk_cs_init(void *object)
 
     context = context_acquire(resource->device, NULL, 0);
     vk_image_view = wined3d_view_vk_create_vk_image_view(wined3d_context_vk(context),
-            desc, texture_vk, wined3d_format_vk(format), format->color_fixup, false);
+            desc, texture_vk, wined3d_format_vk(format), format->color_fixup, false, VK_IMAGE_USAGE_SAMPLED_BIT);
     context_release(context);
 
     if (!vk_image_view)
@@ -1255,7 +1332,7 @@ void wined3d_shader_resource_view_gl_bind(struct wined3d_shader_resource_view_gl
     }
 
     texture_gl = wined3d_texture_gl(wined3d_texture_from_resource(view_gl->v.resource));
-    wined3d_texture_gl_bind(texture_gl, context_gl, FALSE);
+    wined3d_texture_gl_bind(texture_gl, context_gl, sampler_gl->s.desc.srgb_decode);
     wined3d_sampler_gl_bind(sampler_gl, unit, texture_gl, context_gl);
 }
 
@@ -1263,12 +1340,6 @@ void wined3d_shader_resource_view_gl_bind(struct wined3d_shader_resource_view_gl
 static void shader_resource_view_gl_bind_and_dirtify(struct wined3d_shader_resource_view_gl *view_gl,
         struct wined3d_context_gl *context_gl)
 {
-    if (context_gl->active_texture < ARRAY_SIZE(context_gl->rev_tex_unit_map))
-    {
-        unsigned int active_sampler = context_gl->rev_tex_unit_map[context_gl->active_texture];
-        if (active_sampler != WINED3D_UNMAPPED_STAGE)
-            context_invalidate_state(&context_gl->c, STATE_SAMPLER(active_sampler));
-    }
     /* FIXME: Ideally we'd only do this when touching a binding that's used by
      * a shader. */
     context_invalidate_compute_state(&context_gl->c, STATE_COMPUTE_SHADER_RESOURCE_BINDING);
@@ -1341,7 +1412,7 @@ void wined3d_shader_resource_view_gl_generate_mipmap(struct wined3d_shader_resou
 
     if (!view_gl->gl_view.name)
     {
-        gl_tex->base_level = base_level;
+        gl_tex->sampler_desc.mip_base_level = base_level;
         gl_info->gl_ops.gl.p_glTexParameteri(texture_gl->target,
                 GL_TEXTURE_MAX_LEVEL, texture_gl->t.level_count - 1);
     }
@@ -1498,10 +1569,7 @@ ULONG CDECL wined3d_unordered_access_view_incref(struct wined3d_unordered_access
 
 void wined3d_unordered_access_view_cleanup(struct wined3d_unordered_access_view *view)
 {
-    /* Call wined3d_object_destroyed() before releasing the resource,
-     * since releasing the resource may end up destroying the parent. */
     view->parent_ops->wined3d_object_destroyed(view->parent);
-    wined3d_resource_decref(view->resource);
 }
 
 ULONG CDECL wined3d_unordered_access_view_decref(struct wined3d_unordered_access_view *view)
@@ -1512,9 +1580,14 @@ ULONG CDECL wined3d_unordered_access_view_decref(struct wined3d_unordered_access
 
     if (!refcount)
     {
+        struct wined3d_resource *resource = view->resource;
+
+        /* Release the resource after destroying the view.
+         * See wined3d_shader_resource_view_decref(). */
         wined3d_mutex_lock();
-        view->resource->device->adapter->adapter_ops->adapter_destroy_unordered_access_view(view);
+        resource->device->adapter->adapter_ops->adapter_destroy_unordered_access_view(view);
         wined3d_mutex_unlock();
+        wined3d_resource_decref(resource);
     }
 
     return refcount;
@@ -1656,11 +1729,20 @@ void wined3d_unordered_access_view_gl_clear(struct wined3d_unordered_access_view
     }
 
     buffer = buffer_from_resource(resource);
-    wined3d_buffer_load_location(buffer, &context_gl->c, WINED3D_LOCATION_BUFFER);
+    get_buffer_view_range(buffer, &view_gl->v.desc, &format_gl->f, &offset, &size);
+
+    if (!offset && size == buffer->resource.size)
+    {
+        wined3d_buffer_prepare_location(buffer, &context_gl->c, WINED3D_LOCATION_BUFFER);
+    }
+    else
+    {
+        wined3d_buffer_acquire_bo_for_write(buffer, &context_gl->c);
+        wined3d_buffer_load_location(buffer, &context_gl->c, WINED3D_LOCATION_BUFFER);
+    }
     wined3d_unordered_access_view_invalidate_location(&view_gl->v, ~WINED3D_LOCATION_BUFFER);
 
     bo_gl = wined3d_bo_gl(buffer->buffer_object);
-    get_buffer_view_range(buffer, &view_gl->v.desc, &format_gl->f, &offset, &size);
     wined3d_context_gl_bind_bo(context_gl, bo_gl->binding, bo_gl->id);
     GL_EXTCALL(glClearBufferSubData(bo_gl->binding, format_gl->internal,
             bo_gl->b.buffer_offset + offset, size, format_gl->format, format_gl->type, clear_value));
@@ -1688,7 +1770,7 @@ void wined3d_unordered_access_view_set_counter(struct wined3d_unordered_access_v
 
     range.offset = 0;
     range.size = sizeof(value);
-    wined3d_context_copy_bo_address(context, &dst, &src, 1, &range);
+    wined3d_context_copy_bo_address(context, &dst, &src, 1, &range, WINED3D_MAP_WRITE | WINED3D_MAP_DISCARD);
 
     context_release(context);
 }
@@ -1710,9 +1792,12 @@ void wined3d_unordered_access_view_copy_counter(struct wined3d_unordered_access_
 void wined3d_unordered_access_view_gl_update(struct wined3d_unordered_access_view_gl *uav_gl,
         struct wined3d_context_gl *context_gl)
 {
-    create_buffer_view(&uav_gl->gl_view, &context_gl->c, &uav_gl->v.desc,
-            buffer_from_resource(uav_gl->v.resource), uav_gl->v.format);
+    struct wined3d_buffer *buffer = buffer_from_resource(uav_gl->v.resource);
+
+    assert(!uav_gl->bo_user.valid);
+    create_buffer_view(&uav_gl->gl_view, &context_gl->c, &uav_gl->v.desc, buffer, uav_gl->v.format);
     uav_gl->bo_user.valid = true;
+    list_add_head(&buffer->buffer_object->users, &uav_gl->bo_user.entry);
 }
 
 static void wined3d_unordered_access_view_gl_cs_init(void *object)
@@ -1724,7 +1809,7 @@ static void wined3d_unordered_access_view_gl_cs_init(void *object)
 
     TRACE("view_gl %p.\n", view_gl);
 
-    gl_info = &resource->device->adapter->gl_info;
+    gl_info = &wined3d_adapter_gl(resource->device->adapter)->gl_info;
 
     if (resource->type == WINED3D_RTYPE_BUFFER)
     {
@@ -1802,6 +1887,36 @@ HRESULT wined3d_unordered_access_view_gl_init(struct wined3d_unordered_access_vi
     return hr;
 }
 
+static int compile_hlsl_cs(const struct vkd3d_shader_code *hlsl, struct vkd3d_shader_code *dxbc)
+{
+    struct vkd3d_shader_hlsl_source_info hlsl_info;
+    struct vkd3d_shader_compile_info info;
+
+    static const struct vkd3d_shader_compile_option options[] =
+    {
+        {VKD3D_SHADER_COMPILE_OPTION_API_VERSION, VKD3D_SHADER_API_VERSION_1_12},
+    };
+
+    info.type = VKD3D_SHADER_STRUCTURE_TYPE_COMPILE_INFO;
+    info.next = &hlsl_info;
+    info.source = *hlsl;
+    info.source_type = VKD3D_SHADER_SOURCE_HLSL;
+    info.target_type = VKD3D_SHADER_TARGET_DXBC_TPF;
+    info.options = options;
+    info.option_count = ARRAY_SIZE(options);
+    info.log_level = VKD3D_SHADER_LOG_NONE;
+    info.source_name = NULL;
+
+    hlsl_info.type = VKD3D_SHADER_STRUCTURE_TYPE_HLSL_SOURCE_INFO;
+    hlsl_info.next = NULL;
+    hlsl_info.entry_point = "main";
+    hlsl_info.secondary_code.code = NULL;
+    hlsl_info.secondary_code.size = 0;
+    hlsl_info.profile = "cs_5_0";
+
+    return vkd3d_shader_compile(&info, dxbc, NULL);
+}
+
 struct wined3d_uav_clear_constants_vk
 {
     VkClearColorValue color;
@@ -1810,31 +1925,79 @@ struct wined3d_uav_clear_constants_vk
 };
 
 static VkPipeline create_uav_pipeline(struct wined3d_context_vk *context_vk,
-        struct wined3d_pipeline_layout_vk *layout, const unsigned int *byte_code, size_t byte_code_size,
+        struct wined3d_pipeline_layout_vk *layout, const char *resource_filename,
         enum wined3d_shader_resource_type resource_type)
 {
     VkComputePipelineCreateInfo pipeline_info;
     struct wined3d_shader_desc shader_desc;
     const struct wined3d_vk_info *vk_info;
+    struct vkd3d_shader_code code, dxbc;
     struct wined3d_context *context;
     VkShaderModule shader_module;
     VkDevice vk_device;
+    void *resource_ptr;
     VkPipeline result;
+    HGLOBAL global;
+    HMODULE module;
+    HRSRC resource;
     VkResult vr;
+    int ret;
 
     vk_info = context_vk->vk_info;
     context = &context_vk->c;
 
-    shader_desc.byte_code = (const DWORD *)byte_code;
-    shader_desc.byte_code_size = byte_code_size;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (const char *)create_uav_pipeline, &module))
+    {
+        ERR("Failed to get a reference to the current module, last error %ld.\n", GetLastError());
+        return VK_NULL_HANDLE;
+    }
+
+    if (!(resource = FindResourceA(module, resource_filename, (const char *)RT_RCDATA)))
+    {
+        ERR("Failed to retrieve resource, last error %ld.\n", GetLastError());
+        return VK_NULL_HANDLE;
+    }
+
+    if (!(global = LoadResource(module, resource)))
+    {
+        ERR("Failed to load resource, last error %ld.\n", GetLastError());
+        return VK_NULL_HANDLE;
+    }
+
+    if (!(resource_ptr = LockResource(global)))
+    {
+        ERR("Failed to lock resource.\n");
+        FreeResource(resource);
+        return VK_NULL_HANDLE;
+    }
+
+    code.code = resource_ptr;
+    code.size = SizeofResource(module, resource);
+
+    if ((ret = compile_hlsl_cs(&code, &dxbc)) < 0)
+    {
+        ERR("Failed to compile shader, ret %d.\n", ret);
+        FreeResource(resource);
+        return VK_NULL_HANDLE;
+    }
+
+    if (FreeResource(resource))
+        ERR("Failed to free resource.\n");
+
+    shader_desc.byte_code = dxbc.code;
+    shader_desc.byte_code_size = dxbc.size;
 
     shader_module = (VkShaderModule)context->device->adapter->shader_backend->shader_compile(context, &shader_desc,
             WINED3D_SHADER_TYPE_COMPUTE);
     if (shader_module == VK_NULL_HANDLE)
     {
         ERR("Failed to create shader.\n");
+        vkd3d_shader_free_shader_code(&dxbc);
         return VK_NULL_HANDLE;
     }
+
+    vkd3d_shader_free_shader_code(&dxbc);
 
     pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipeline_info.pNext = NULL;
@@ -1885,32 +2048,30 @@ void wined3d_device_vk_uav_clear_state_init(struct wined3d_device_vk *device_vk)
     vk_set_bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
     state->buffer_layout = wined3d_context_vk_get_pipeline_layout(context_vk, vk_set_bindings, 2);
 
-#define SHADER_DESC(name) name, sizeof(name)
     state->float_pipelines.buffer = create_uav_pipeline(context_vk, state->buffer_layout,
-            SHADER_DESC(cs_uav_clear_buffer_float_code), WINED3D_SHADER_RESOURCE_BUFFER);
+            "cs_uav_clear_buffer_float_code.hlsl", WINED3D_SHADER_RESOURCE_BUFFER);
     state->uint_pipelines.buffer = create_uav_pipeline(context_vk, state->buffer_layout,
-            SHADER_DESC(cs_uav_clear_buffer_uint_code), WINED3D_SHADER_RESOURCE_BUFFER);
+            "cs_uav_clear_buffer_uint_code.hlsl", WINED3D_SHADER_RESOURCE_BUFFER);
     state->float_pipelines.image_1d = create_uav_pipeline(context_vk, state->image_layout,
-            SHADER_DESC(cs_uav_clear_1d_float_code), WINED3D_SHADER_RESOURCE_TEXTURE_1D);
+            "cs_uav_clear_1d_float_code.hlsl", WINED3D_SHADER_RESOURCE_TEXTURE_1D);
     state->uint_pipelines.image_1d = create_uav_pipeline(context_vk, state->image_layout,
-            SHADER_DESC(cs_uav_clear_1d_uint_code), WINED3D_SHADER_RESOURCE_TEXTURE_1D);
+            "cs_uav_clear_1d_uint_code.hlsl", WINED3D_SHADER_RESOURCE_TEXTURE_1D);
     state->float_pipelines.image_1d_array = create_uav_pipeline(context_vk, state->image_layout,
-            SHADER_DESC(cs_uav_clear_1d_array_float_code), WINED3D_SHADER_RESOURCE_TEXTURE_1DARRAY);
+            "cs_uav_clear_1d_array_float_code.hlsl", WINED3D_SHADER_RESOURCE_TEXTURE_1DARRAY);
     state->uint_pipelines.image_1d_array = create_uav_pipeline(context_vk, state->image_layout,
-            SHADER_DESC(cs_uav_clear_1d_array_uint_code), WINED3D_SHADER_RESOURCE_TEXTURE_1DARRAY);
+            "cs_uav_clear_1d_array_uint_code.hlsl", WINED3D_SHADER_RESOURCE_TEXTURE_1DARRAY);
     state->float_pipelines.image_2d = create_uav_pipeline(context_vk, state->image_layout,
-            SHADER_DESC(cs_uav_clear_2d_float_code), WINED3D_SHADER_RESOURCE_TEXTURE_2D);
+            "cs_uav_clear_2d_float_code.hlsl", WINED3D_SHADER_RESOURCE_TEXTURE_2D);
     state->uint_pipelines.image_2d = create_uav_pipeline(context_vk, state->image_layout,
-            SHADER_DESC(cs_uav_clear_2d_uint_code), WINED3D_SHADER_RESOURCE_TEXTURE_2D);
+            "cs_uav_clear_2d_uint_code.hlsl", WINED3D_SHADER_RESOURCE_TEXTURE_2D);
     state->float_pipelines.image_2d_array = create_uav_pipeline(context_vk, state->image_layout,
-            SHADER_DESC(cs_uav_clear_2d_array_float_code), WINED3D_SHADER_RESOURCE_TEXTURE_2DARRAY);
+            "cs_uav_clear_2d_array_float_code.hlsl", WINED3D_SHADER_RESOURCE_TEXTURE_2DARRAY);
     state->uint_pipelines.image_2d_array = create_uav_pipeline(context_vk, state->image_layout,
-            SHADER_DESC(cs_uav_clear_2d_array_uint_code), WINED3D_SHADER_RESOURCE_TEXTURE_2DARRAY);
+            "cs_uav_clear_2d_array_uint_code.hlsl", WINED3D_SHADER_RESOURCE_TEXTURE_2DARRAY);
     state->float_pipelines.image_3d = create_uav_pipeline(context_vk, state->image_layout,
-            SHADER_DESC(cs_uav_clear_3d_float_code), WINED3D_SHADER_RESOURCE_TEXTURE_3D);
+            "cs_uav_clear_3d_float_code.hlsl", WINED3D_SHADER_RESOURCE_TEXTURE_3D);
     state->uint_pipelines.image_3d = create_uav_pipeline(context_vk, state->image_layout,
-            SHADER_DESC(cs_uav_clear_3d_uint_code), WINED3D_SHADER_RESOURCE_TEXTURE_3D);
-#undef SHADER_DESC
+            "cs_uav_clear_3d_uint_code.hlsl", WINED3D_SHADER_RESOURCE_TEXTURE_3D);
 
     state->buffer_group_size.x = 128;
     state->buffer_group_size.y = 1;
@@ -1978,8 +2139,6 @@ void wined3d_unordered_access_view_vk_clear(struct wined3d_unordered_access_view
     struct wined3d_range range;
     VkMemoryBarrier vk_barrier;
     VkPipeline vk_pipeline;
-    DWORD uav_location;
-    unsigned int level;
     bool is_array;
 
     device_vk = wined3d_device_vk(device);
@@ -2047,8 +2206,8 @@ void wined3d_unordered_access_view_vk_clear(struct wined3d_unordered_access_view
     if (resource->type == WINED3D_RTYPE_BUFFER)
     {
         struct wined3d_buffer *buffer = buffer_from_resource(resource);
+        unsigned int offset, size;
 
-        uav_location = WINED3D_LOCATION_BUFFER;
         layout = state->buffer_layout;
         vk_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
 
@@ -2057,19 +2216,58 @@ void wined3d_unordered_access_view_vk_clear(struct wined3d_unordered_access_view
         else
             constants.extent.width = view_desc->u.buffer.count;
         constants.extent.height = 1;
+
+        get_buffer_view_range(buffer, view_desc, view_format, &offset, &size);
+        if (!offset && size == buffer->resource.size)
+        {
+            wined3d_buffer_prepare_location(buffer, &context_vk->c, WINED3D_LOCATION_BUFFER);
+        }
+        else
+        {
+            wined3d_buffer_acquire_bo_for_write(buffer, &context_vk->c);
+            wined3d_buffer_load_location(buffer, &context_vk->c, WINED3D_LOCATION_BUFFER);
+        }
+        wined3d_buffer_validate_location(buffer, WINED3D_LOCATION_BUFFER);
+        wined3d_buffer_invalidate_location(buffer, ~WINED3D_LOCATION_BUFFER);
     }
     else
     {
+        unsigned int layer_count, level_count, base_level, base_layer, i, j;
+
         texture_vk = wined3d_texture_vk(wined3d_texture_from_resource(resource));
 
-        uav_location = WINED3D_LOCATION_TEXTURE_RGB;
         layout = state->image_layout;
         vk_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
-        level = view_desc->u.texture.level_idx;
-        constants.extent.width  = wined3d_texture_get_level_width(&texture_vk->t, level);
-        constants.extent.height = wined3d_texture_get_level_height(&texture_vk->t, level);
+        level_count = view_desc->u.texture.level_count;
+        base_level = view_desc->u.texture.level_idx;
+        if (resource->type == WINED3D_RTYPE_TEXTURE_3D)
+        {
+            layer_count = 1;
+            base_layer = 0;
+        }
+        else
+        {
+            layer_count = view_desc->u.texture.layer_count;
+            base_layer = view_desc->u.texture.layer_idx;
+        }
+
+        constants.extent.width  = wined3d_texture_get_level_width(&texture_vk->t, base_level);
+        constants.extent.height = wined3d_texture_get_level_height(&texture_vk->t, base_level);
         group_count.z = (view_desc->u.texture.layer_count + group_count.z - 1) / group_count.z;
+
+        for (i = 0; i < layer_count; ++i)
+        {
+            for (j = 0; j < level_count; ++j)
+            {
+                unsigned int sub_resource_idx = (base_layer + i) * texture_vk->t.level_count + base_level + j;
+
+                wined3d_texture_prepare_location(&texture_vk->t, sub_resource_idx,
+                        &context_vk->c, WINED3D_LOCATION_TEXTURE_RGB);
+                wined3d_texture_validate_location(&texture_vk->t, sub_resource_idx, WINED3D_LOCATION_TEXTURE_RGB);
+                wined3d_texture_invalidate_location(&texture_vk->t, sub_resource_idx, ~WINED3D_LOCATION_TEXTURE_RGB);
+            }
+        }
     }
 
     group_count.x = (constants.extent.width  + group_count.x - 1) / group_count.x;
@@ -2107,9 +2305,6 @@ void wined3d_unordered_access_view_vk_clear(struct wined3d_unordered_access_view
         return;
     }
 
-    wined3d_view_load_location(resource, view_desc, &context_vk->c, uav_location);
-    wined3d_unordered_access_view_invalidate_location(&view_vk->v, ~uav_location);
-
     if (resource->type == WINED3D_RTYPE_BUFFER)
     {
         if (format_id == view_format->id)
@@ -2143,7 +2338,7 @@ void wined3d_unordered_access_view_vk_clear(struct wined3d_unordered_access_view
             vk_image_info.imageView = wined3d_view_vk_create_vk_image_view(context_vk, view_desc, texture_vk,
                     wined3d_format_vk(wined3d_get_format(context_vk->c.device->adapter, format_id,
                         WINED3D_BIND_UNORDERED_ACCESS)),
-                    COLOR_FIXUP_IDENTITY, false);
+                    COLOR_FIXUP_IDENTITY, false, VK_IMAGE_USAGE_STORAGE_BIT);
 
             if (vk_image_info.imageView == VK_NULL_HANDLE)
                 return;
@@ -2174,7 +2369,8 @@ void wined3d_unordered_access_view_vk_clear(struct wined3d_unordered_access_view
 
     range.offset = 0;
     range.size = sizeof(constants);
-    adapter_vk_copy_bo_address(&context_vk->c, &cb_destination_address, &cb_source_address, 1, &range);
+    adapter_vk_copy_bo_address(&context_vk->c, &cb_destination_address,
+            &cb_source_address, 1, &range, WINED3D_MAP_WRITE | WINED3D_MAP_DISCARD);
 
     buffer_info.buffer = constants_bo.vk_buffer;
     buffer_info.range = constants_bo.size;
@@ -2245,12 +2441,15 @@ void wined3d_unordered_access_view_vk_update(struct wined3d_unordered_access_vie
     struct wined3d_buffer_vk *buffer_vk;
     VkBufferView vk_buffer_view;
 
+    assert(!view_vk->bo_user.valid);
+
     buffer_vk = wined3d_buffer_vk(buffer_from_resource(resource));
     wined3d_context_vk_destroy_vk_buffer_view(context_vk, view_vk->u.vk_buffer_view, view_vk->command_buffer_id);
     if ((vk_buffer_view = wined3d_view_vk_create_vk_buffer_view(context_vk, desc, buffer_vk, view_format_vk)))
     {
         view_vk->u.vk_buffer_view = vk_buffer_view;
         view_vk->bo_user.valid = true;
+        list_add_head(&buffer_vk->b.buffer_object->users, &view_vk->bo_user.entry);
     }
 }
 
@@ -2357,7 +2556,7 @@ static void wined3d_unordered_access_view_vk_cs_init(void *object)
 
     context_vk = wined3d_context_vk(context_acquire(&device_vk->d, NULL, 0));
     vk_image_view = wined3d_view_vk_create_vk_image_view(context_vk, desc,
-            texture_vk, format_vk, format_vk->f.color_fixup, false);
+            texture_vk, format_vk, format_vk->f.color_fixup, false, VK_IMAGE_USAGE_STORAGE_BIT);
     context_release(&context_vk->c);
 
     if (!vk_image_view)
@@ -2399,4 +2598,97 @@ HRESULT CDECL wined3d_unordered_access_view_create(const struct wined3d_view_des
 
     adapter_ops = resource->device->adapter->adapter_ops;
     return adapter_ops->adapter_create_unordered_access_view(desc, resource, parent, parent_ops, view);
+}
+
+ULONG CDECL wined3d_decoder_output_view_incref(struct wined3d_decoder_output_view *view)
+{
+    unsigned int refcount;
+
+    if (view->desc.flags & WINED3D_VIEW_FORWARD_REFERENCE)
+        return wined3d_texture_incref(view->texture);
+
+    refcount = InterlockedIncrement(&view->refcount);
+    TRACE("%p increasing refcount to %u.\n", view, refcount);
+
+    return refcount;
+}
+
+void wined3d_decoder_output_view_cleanup(struct wined3d_decoder_output_view *view)
+{
+    view->parent_ops->wined3d_object_destroyed(view->parent);
+}
+
+ULONG CDECL wined3d_decoder_output_view_decref(struct wined3d_decoder_output_view *view)
+{
+    unsigned int refcount;
+
+    if (view->desc.flags & WINED3D_VIEW_FORWARD_REFERENCE)
+        return wined3d_texture_decref(view->texture);
+
+    refcount = InterlockedDecrement(&view->refcount);
+    TRACE("%p decreasing refcount to %u.\n", view, refcount);
+
+    if (!refcount)
+    {
+        struct wined3d_texture *texture = view->texture;
+
+        /* Release the resource after destroying the view.
+         * See wined3d_shader_resource_view_decref(). */
+        wined3d_mutex_lock();
+        texture->resource.device->adapter->adapter_ops->adapter_destroy_video_decoder_output_view(view);
+        wined3d_mutex_unlock();
+        wined3d_texture_decref(texture);
+    }
+
+    return refcount;
+}
+
+static HRESULT wined3d_decoder_output_view_init(struct wined3d_decoder_output_view *view,
+        const struct wined3d_view_desc *desc, struct wined3d_texture *texture,
+        void *parent, const struct wined3d_parent_ops *parent_ops)
+{
+    view->refcount = 1;
+    view->parent = parent;
+    view->parent_ops = parent_ops;
+
+    if (!(texture->resource.bind_flags & WINED3D_BIND_DECODER_OUTPUT))
+        return E_INVALIDARG;
+    /* validate_resource_view() checks that we are creating a view of a plane,
+     * which is required for all other types of views.
+     * At the same time, the only parameter that Direct3D 11 passes, and
+     * therefore the only parameter to validate, is the layer index. */
+    if (desc->u.texture.layer_idx >= texture->layer_count)
+        return E_INVALIDARG;
+    view->desc = *desc;
+
+    /* If WINED3D_VIEW_FORWARD_REFERENCE, the view shouldn't take a reference
+     * to the resource. However, the reference to the view returned by this
+     * function should translate to a resource reference, so we increment the
+     * resource's reference count anyway. */
+    wined3d_texture_incref(view->texture = texture);
+
+    return WINED3D_OK;
+}
+
+HRESULT wined3d_decoder_output_view_vk_init(struct wined3d_decoder_output_view_vk *view_vk,
+        const struct wined3d_view_desc *desc, struct wined3d_texture *texture,
+        void *parent, const struct wined3d_parent_ops *parent_ops)
+{
+    TRACE("view_vk %p, desc %s, texture %p, parent %p, parent_ops %p.\n",
+            view_vk, wined3d_debug_view_desc(desc, &texture->resource), texture, parent, parent_ops);
+
+    return wined3d_decoder_output_view_init(&view_vk->v, desc, texture, parent, parent_ops);
+}
+
+HRESULT CDECL wined3d_decoder_output_view_create(const struct wined3d_view_desc *desc,
+        struct wined3d_texture *texture, void *parent, const struct wined3d_parent_ops *parent_ops,
+        struct wined3d_decoder_output_view **view)
+{
+    const struct wined3d_adapter_ops *adapter_ops;
+
+    TRACE("desc %s, texture %p, parent %p, parent_ops %p, view %p.\n",
+            wined3d_debug_view_desc(desc, &texture->resource), texture, parent, parent_ops, view);
+
+    adapter_ops = texture->resource.device->adapter->adapter_ops;
+    return adapter_ops->adapter_create_video_decoder_output_view(desc, texture, parent, parent_ops, view);
 }

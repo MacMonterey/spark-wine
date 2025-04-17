@@ -26,6 +26,7 @@
 #include <fenv.h>
 #include <limits.h>
 #include <wctype.h>
+#include <share.h>
 
 #include <windef.h>
 #include <winbase.h>
@@ -34,6 +35,8 @@
 #include <process.h>
 
 #include <locale.h>
+
+#define _MAX__TIME64_T     (((__time64_t)0x00000007 << 32) | 0x93406FFF)
 
 #ifdef __i386__
 #include "pshpack1.h"
@@ -152,6 +155,12 @@ typedef struct
     double i;
 } _Dcomplex;
 
+typedef struct
+{
+    float r;
+    float i;
+} _Fcomplex;
+
 typedef void (*vtable_ptr)(void);
 
 typedef struct {
@@ -183,6 +192,10 @@ typedef struct _UnrealizedChore
     void *unk[6];
 } _UnrealizedChore;
 
+typedef struct {
+    long *cancelling;
+} _Cancellation_beacon;
+
 static char* (CDECL *p_setlocale)(int category, const char* locale);
 static struct MSVCRT_lconv* (CDECL *p_localeconv)(void);
 static size_t (CDECL *p_wcstombs_s)(size_t *ret, char* dest, size_t sz, const wchar_t* src, size_t max);
@@ -207,14 +220,19 @@ static int (CDECL *p_fegetexceptflag)(fexcept_t*,int);
 static int (CDECL *p_fesetexceptflag)(const fexcept_t*,int);
 static int (CDECL *p_fetestexcept)(int);
 static int (CDECL *p_feclearexcept)(int);
+static int (CDECL *p_feholdexcept)(fenv_t*);
 static int (CDECL *p_feupdateenv)(fenv_t*);
 static int (CDECL *p__clearfp)(void);
 static _locale_t (__cdecl *p_wcreate_locale)(int, const wchar_t *);
 static void (__cdecl *p_free_locale)(_locale_t);
 static unsigned short (__cdecl *p_wctype)(const char*);
 static int (__cdecl *p_vsscanf)(const char*, const char *, va_list valist);
-static _Dcomplex* (__cdecl *p__Cbuild)(_Dcomplex*, double, double);
+static _Dcomplex (__cdecl *p__Cbuild)(double, double);
+static _Fcomplex (__cdecl *p__FCbuild)(float, float);
 static double (__cdecl *p_creal)(_Dcomplex);
+static float (__cdecl *p_crealf)(_Fcomplex);
+static double (__cdecl *p_cimag)(_Dcomplex);
+static float (__cdecl *p_cimagf)(_Fcomplex);
 static double (__cdecl *p_nexttoward)(double, double);
 static float (__cdecl *p_nexttowardf)(float, double);
 static double (__cdecl *p_nexttowardl)(double, double);
@@ -222,6 +240,14 @@ static wctrans_t (__cdecl *p_wctrans)(const char*);
 static wint_t (__cdecl *p_towctrans)(wint_t, wctrans_t);
 static int (__cdecl *p_strcmp)(const char *, const char *);
 static int (__cdecl *p_strncmp)(const char *, const char *, size_t);
+static struct tm* (__cdecl *p_gmtime32)(__time32_t*);
+static errno_t    (__cdecl *p_gmtime32_s)(struct tm*, __time32_t*);
+static struct tm* (__cdecl *p_gmtime64)(__time64_t*);
+static errno_t    (__cdecl *p_gmtime64_s)(struct tm*, __time64_t*);
+static FILE * (__cdecl *p__fsopen)(const char *, const char *, int);
+static FILE * (__cdecl *p__wfsopen)(const wchar_t *, const wchar_t *, int);
+static int (__cdecl *p_fclose)(FILE *);
+static int (__cdecl *p__unlink)(const char *);
 
 /* make sure we use the correct errno */
 #undef errno
@@ -247,6 +273,7 @@ static void (__thiscall *p__Condition_variable_notify_all)(_Condition_variable*)
 
 static Context* (__cdecl *p_Context_CurrentContext)(void);
 static _Context* (__cdecl *p__Context__CurrentContext)(_Context*);
+static MSVCRT_bool (__cdecl *p_Context_IsCurrentTaskCollectionCanceling)(void);
 
 static _StructuredTaskCollection* (__thiscall *p__StructuredTaskCollection_ctor)(_StructuredTaskCollection*, void*);
 static void (__thiscall *p__StructuredTaskCollection_dtor)(_StructuredTaskCollection*);
@@ -254,6 +281,23 @@ static void (__thiscall *p__StructuredTaskCollection__Schedule)(_StructuredTaskC
 static int (__stdcall *p__StructuredTaskCollection__RunAndWait)(_StructuredTaskCollection*, _UnrealizedChore*);
 static void (__thiscall *p__StructuredTaskCollection__Cancel)(_StructuredTaskCollection*);
 static MSVCRT_bool (__thiscall *p__StructuredTaskCollection__IsCanceling)(_StructuredTaskCollection*);
+
+static _Cancellation_beacon* (__thiscall *p__Cancellation_beacon_ctor)(_Cancellation_beacon*);
+static void (__thiscall *p__Cancellation_beacon_dtor)(_Cancellation_beacon*);
+static MSVCRT_bool (__thiscall *p__Cancellation_beacon__Confirm_cancel)(_Cancellation_beacon*);
+
+#ifdef __i386__
+static ULONGLONG (__cdecl *p_i386_FCbuild)(float, float);
+static _Fcomplex __cdecl i386_FCbuild(float r, float i)
+{
+    union {
+        _Fcomplex c;
+        ULONGLONG ull;
+    } ret;
+    ret.ull = p_i386_FCbuild(r, i);
+    return ret.c;
+}
+#endif
 
 #define SETNOFAIL(x,y) x = (void*)GetProcAddress(module,y)
 #define SET(x,y) do { SETNOFAIL(x,y); ok(x != NULL, "Export '%s' not found\n", y); } while(0)
@@ -287,6 +331,10 @@ static BOOL init(void)
     p_errno = (void*)GetProcAddress(module, "_errno");
     p_wcreate_locale = (void*)GetProcAddress(module, "_wcreate_locale");
     p_free_locale = (void*)GetProcAddress(module, "_free_locale");
+    p_gmtime64 = (void*)GetProcAddress(module, "_gmtime64");
+    p_gmtime64_s = (void*)GetProcAddress(module, "_gmtime64_s");
+    p_gmtime32 = (void*)GetProcAddress(module, "_gmtime32");
+    p_gmtime32_s = (void*)GetProcAddress(module, "_gmtime32_s");
     SET(p_wctype, "wctype");
     SET(p_fegetenv, "fegetenv");
     SET(p_fesetenv, "fesetenv");
@@ -296,12 +344,22 @@ static BOOL init(void)
     SET(p_fesetexceptflag, "fesetexceptflag");
     SET(p_fetestexcept, "fetestexcept");
     SET(p_feclearexcept, "feclearexcept");
+    SET(p_feholdexcept, "feholdexcept");
     SET(p_feupdateenv, "feupdateenv");
+
+    SET(p__fsopen, "_fsopen");
+    SET(p__wfsopen, "_wfsopen");
+    SET(p_fclose, "fclose");
+    SET(p__unlink, "_unlink");
 
     SET(p__clearfp, "_clearfp");
     SET(p_vsscanf, "vsscanf");
     SET(p__Cbuild, "_Cbuild");
     SET(p_creal, "creal");
+    SET(p_cimag, "cimag");
+    SET(p__FCbuild, "_FCbuild");
+    SET(p_crealf, "crealf");
+    SET(p_cimagf, "cimagf");
     SET(p_nexttoward, "nexttoward");
     SET(p_nexttowardf, "nexttowardf");
     SET(p_nexttowardl, "nexttowardl");
@@ -310,6 +368,7 @@ static BOOL init(void)
     SET(p__Context__CurrentContext, "?_CurrentContext@_Context@details@Concurrency@@SA?AV123@XZ");
     SET(p_strcmp, "strcmp");
     SET(p_strncmp, "strncmp");
+    SET(p_Context_IsCurrentTaskCollectionCanceling, "?IsCurrentTaskCollectionCanceling@Context@Concurrency@@SA_NXZ");
     if(sizeof(void*) == 8) { /* 64-bit initialization */
         SET(p__StructuredTaskCollection_ctor,
                 "??0_StructuredTaskCollection@details@Concurrency@@QEAA@PEAV_CancellationTokenState@12@@Z");
@@ -355,6 +414,12 @@ static BOOL init(void)
                 "?notify_all@_Condition_variable@details@Concurrency@@QEAAXXZ");
         SET(p_Context_CurrentContext,
                 "?CurrentContext@Context@Concurrency@@SAPEAV12@XZ");
+        SET(p__Cancellation_beacon_ctor,
+                "??0_Cancellation_beacon@details@Concurrency@@QEAA@XZ");
+        SET(p__Cancellation_beacon_dtor,
+                "??1_Cancellation_beacon@details@Concurrency@@QEAA@XZ");
+        SET(p__Cancellation_beacon__Confirm_cancel,
+                "?_Confirm_cancel@_Cancellation_beacon@details@Concurrency@@QEAA_NXZ");
     } else {
 #ifdef __arm__
         SET(p__StructuredTaskCollection_ctor,
@@ -399,6 +464,12 @@ static BOOL init(void)
                 "?notify_one@_Condition_variable@details@Concurrency@@QAAXXZ");
         SET(p__Condition_variable_notify_all,
                 "?notify_all@_Condition_variable@details@Concurrency@@QAAXXZ");
+        SET(p__Cancellation_beacon_ctor,
+                "??0_Cancellation_beacon@details@Concurrency@@QAA@XZ");
+        SET(p__Cancellation_beacon_dtor,
+                "??1_Cancellation_beacon@details@Concurrency@@QAA@XZ");
+        SET(p__Cancellation_beacon__Confirm_cancel,
+                "?_Confirm_cancel@_Cancellation_beacon@details@Concurrency@@QAA_NXZ");
 #else
         SET(p__StructuredTaskCollection_ctor,
                 "??0_StructuredTaskCollection@details@Concurrency@@QAE@PAV_CancellationTokenState@12@@Z");
@@ -442,10 +513,22 @@ static BOOL init(void)
                 "?notify_one@_Condition_variable@details@Concurrency@@QAEXXZ");
         SET(p__Condition_variable_notify_all,
                 "?notify_all@_Condition_variable@details@Concurrency@@QAEXXZ");
+        SET(p__Cancellation_beacon_ctor,
+                "??0_Cancellation_beacon@details@Concurrency@@QAE@XZ");
+        SET(p__Cancellation_beacon_dtor,
+                "??1_Cancellation_beacon@details@Concurrency@@QAE@XZ");
+        SET(p__Cancellation_beacon__Confirm_cancel,
+                "?_Confirm_cancel@_Cancellation_beacon@details@Concurrency@@QAE_NXZ");
 #endif
         SET(p_Context_CurrentContext,
                 "?CurrentContext@Context@Concurrency@@SAPAV12@XZ");
     }
+
+#ifdef __i386__
+    SET(p_i386_FCbuild,
+                "_FCbuild");
+    p__FCbuild = i386_FCbuild;
+#endif
 
     init_thiscall_thunk();
     return TRUE;
@@ -595,6 +678,14 @@ static void test____lc_locale_name_func(void)
                     i, j, wine_dbgstr_w(lc_names[j]), wine_dbgstr_w(lc_names[1]));
         }
     }
+
+    p_setlocale(LC_ALL, "zh-Hans");
+    lc_names = p____lc_locale_name_func();
+    ok(!lstrcmpW(lc_names[1], L"zh-Hans"), "lc_names[1] expected zh-Hans got %s\n", wine_dbgstr_w(lc_names[1]));
+
+    p_setlocale(LC_ALL, "zh-Hant");
+    lc_names = p____lc_locale_name_func();
+    ok(!lstrcmpW(lc_names[1], L"zh-Hant"), "lc_names[1] expected zh-Hant got %s\n", wine_dbgstr_w(lc_names[1]));
 
     p_setlocale(LC_ALL, "C");
     lc_names = p____lc_locale_name_func();
@@ -1036,6 +1127,38 @@ static void test_feenv(void)
     ret = _statusfp();
     ok(ret == (_EM_ZERODIVIDE | _EM_INVALID), "_statusfp returned %x\n", ret);
     p__clearfp();
+
+    /* feholdexcept */
+    memset(&env, 0xfe, sizeof(env));
+    ret = p_feholdexcept(&env);
+    ok(!ret, "feholdexcept returned %x\n", ret);
+    ok(env._Fe_ctl == (_EM_INEXACT|_EM_UNDERFLOW|_EM_OVERFLOW|_EM_ZERODIVIDE|_EM_INVALID),
+            "env._Fe_ctl = %lx\n", env._Fe_ctl);
+    ok(!env._Fe_stat, "env._Fe_stat = %lx\n", env._Fe_stat);
+    except = FE_ALL_EXCEPT;
+    ret = p_fesetexceptflag(&except, FE_INEXACT|FE_UNDERFLOW);
+    ok(!ret, "fesetexceptflag returned %x\n", ret);
+    except = p_fetestexcept(FE_ALL_EXCEPT);
+    ok(except == (FE_INEXACT|FE_UNDERFLOW), "expected %x, got %lx\n", FE_INEXACT|FE_UNDERFLOW, except);
+    ret = p_fesetenv(&env);
+    ok(!ret, "fesetenv returned %x\n", ret);
+    memset(&env, 0xfe, sizeof(env));
+    ret = p_fegetenv(&env);
+    ok(!ret, "feholdexcept returned %x\n", ret);
+    ok(env._Fe_ctl == (_EM_INEXACT|_EM_UNDERFLOW|_EM_OVERFLOW|_EM_ZERODIVIDE|_EM_INVALID),
+            "env._Fe_ctl = %lx\n", env._Fe_ctl);
+    ok(!env._Fe_stat, "env._Fe_stat = %lx\n", env._Fe_stat);
+
+    except = FE_ALL_EXCEPT;
+    ret = p_fesetexceptflag(&except, FE_INEXACT|FE_UNDERFLOW);
+    ok(!ret, "fesetexceptflag returned %x\n", ret);
+    memset(&env, 0xfe, sizeof(env));
+    ret = p_feholdexcept(&env);
+    ok(!ret, "feholdexcept returned %x\n", ret);
+    ok(env._Fe_ctl == (_EM_INEXACT|_EM_UNDERFLOW|_EM_OVERFLOW|_EM_ZERODIVIDE|_EM_INVALID),
+            "env._Fe_ctl = %lx\n", env._Fe_ctl);
+    ok(env._Fe_stat == (FE_INEXACT|FE_UNDERFLOW), "env._Fe_stat = %lx\n", env._Fe_stat);
+    p__clearfp();
 }
 
 static void test__wcreate_locale(void)
@@ -1207,18 +1330,55 @@ static void test__Cbuild(void)
     _Dcomplex c;
     double d;
 
-    memset(&c, 0, sizeof(c));
-    p__Cbuild(&c, 1.0, 2.0);
+    c = p__Cbuild(1.0, 2.0);
     ok(c.r == 1.0, "c.r = %lf\n", c.r);
     ok(c.i == 2.0, "c.i = %lf\n", c.i);
     d = p_creal(c);
     ok(d == 1.0, "creal returned %lf\n", d);
+    d = p_cimag(c);
+    ok(d == 2.0, "cimag returned %lf\n", d);
 
-    p__Cbuild(&c, 3.0, NAN);
+    c = p__Cbuild(3.0, NAN);
     ok(c.r == 3.0, "c.r = %lf\n", c.r);
     ok(_isnan(c.i), "c.i = %lf\n", c.i);
     d = p_creal(c);
     ok(d == 3.0, "creal returned %lf\n", d);
+
+    c = p__Cbuild(NAN, 4.0);
+    ok(_isnan(c.r), "c.r = %lf\n", c.r);
+    ok(c.i == 4.0, "c.i = %lf\n", c.i);
+    d = p_cimag(c);
+    ok(d == 4.0, "cimag returned %lf\n", d);
+}
+
+static void test__FCbuild(void)
+{
+    _Fcomplex c;
+    float d;
+
+    c = p__FCbuild(1.0f, 2.0f);
+    ok(c.r == 1.0f, "c.r = %lf\n", c.r);
+    ok(c.i == 2.0f, "c.i = %lf\n", c.i);
+    d = p_crealf(c);
+    ok(d == 1.0f, "crealf returned %lf\n", d);
+    d = p_cimagf(c);
+    ok(d == 2.0f, "cimagf returned %lf\n", d);
+
+    c = p__FCbuild(3.0f, NAN);
+    ok(c.r == 3.0f, "c.r = %lf\n", c.r);
+    ok(_isnan(c.i), "c.i = %lf\n", c.i);
+    d = p_crealf(c);
+    ok(d == 3.0f, "crealf returned %lf\n", d);
+    d = p_cimagf(c);
+    ok(_isnan(d), "cimagf returned %lf\n", d);
+
+    c = p__FCbuild(NAN, 4.0f);
+    ok(_isnan(c.r), "c.r = %lf\n", c.r);
+    ok(c.i == 4.0f, "c.i = %lf\n", c.i);
+    d = p_crealf(c);
+    ok(_isnan(d), "crealf returned %lf\n", d);
+    d = p_cimagf(c);
+    ok(d == 4.0f, "cimagf returned %lf\n", d);
 }
 
 static void test_nexttoward(void)
@@ -1358,6 +1518,7 @@ struct chore
 static void __cdecl chore_proc(_UnrealizedChore *_this)
 {
     struct chore *chore = CONTAINING_RECORD(_this, struct chore, chore);
+    _Cancellation_beacon beacon, beacon2;
 
     if (chore->start_event)
     {
@@ -1380,6 +1541,21 @@ static void __cdecl chore_proc(_UnrealizedChore *_this)
                 p__StructuredTaskCollection__IsCanceling,
                 chore->chore.task_collection);
         ok(!canceling, "Task is already canceling\n");
+
+        ok(!p_Context_IsCurrentTaskCollectionCanceling(),
+                "IsCurrentTaskCollectionCanceling returned TRUE\n");
+
+        call_func1(p__Cancellation_beacon_ctor, &beacon);
+        ok(!*beacon.cancelling, "beacon signalled %lx\n", *beacon.cancelling);
+
+        call_func1(p__Cancellation_beacon_ctor, &beacon2);
+        ok(beacon.cancelling != beacon2.cancelling, "beacons point to the same data\n");
+        ok(!*beacon.cancelling, "beacon signalled %lx\n", *beacon.cancelling);
+
+        canceling = call_func1(p__Cancellation_beacon__Confirm_cancel, &beacon);
+        ok(!canceling, "_Confirm_cancel returned TRUE\n");
+        ok(*beacon.cancelling == -1, "beacon signalled %lx\n", *beacon.cancelling);
+        *beacon.cancelling = 0;
     }
 
     if (!chore->wait_event)
@@ -1404,6 +1580,24 @@ static void __cdecl chore_proc(_UnrealizedChore *_this)
                 p__StructuredTaskCollection__IsCanceling,
                 chore->chore.task_collection);
         ok(canceling, "Task is not canceling\n");
+
+        ok(p_Context_IsCurrentTaskCollectionCanceling(),
+                "IsCurrentTaskCollectionCanceling returned FALSE\n");
+
+        ok(*beacon.cancelling == 1, "beacon not signalled (%lx)\n", *beacon.cancelling);
+        canceling = call_func1(p__Cancellation_beacon__Confirm_cancel, &beacon);
+        ok(canceling, "_Confirm_cancel returned FALSE\n");
+        ok(*beacon.cancelling == 1, "beacon not signalled (%lx)\n", *beacon.cancelling);
+        call_func1(p__Cancellation_beacon_dtor, &beacon);
+        ok(*beacon2.cancelling == 1, "beacon not signalled (%lx)\n", *beacon2.cancelling);
+        call_func1(p__Cancellation_beacon_dtor, &beacon2);
+
+        call_func1(p__Cancellation_beacon_ctor, &beacon);
+        ok(*beacon.cancelling == 1, "beacon not signalled (%lx)\n", *beacon.cancelling);
+        canceling = call_func1(p__Cancellation_beacon__Confirm_cancel, &beacon);
+        ok(canceling, "_Confirm_cancel returned FALSE\n");
+        ok(*beacon.cancelling == 1, "beacon not signalled (%lx)\n", *beacon.cancelling);
+        call_func1(p__Cancellation_beacon_dtor, &beacon);
     }
 }
 
@@ -1418,6 +1612,7 @@ static void test_StructuredTaskCollection(void)
     HANDLE chore_start_evt, chore_evt1, chore_evt2;
     _StructuredTaskCollection task_coll;
     struct chore chore1, chore2;
+    _Cancellation_beacon beacon;
     DWORD main_thread_id;
     Context *context;
     int status;
@@ -1428,11 +1623,7 @@ static void test_StructuredTaskCollection(void)
     context = p_Context_CurrentContext();
 
     memset(&task_coll, 0x55, sizeof(task_coll));
-    if (!call_func2(p__StructuredTaskCollection_ctor, &task_coll, NULL))
-    {
-        skip("_StructuredTaskCollection constructor not implemented\n");
-        return;
-    }
+    call_func2(p__StructuredTaskCollection_ctor, &task_coll, NULL);
     todo_wine ok(task_coll.unk2 == 0x1fffffff,
             "_StructuredTaskCollection ctor set wrong unk2: 0x%x != 0x1fffffff\n", task_coll.unk2);
     ok(task_coll.unk3 == NULL,
@@ -1581,13 +1772,24 @@ static void test_StructuredTaskCollection(void)
     ret = WaitForSingleObject(chore_evt1, 5000);
     ok(ret == WAIT_OBJECT_0, "WaitForSingleObject returned %ld\n", ret);
 
+    ok(!p_Context_IsCurrentTaskCollectionCanceling(),
+            "IsCurrentTaskCollectionCanceling returned TRUE\n");
+    call_func1(p__Cancellation_beacon_ctor, &beacon);
+    ok(!*beacon.cancelling, "beacon signalled\n");
+
     call_func1(p__StructuredTaskCollection__Cancel, &task_coll);
+    ok(!p_Context_IsCurrentTaskCollectionCanceling(),
+            "IsCurrentTaskCollectionCanceling returned TRUE\n");
+    ok(!*beacon.cancelling, "beacon signalled\n");
 
     b = SetEvent(chore_evt2);
     ok(b, "SetEvent failed\n");
+    ok(!*beacon.cancelling, "beacon signalled\n");
 
     status = p__StructuredTaskCollection__RunAndWait(&task_coll, NULL);
     ok(status == 2, "_StructuredTaskCollection::_RunAndWait failed: %d\n", status);
+    ok(!*beacon.cancelling, "beacon signalled\n");
+    call_func1(p__Cancellation_beacon_dtor, &beacon);
     call_func1(p__StructuredTaskCollection_dtor, &task_coll);
 
     /* cancel task collection without scheduled tasks */
@@ -1636,6 +1838,124 @@ static void test_strcmp(void)
     ok( ret == 0, "wrong ret %d\n", ret );
 }
 
+static void test_gmtime64(void)
+{
+    struct tm *ptm, tm;
+    __time64_t t;
+    int ret;
+
+    t = -1;
+    memset(&tm, 0xcc, sizeof(tm));
+    ptm = p_gmtime64(&t);
+    ok(!!ptm, "got NULL.\n");
+    ret = p_gmtime64_s(&tm, &t);
+    ok(!ret, "got %d.\n", ret);
+    ok(tm.tm_year == 69 && tm.tm_hour == 23 && tm.tm_min == 59 && tm.tm_sec == 59, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    t = -43200;
+    memset(&tm, 0xcc, sizeof(tm));
+    ptm = p_gmtime64(&t);
+    ok(!!ptm, "got NULL.\n");
+    ret = p_gmtime64_s(&tm, &t);
+    ok(!ret, "got %d.\n", ret);
+    ok(tm.tm_year == 69 && tm.tm_hour == 12 && tm.tm_min == 0 && tm.tm_sec == 0, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    ptm = p_gmtime32((__time32_t *)&t);
+    ok(!!ptm, "got NULL.\n");
+    memset(&tm, 0xcc, sizeof(tm));
+    ret = p_gmtime32_s(&tm, (__time32_t *)&t);
+    ok(!ret, "got %d.\n", ret);
+    todo_wine_if(tm.tm_year == 69 && tm.tm_hour == 12)
+    ok(tm.tm_year == 70 && tm.tm_hour == -12 && tm.tm_min == 0 && tm.tm_sec == 0, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    t = -43201;
+    ptm = p_gmtime64(&t);
+    ok(!ptm, "got non-NULL.\n");
+    memset(&tm, 0xcc, sizeof(tm));
+    ret = p_gmtime64_s(&tm, &t);
+    ok(ret == EINVAL, "got %d.\n", ret);
+    ok(tm.tm_year == -1 && tm.tm_hour == -1 && tm.tm_min == -1 && tm.tm_sec == -1, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    ptm = p_gmtime32((__time32_t *)&t);
+    ok(!ptm, "got NULL.\n");
+    memset(&tm, 0xcc, sizeof(tm));
+    ret = p_gmtime32_s(&tm, (__time32_t *)&t);
+    ok(ret == EINVAL, "got %d.\n", ret);
+    ok(tm.tm_year == -1 && tm.tm_hour == -1 && tm.tm_min == -1 && tm.tm_sec == -1, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    t = _MAX__TIME64_T + 46800;
+    memset(&tm, 0xcc, sizeof(tm));
+    ptm = p_gmtime64(&t);
+    ok(!!ptm, "got NULL.\n");
+    ret = p_gmtime64_s(&tm, &t);
+    ok(!ret, "got %d.\n", ret);
+    ok(tm.tm_year == 1101 && tm.tm_hour == 20 && tm.tm_min == 59 && tm.tm_sec == 59, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    t = _MAX__TIME64_T + 46801;
+    ptm = p_gmtime64(&t);
+    ok(!ptm, "got non-NULL.\n");
+    memset(&tm, 0xcc, sizeof(tm));
+    ret = p_gmtime64_s(&tm, &t);
+    ok(ret == EINVAL, "got %d.\n", ret);
+    ok(tm.tm_year == -1 && tm.tm_hour == -1 && tm.tm_min == -1 && tm.tm_sec == -1, "got %d, %d, %d, %d.\n",
+            tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+}
+
+static void test__fsopen(void)
+{
+    int i, ret;
+    FILE *f;
+    wchar_t wpath[MAX_PATH];
+    HANDLE h;
+    static const struct {
+        const char *loc;
+        const char *path;
+    } tests[] = {
+        { "German",   "t\xe4\xcf\xf6\xdf.txt" },
+        { "Turkish",  "t\xd0\xf0\xdd\xde\xfd\xfe.txt" },
+        { "Arabic",   "t\xca\x8c.txt" },
+        { "Japanese", "t\xb8\xd5.txt" },
+        { "Chinese",  "t\x81\x40\xfd\x71.txt" },
+    };
+
+    for(i=0; i<ARRAY_SIZE(tests); i++) {
+        if(!p_setlocale(LC_ALL, tests[i].loc)) {
+            win_skip("skipping locale %s\n", tests[i].loc);
+            continue;
+        }
+
+        memset(wpath, 0, sizeof(wpath));
+        ret = MultiByteToWideChar(CP_ACP, 0, tests[i].path, -1, wpath, MAX_PATH);
+        ok(ret, "MultiByteToWideChar failed on %s with locale %s: %lx\n",
+            tests[i].path, tests[i].loc, GetLastError());
+
+        h = CreateFileW(wpath, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h == INVALID_HANDLE_VALUE)
+        {
+            skip("can't create test file (%s)\n", wine_dbgstr_w(wpath));
+            continue;
+        }
+        CloseHandle(h);
+
+        f = p__fsopen(tests[i].path, "r", SH_DENYNO);
+        ok(!!f, "failed to create %s with locale %s\n", wine_dbgstr_a(tests[i].path), tests[i].loc);
+        p_fclose(f);
+
+        f = p__wfsopen(wpath, L"r", SH_DENYNO);
+        ok(!!f, "failed to open %s with locale %s\n", wine_dbgstr_w(wpath), tests[i].loc);
+        p_fclose(f);
+
+        ok(!p__unlink(tests[i].path), "failed to unlink %s with locale %s\n",
+            tests[i].path, tests[i].loc);
+    }
+    p_setlocale(LC_ALL, "C");
+}
+
 START_TEST(msvcr120)
 {
     if (!init()) return;
@@ -1654,10 +1974,13 @@ START_TEST(msvcr120)
     test__Condition_variable();
     test_wctype();
     test_vsscanf();
+    test__FCbuild();
     test__Cbuild();
     test_nexttoward();
     test_towctrans();
     test_CurrentContext();
     test_StructuredTaskCollection();
     test_strcmp();
+    test_gmtime64();
+    test__fsopen();
 }

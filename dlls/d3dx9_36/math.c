@@ -928,8 +928,8 @@ static ULONG WINAPI ID3DXMatrixStackImpl_Release(ID3DXMatrixStack *iface)
     TRACE("%p decreasing refcount to %lu.\n", iface, refcount);
     if (!refcount)
     {
-        HeapFree(GetProcessHeap(), 0, stack->stack);
-        HeapFree(GetProcessHeap(), 0, stack);
+        free(stack->stack);
+        free(stack);
     }
     return refcount;
 }
@@ -1002,7 +1002,7 @@ static HRESULT WINAPI ID3DXMatrixStackImpl_Pop(ID3DXMatrixStack *iface)
         D3DXMATRIX *new_stack;
 
         new_size = This->stack_size / 2;
-        new_stack = HeapReAlloc(GetProcessHeap(), 0, This->stack, new_size * sizeof(*new_stack));
+        new_stack = realloc(This->stack, new_size * sizeof(*new_stack));
         if (new_stack)
         {
             This->stack_size = new_size;
@@ -1029,7 +1029,7 @@ static HRESULT WINAPI ID3DXMatrixStackImpl_Push(ID3DXMatrixStack *iface)
         if (This->stack_size > UINT_MAX / 2) return E_OUTOFMEMORY;
 
         new_size = This->stack_size * 2;
-        new_stack = HeapReAlloc(GetProcessHeap(), 0, This->stack, new_size * sizeof(*new_stack));
+        new_stack = realloc(This->stack, new_size * sizeof(*new_stack));
         if (!new_stack) return E_OUTOFMEMORY;
 
         This->stack_size = new_size;
@@ -1174,7 +1174,7 @@ HRESULT WINAPI D3DXCreateMatrixStack(DWORD flags, ID3DXMatrixStack **stack)
 
     TRACE("flags %#lx, stack %p.\n", flags, stack);
 
-    if (!(object = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*object))))
+    if (!(object = calloc(1, sizeof(*object))))
     {
         *stack = NULL;
         return E_OUTOFMEMORY;
@@ -1182,9 +1182,9 @@ HRESULT WINAPI D3DXCreateMatrixStack(DWORD flags, ID3DXMatrixStack **stack)
     object->ID3DXMatrixStack_iface.lpVtbl = &ID3DXMatrixStack_Vtbl;
     object->ref = 1;
 
-    if (!(object->stack = HeapAlloc(GetProcessHeap(), 0, INITIAL_STACK_SIZE * sizeof(*object->stack))))
+    if (!(object->stack = malloc(INITIAL_STACK_SIZE * sizeof(*object->stack))))
     {
-        HeapFree(GetProcessHeap(), 0, object);
+        free(object);
         *stack = NULL;
         return E_OUTOFMEMORY;
     }
@@ -3017,7 +3017,7 @@ HRESULT WINAPI D3DXSHProjectCubeMap(unsigned int order, IDirect3DCubeTexture9 *t
     }
 
     format = get_format_info(desc.Format);
-    if (format->type != FORMAT_ARGB && format->type != FORMAT_ARGBF16 && format->type != FORMAT_ARGBF)
+    if (is_unknown_format(format) || is_index_format(format) || is_compressed_format(format))
     {
         FIXME("Unsupported texture format %#x.\n", desc.Format);
         return D3DERR_INVALIDCALL;
@@ -3052,7 +3052,7 @@ HRESULT WINAPI D3DXSHProjectCubeMap(unsigned int order, IDirect3DCubeTexture9 *t
                 float diff_solid, x_3d, y_3d;
                 const float u = x * S + B;
                 const float v = y * S + B;
-                struct vec4 colour;
+                struct d3dx_color colour;
                 D3DXVECTOR3 dir;
 
                 x_3d = (x * 2.0f + 1.0f) / desc.Width - 1.0f;
@@ -3093,15 +3093,15 @@ HRESULT WINAPI D3DXSHProjectCubeMap(unsigned int order, IDirect3DCubeTexture9 *t
                 D3DXVec3Normalize(&dir, &dir);
                 D3DXSHEvalDirection(temp, order, &dir);
 
-                format_to_vec4(format, &row[x * format->block_byte_count], &colour);
+                format_to_d3dx_color(format, &row[x * format->block_byte_count], NULL, &colour);
 
                 for (i = 0; i < order_square; ++i)
                 {
-                    red[i] += temp[i] * colour.x * diff_solid;
+                    red[i] += temp[i] * colour.value.x * diff_solid;
                     if (green)
-                        green[i] += temp[i] * colour.y * diff_solid;
+                        green[i] += temp[i] * colour.value.y * diff_solid;
                     if (blue)
-                        blue[i] += temp[i] * colour.z * diff_solid;
+                        blue[i] += temp[i] * colour.value.z * diff_solid;
                 }
             }
         }
