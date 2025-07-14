@@ -419,7 +419,7 @@ static void test_single_step_address(void)
 
     test_single_step_address_run(handler, 0);
 
-    if (is_wow64)
+    if (sizeof(void*) == 4)
         ok(test_single_step_exc_address == (char *)code_mem + 1, "got %p, expected %p.\n",
                 test_single_step_exc_address, (char *)code_mem + 1);
     else
@@ -437,7 +437,7 @@ static void test_single_step_address(void)
 
     test_single_step_address_run(handler, 3);
 
-    if (is_wow64)
+    if (sizeof(void*) == 4)
         ok(test_single_step_exc_address == (char *)code_mem + 1, "got %p, expected %p.\n",
                 test_single_step_exc_address, (char *)code_mem + 1);
     else
@@ -2400,7 +2400,6 @@ static void test_instrumentation_callback(void)
 
     unsigned int instrumentation_call_count;
     NTSTATUS status;
-
     PROCESS_INSTRUMENTATION_CALLBACK_INFORMATION info;
 
     memcpy( code_mem, instrumentation_callback, sizeof(instrumentation_callback) );
@@ -2640,14 +2639,50 @@ static void WINAPI termination_handler(ULONG flags, ULONG64 frame)
     ok(frame == 0x1234, "frame = %p\n", (void*)frame);
 }
 
+struct exception_code_context
+{
+    EXCEPTION_RECORD *rec;
+    CONTEXT *context;
+    DISPATCHER_CONTEXT *dispatch;
+};
+
+static void invoke_c_handler(struct exception_code_context *ctx, ULONG_PTR frame)
+{
+    p__C_specific_handler(ctx->rec, frame, ctx->context, ctx->dispatch);
+    ok(0, "__C_specific_handler returned\n");
+}
+
+static void check_exception_code(ULONG_PTR code)
+{
+    ok(code == 0x123, "code = %Ix\n", code);
+}
+
+static char call_invoke_c_handler_code[] = {
+    0x48,0x83,0xec,0x28,         /* 0:  subq     $0x28, %rsp*/
+    0x48,0x89,0xe2,              /* 4:  movq     %rsp, %rdx */
+    0x48,0xb8,0,0,0,0,0,0,0,0,   /* 7:  movabsq  $invoke_c_handler, %rax */
+    0xff,0xd0,                   /* 17: callq    *%rax */
+    0xcc,                        /* 19: int3 */
+    /* exception handler: */
+    0x48,0x89,0xc1,              /* 20: movq     %rax, %rcx */
+    0x48,0xb8,0,0,0,0,0,0,0,0,   /* 23: movabsq  $check_exception_code, %rax */
+    0xff,0xd0,                   /* 33: callq    *%rax */
+    0x48,0x83,0xc4,0x28,         /* 35: addq     $0x28, %rsp */
+    0xc3                         /* 39: retq */
+};
+
 static void test___C_specific_handler(void)
 {
+    void (*test_exception_code)(void *ctx) = code_mem;
+    IMAGE_AMD64_RUNTIME_FUNCTION_ENTRY rt_func;
+    struct exception_code_context ctx;
     DISPATCHER_CONTEXT dispatch;
     EXCEPTION_RECORD rec;
     CONTEXT context;
     ULONG64 frame;
     EXCEPTION_DISPOSITION ret;
     SCOPE_TABLE scope_table;
+    BOOLEAN res;
 
     if (!p__C_specific_handler)
     {
@@ -2682,6 +2717,41 @@ static void test___C_specific_handler(void)
     ok(termination_handler_called == 1, "termination_handler_called = %d\n",
             termination_handler_called);
     ok(dispatch.ScopeIndex == 1, "dispatch.ScopeIndex = %ld\n", dispatch.ScopeIndex);
+
+    *(void **)&call_invoke_c_handler_code[9] = invoke_c_handler;
+    *(void **)&call_invoke_c_handler_code[25] = check_exception_code;
+    test_exception_code = (void *)((char *)code_mem + 0x1000);
+    memset(code_mem, 0, 0x3000);
+    memcpy(test_exception_code, call_invoke_c_handler_code, sizeof(call_invoke_c_handler_code));
+
+    memset(&rec, 0, sizeof(rec));
+    memset(&dispatch, 0, sizeof(dispatch));
+    memset(&context, 0, sizeof(context));
+    rec.ExceptionCode = 0x123;
+    dispatch.ImageBase = (ULONG_PTR)code_mem;
+    dispatch.ControlPc = (ULONG_PTR)test_exception_code + 7;
+    dispatch.HandlerData = &scope_table;
+    dispatch.ContextRecord = &context;
+    scope_table.Count = 1;
+    scope_table.ScopeRecord[0].BeginAddress = 0x1000;
+    scope_table.ScopeRecord[0].EndAddress = 0x1013;
+    scope_table.ScopeRecord[0].HandlerAddress = EXCEPTION_EXECUTE_HANDLER;
+    scope_table.ScopeRecord[0].JumpTarget = 0x1014;
+
+    ((char *)code_mem)[0x2000] = 1;
+    rt_func.BeginAddress = 0x1000;
+    rt_func.EndAddress = 0x1000 + sizeof(call_invoke_c_handler_code);
+    rt_func.UnwindData = 0x2000;
+    res = RtlAddFunctionTable(&rt_func, 1, dispatch.ImageBase);
+    ok(res, "RtlAddFunctionTable failed\n");
+
+    ctx.rec = &rec;
+    ctx.context = &context;
+    ctx.dispatch = &dispatch;
+    test_exception_code(&ctx);
+
+    res = RtlDeleteFunctionTable(&rt_func);
+    ok(res, "RtlDeleteFunctionTable failed\n");
 }
 
 /* This is heavily based on the i386 exception tests. */
@@ -5736,6 +5806,41 @@ static void test_instrumentation_callback(void)
         0x41, 0xff, 0xe2,                   /* jmp *r10 */
     };
 
+    static const BYTE call_func_nt_flag[] =
+    {
+        0x56,                                           /* push %rsi */
+        0x57,                                           /* push %rdi */
+        0x48, 0x89, 0xce,                               /* mov %rcx,%rsi */
+        0x48, 0x89, 0xd7,                               /* mov %rdx,%rdi */
+
+        0x9c,                                           /* pushfq */
+        0x9c,                                           /* pushfq */
+        0x48, 0x81, 0x0c, 0x24, 0x00, 0x40, 0x00, 0x00, /* orq $0x4000,(%rsp) */
+        0x9d,                                           /* popfq */
+
+        0x41, 0xff, 0xd0,                               /* call *%r8 */
+
+        0x4c, 0x89, 0x1e,                               /* mov %r11,(%rsi) */
+        0x9c,                                           /* pushfq */
+        0x5a,                                           /* popq %rdx */
+        0x9d,                                           /* popfq */
+        0x48, 0x89, 0x17,                               /* mov %rdx,(%rdi) */
+        0x5f,                                           /* pop %rdi */
+        0x5e,                                           /* pop %rsi */
+        0xc3,                                           /* ret */
+    };
+
+    static const BYTE call_NtSetContextThread_nt_flag[] =
+    {
+        0x9c,                                           /* pushfq */
+        0x48, 0x81, 0x0c, 0x24, 0x00, 0x40, 0x00, 0x00, /* orq $0x4000,(%rsp) */
+        0x9d,                                           /* popfq */
+        0x41, 0xff, 0xd0,                               /* call *%r8 */
+        0xc3,                                           /* ret */
+    };
+
+    NTSTATUS (WINAPI *func_NtSetContextThread_nt_flag)(HANDLE, CONTEXT *, void *func);
+    NTSTATUS (WINAPI *func_nt_flag)(UINT64 *ret_r11, UINT64 *ret_rflags, void *func);
     struct instrumentation_callback_data curr_data, data;
     PROCESS_INSTRUMENTATION_CALLBACK_INFORMATION info;
     HMODULE ntdll = GetModuleHandleA( "ntdll.dll" );
@@ -5743,6 +5848,7 @@ static void test_instrumentation_callback(void)
     EXCEPTION_RECORD record;
     void *vectored_handler;
     unsigned int i, count;
+    ULONG64 r11, rflags;
     NTSTATUS status;
     HANDLE thread;
     CONTEXT ctx;
@@ -5750,6 +5856,17 @@ static void test_instrumentation_callback(void)
     LONG pass;
 
     if (is_arm64ec) return;
+
+    func_nt_flag = (void *)((char *)code_mem + 512);
+    memcpy( func_nt_flag, call_func_nt_flag, sizeof(call_func_nt_flag) );
+
+    func_NtSetContextThread_nt_flag = (void *)((char *)code_mem + 1024);
+    memcpy( func_NtSetContextThread_nt_flag, call_NtSetContextThread_nt_flag, sizeof(call_NtSetContextThread_nt_flag) );
+
+    status = func_nt_flag( &r11, &rflags, NtFlushProcessWriteBuffers );
+    ok( !status, "got %#lx.\n", status );
+    ok( r11 & 0x4000, "got %#I64x.\n", r11 );
+    ok( rflags & 0x4000, "got %#I64x.\n", rflags );
 
     memcpy( code_mem, instrumentation_callback, sizeof(instrumentation_callback) );
     *(void **)((char *)code_mem + 4) = &curr_data.call_count;
@@ -5789,6 +5906,14 @@ static void test_instrumentation_callback(void)
     data = curr_data;
     ok( status == STATUS_SUCCESS, "got %#lx.\n", status );
     ok( data.call_count == 1, "got %u.\n", data.call_count );
+
+    init_instrumentation_data( &curr_data );
+    status = func_nt_flag( &r11, &rflags, NtFlushProcessWriteBuffers );
+    data = curr_data;
+    ok( !status, "got %#lx.\n", status );
+    ok( data.call_count == 1, "got %u.\n", data.call_count );
+    ok( r11 & 0x4000, "got %#I64x.\n", r11 );
+    ok( rflags & 0x4000, "got %#I64x.\n", rflags );
 
     vectored_handler = AddVectoredExceptionHandler( TRUE, test_instrumentation_callback_handler );
     ok( !!vectored_handler, "failed.\n" );
@@ -5835,8 +5960,16 @@ static void test_instrumentation_callback(void)
         ok( data.call_count == 1, "got %u.\n", data.call_count );
         ok( data.call_data[0].r10 == (void *)ctx.Rip, "got %p, expected %p.\n", data.call_data[0].r10, (void *)ctx.Rip );
         init_instrumentation_data( &curr_data );
+        func_NtSetContextThread_nt_flag( GetCurrentThread(), &ctx, NtSetContextThread );
+        ok( 0, "Shouldn't be reached.\n" );
     }
-    ok( pass == 5, "got %ld.\n", pass );
+    else if (pass == 6)
+    {
+        data = curr_data;
+        pRtlCaptureContext( &ctx );
+        ok( !(ctx.EFlags & 0x4000), "got %#lx.\n", ctx.EFlags );
+    }
+    ok( pass == 6, "got %ld.\n", pass );
     RemoveVectoredExceptionHandler( vectored_handler );
 
     apc_count = 0;

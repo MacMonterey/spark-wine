@@ -29,6 +29,13 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(win);
 
+#define MAX_ATOM_LEN 255 /* from dlls/kernel32/atom.c */
+
+static const char *debugstr_us( const UNICODE_STRING *us )
+{
+    if (!us) return "<null>";
+    return debugstr_wn( us->Buffer, us->Length / sizeof(WCHAR) );
+}
 
 #ifdef __i386__
 /* Some apps pass a non-stdcall proc to EnumChildWindows,
@@ -147,20 +154,6 @@ HWND WIN_IsCurrentThread( HWND hwnd )
 HWND WIN_GetFullHandle( HWND hwnd )
 {
     return UlongToHandle( NtUserCallHwnd( hwnd, NtUserGetFullWindowHandle ));
-}
-
-
-/***********************************************************************
- *           WIN_SetStyle
- *
- * Change the style of a window.
- */
-ULONG WIN_SetStyle( HWND hwnd, ULONG set_bits, ULONG clear_bits )
-{
-    /* FIXME: Use SetWindowLong or move callers to win32u instead.
-     * We use STYLESTRUCT to pass params, but meaning of its field does not match our usage. */
-    STYLESTRUCT style = { .styleNew = set_bits, .styleOld = clear_bits };
-    return NtUserCallHwndParam( hwnd, (UINT_PTR)&style, NtUserSetWindowStyle );
 }
 
 
@@ -289,14 +282,23 @@ static BOOL is_default_coord( int x )
  */
 HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module, BOOL unicode )
 {
-    UNICODE_STRING class, window_name = {0};
+    WCHAR nameW[MAX_ATOM_LEN + 1];
+    UNICODE_STRING class = RTL_CONSTANT_STRING(nameW), version, window_name = {0};
     HWND hwnd, top_child = 0;
     MDICREATESTRUCTW mdi_cs;
     WNDCLASSEXW info;
     WCHAR name_buf[8];
     HMENU menu;
 
-    if (!get_class_info( module, className, &info, &class, FALSE )) return FALSE;
+    init_class_name( &class, className );
+    get_class_version( &class, &version, TRUE );
+
+    if (!NtUserGetClassInfoEx( module, &class, &info, NULL, FALSE ))
+    {
+        TRACE( "%s %p -> not found\n", debugstr_us(&class), module );
+        SetLastError( ERROR_CLASS_DOES_NOT_EXIST );
+        return FALSE;
+    }
 
     TRACE("%s %s%s%s ex=%08lx style=%08lx %d,%d %dx%d parent=%p menu=%p inst=%p params=%p\n",
           unicode ? debugstr_w(cs->lpszName) : debugstr_a((LPCSTR)cs->lpszName),
@@ -478,12 +480,13 @@ HWND WINAPI DECLSPEC_HOTPATCH CreateWindowExW( DWORD exStyle, LPCWSTR className,
     cs.lpszClass      = className;
     cs.dwExStyle      = exStyle;
 
-    
+
     if (exStyle == 0x000800a0) // Netease Cloudmusic shadow wnd
     {
         FIXME("hack %x\n", cs.dwExStyle);
         return NULL;
     }
+
     return wow_handlers.create_window( &cs, className, instance, TRUE );
 }
 
@@ -864,15 +867,6 @@ BOOL WINAPI AnimateWindow( HWND hwnd, DWORD time, DWORD flags )
 
     NtUserShowWindow( hwnd, (flags & AW_HIDE) ? SW_HIDE : ((flags & AW_ACTIVATE) ? SW_SHOW : SW_SHOWNA) );
     return TRUE;
-}
-
-
-/***********************************************************************
- *           BeginDeferWindowPos (USER32.@)
- */
-HDWP WINAPI BeginDeferWindowPos( INT count )
-{
-    return NtUserBeginDeferWindowPos( count );
 }
 
 
@@ -1273,6 +1267,17 @@ BOOL WINAPI IsWindowVisible( HWND hwnd )
 }
 
 
+/***********************************************************************
+ *		IsWindowArranged (USER32.@)
+ */
+BOOL WINAPI IsWindowArranged( HWND hwnd )
+{
+    FIXME( "hwnd %p stub.\n", hwnd );
+
+    return FALSE;
+}
+
+
 /*******************************************************************
  *		GetTopWindow (USER32.@)
  */
@@ -1508,12 +1513,7 @@ BOOL WINAPI UpdateLayeredWindow( HWND hwnd, HDC hdcDst, POINT *pptDst, SIZE *psi
  */
 BOOL WINAPI GetProcessDefaultLayout( DWORD *layout )
 {
-    if (!layout)
-    {
-        SetLastError( ERROR_NOACCESS );
-        return FALSE;
-    }
-    *layout = NtUserGetProcessDefaultLayout();
+    if (!NtUserGetProcessDefaultLayout( layout )) return FALSE;
     if (*layout == ~0u)
     {
         WCHAR *str, buffer[MAX_PATH];
@@ -1666,5 +1666,15 @@ BOOL WINAPI SetWindowCompositionAttribute(HWND hwnd, void *data)
 {
     FIXME("(%p, %p): stub\n", hwnd, data);
     SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+    return FALSE;
+}
+
+/**********************************************************************
+ *              SetProcessLaunchForegroundPolicy (USER32.@)
+ */
+BOOL WINAPI SetProcessLaunchForegroundPolicy(DWORD pid, DWORD flags)
+{
+    FIXME("(%lu %lu): stub\n", pid, flags);
+    SetLastError(ERROR_ACCESS_DENIED);
     return FALSE;
 }

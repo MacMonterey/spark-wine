@@ -84,6 +84,8 @@ struct object_ops
     int  (*signal)(struct object *, unsigned int);
     /* return an fd object that can be used to read/write from the object */
     struct fd *(*get_fd)(struct object *);
+    /* return a sync that can be used to wait/signal the object */
+    struct object *(*get_sync)(struct object *);
     /* map access rights to the specific rights for this object */
     unsigned int (*map_access)(struct object *, unsigned int);
     /* returns the security descriptor of the object */
@@ -91,7 +93,7 @@ struct object_ops
     /* sets the security descriptor of the object */
     int (*set_sd)( struct object *, const struct security_descriptor *, unsigned int );
     /* get the object full name */
-    WCHAR *(*get_full_name)(struct object *, data_size_t *);
+    WCHAR *(*get_full_name)(struct object *, data_size_t, data_size_t *);
     /* lookup a name if an object has a namespace */
     struct object *(*lookup_name)(struct object *, struct unicode_str *,unsigned int,struct object *);
     /* link an object's name into a parent object */
@@ -146,7 +148,7 @@ extern void *memdup( const void *data, size_t len ) __WINE_ALLOC_SIZE(2) __WINE_
 extern void *alloc_object( const struct object_ops *ops );
 extern void namespace_add( struct namespace *namespace, struct object_name *ptr );
 extern const WCHAR *get_object_name( struct object *obj, data_size_t *len );
-extern WCHAR *default_get_full_name( struct object *obj, data_size_t *ret_len ) __WINE_DEALLOC(free) __WINE_MALLOC;
+extern WCHAR *default_get_full_name( struct object *obj, data_size_t max, data_size_t *ret_len ) __WINE_DEALLOC(free) __WINE_MALLOC;
 extern void dump_object_name( struct object *obj );
 extern struct object *lookup_named_object( struct object *root, const struct unicode_str *name,
                                            unsigned int attr, struct unicode_str *name_left );
@@ -170,12 +172,14 @@ extern int no_add_queue( struct object *obj, struct wait_queue_entry *entry );
 extern void no_satisfied( struct object *obj, struct wait_queue_entry *entry );
 extern int no_signal( struct object *obj, unsigned int access );
 extern struct fd *no_get_fd( struct object *obj );
+extern struct object *default_get_sync( struct object *obj );
+static inline struct object *get_obj_sync( struct object *obj ) { return obj->ops->get_sync( obj ); }
 extern unsigned int default_map_access( struct object *obj, unsigned int access );
 extern struct security_descriptor *default_get_sd( struct object *obj );
 extern int default_set_sd( struct object *obj, const struct security_descriptor *sd, unsigned int set_info );
 extern int set_sd_defaults_from_token( struct object *obj, const struct security_descriptor *sd,
                                        unsigned int set_info, struct token *token );
-extern WCHAR *no_get_full_name( struct object *obj, data_size_t *ret_len );
+extern WCHAR *no_get_full_name( struct object *obj, data_size_t max, data_size_t *ret_len );
 extern struct object *no_lookup_name( struct object *obj, struct unicode_str *name,
                                       unsigned int attributes, struct object *root );
 extern int no_link_name( struct object *obj, struct object_name *name, struct object *parent );
@@ -211,8 +215,13 @@ static inline void *mem_append( void *ptr, const void *src, data_size_t len )
 
 /* event functions */
 
+struct event_sync;
 struct event;
 struct keyed_event;
+
+extern struct event_sync *create_event_sync( int manual, int signaled );
+extern void signal_sync( struct event_sync *sync );
+extern void reset_sync( struct event_sync *sync );
 
 extern struct event *create_event( struct object *root, const struct unicode_str *name,
                                    unsigned int attr, int manual_reset, int initial_state,
@@ -275,10 +284,17 @@ extern void init_signals(void);
 
 /* atom functions */
 
-extern atom_t add_global_atom( struct winstation *winstation, const struct unicode_str *str );
-extern atom_t find_global_atom( struct winstation *winstation, const struct unicode_str *str );
-extern int grab_global_atom( struct winstation *winstation, atom_t atom );
-extern void release_global_atom( struct winstation *winstation, atom_t atom );
+extern struct object *create_atom_table(void);
+extern void set_global_atom_table( struct object *obj );
+extern void set_user_atom_table( struct object *obj );
+
+struct atom_table;
+extern struct atom_table *get_global_atom_table(void);
+extern struct atom_table *get_user_atom_table(void);
+extern atom_t add_atom( struct atom_table *table, const struct unicode_str *str );
+extern atom_t find_atom( struct atom_table *table, const struct unicode_str *str );
+extern int grab_atom( struct atom_table *table, atom_t atom );
+extern void release_atom( struct atom_table *table, atom_t atom );
 
 /* directory functions */
 

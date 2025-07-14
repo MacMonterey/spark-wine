@@ -1394,7 +1394,6 @@ void msvcrt_free_io(void)
     unsigned int i;
     int j;
 
-    _flushall();
     _fcloseall();
 
     for(i=0; i<ARRAY_SIZE(MSVCRT___pioinfo); i++)
@@ -2451,6 +2450,9 @@ int CDECL _wsopen_dispatch( const wchar_t* path, int oflags, int shflags, int pm
       break;
     case _SH_DENYNO:
       sharing = FILE_SHARE_READ | FILE_SHARE_WRITE;
+      break;
+    case _SH_SECURE:
+      sharing = (access == GENERIC_READ ? FILE_SHARE_READ : 0);
       break;
     default:
       ERR( "Unhandled shflags %#x\n", shflags );

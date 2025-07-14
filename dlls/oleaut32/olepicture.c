@@ -63,7 +63,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(olepicture);
 #define BITMAP_FORMAT_PNG   0x5089
 #define BITMAP_FORMAT_APM   0xcdd7
 
-#include "pshpack1.h"
+#pragma pack(push,1)
 
 /* Header for Aldus Placable Metafiles - a standard metafile follows */
 typedef struct _APM_HEADER
@@ -98,7 +98,23 @@ typedef struct
     CURSORICONFILEDIRENTRY  idEntries[1];
 } CURSORICONFILEDIR;
 
-#include "poppack.h"
+#pragma pack(pop)
+
+typedef struct
+{
+    const WICPixelFormatGUID *guid;
+    UINT bpp;
+    BOOL indexed;
+} WICFORMAT;
+
+const WICFORMAT wicformats[] =
+{
+    {&GUID_WICPixelFormat1bppIndexed, 1, TRUE},
+    {&GUID_WICPixelFormat4bppIndexed, 4, TRUE},
+    {&GUID_WICPixelFormat8bppIndexed, 8, TRUE},
+    {&GUID_WICPixelFormat24bppBGR,    24},
+    {&GUID_WICPixelFormat32bppBGR,    32},
+};
 
 /*************************************************************************
  *  Declaration of implementation class
@@ -169,6 +185,11 @@ static inline OLEPictureImpl *impl_from_IPersistStream( IPersistStream *iface )
 static inline OLEPictureImpl *impl_from_IConnectionPointContainer( IConnectionPointContainer *iface )
 {
     return CONTAINING_RECORD(iface, OLEPictureImpl, IConnectionPointContainer_iface);
+}
+
+static inline int get_dib_stride(int width, int bpp)
+{
+    return ((width * bpp + 31) >> 3) & ~3;
 }
 
 /*
@@ -979,20 +1000,44 @@ static HRESULT WINAPI OLEPictureImpl_IsDirty(
   return E_NOTIMPL;
 }
 
-static HRESULT OLEPictureImpl_LoadWICSource(OLEPictureImpl *This, IWICBitmapSource *src)
+HRESULT WINAPI WICCreateImagingFactory_Proxy(UINT, IWICImagingFactory**);
+
+static HRESULT OLEPictureImpl_LoadWICSource(OLEPictureImpl *This, IWICImagingFactory *factory, IWICBitmapSource *src)
 {
     HRESULT hr;
     BITMAPINFOHEADER bih;
+    BITMAPINFO *info, *dyn_info = NULL;
     UINT width, height;
     UINT stride, buffersize;
     BYTE *bits, *mask = NULL;
     WICRect rc;
+    WICPixelFormatGUID guid;
     IWICBitmapSource *real_source;
-    UINT x, y;
+    IWICPalette *palette;
+    UINT x, y, i;
     COLORREF white = RGB(255, 255, 255), black = RGB(0, 0, 0);
-    BOOL has_alpha=FALSE;
+    BOOL has_alpha=FALSE, indexed=FALSE;
 
-    hr = WICConvertBitmapSource(&GUID_WICPixelFormat32bppBGRA, src, &real_source);
+    hr = IWICBitmapSource_GetPixelFormat(src, &guid);
+    if (FAILED(hr)) return hr;
+
+    for (i = 0; i < ARRAY_SIZE(wicformats); i++)
+    {
+        if (IsEqualGUID(&guid, wicformats[i].guid))
+        {
+            bih.biBitCount = wicformats[i].bpp;
+            indexed = wicformats[i].indexed;
+            break;
+        }
+    }
+
+    if (i == ARRAY_SIZE(wicformats))
+    {
+        memcpy(&guid, &GUID_WICPixelFormat32bppBGRA, sizeof(guid));
+        bih.biBitCount = 32;
+    }
+
+    hr = WICConvertBitmapSource(&guid, src, &real_source);
     if (FAILED(hr)) return hr;
 
     hr = IWICBitmapSource_GetSize(real_source, &width, &height);
@@ -1002,7 +1047,6 @@ static HRESULT OLEPictureImpl_LoadWICSource(OLEPictureImpl *This, IWICBitmapSour
     bih.biWidth = width;
     bih.biHeight = -height;
     bih.biPlanes = 1;
-    bih.biBitCount = 32;
     bih.biCompression = BI_RGB;
     bih.biSizeImage = 0;
     bih.biXPelsPerMeter = 4085; /* olepicture ignores the stored resolution */
@@ -1010,7 +1054,7 @@ static HRESULT OLEPictureImpl_LoadWICSource(OLEPictureImpl *This, IWICBitmapSour
     bih.biClrUsed = 0;
     bih.biClrImportant = 0;
 
-    stride = 4 * width;
+    stride = get_dib_stride(width, bih.biBitCount);
     buffersize = stride * height;
 
     mask = malloc(buffersize);
@@ -1020,7 +1064,41 @@ static HRESULT OLEPictureImpl_LoadWICSource(OLEPictureImpl *This, IWICBitmapSour
         goto end;
     }
 
-    This->desc.bmp.hbitmap = CreateDIBSection(0, (BITMAPINFO*)&bih, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+    if (indexed)
+    {
+        UINT palette_size = 1 << bih.biBitCount, source_colors;
+
+        info = dyn_info = malloc(FIELD_OFFSET(BITMAPINFO, bmiColors[palette_size]));
+        if (!info)
+        {
+            hr = E_OUTOFMEMORY;
+            goto end;
+        }
+
+        info->bmiHeader = bih;
+
+        hr = IWICImagingFactory_CreatePalette(factory, &palette);
+
+        if (SUCCEEDED(hr))
+        {
+            hr = IWICBitmapSource_CopyPalette(real_source, palette);
+
+            if (SUCCEEDED(hr))
+                hr = IWICPalette_GetColors(palette, palette_size, (WICColor*)&info->bmiColors[0], &source_colors);
+
+            IWICPalette_Release(palette);
+        }
+
+        if (FAILED(hr))
+            goto end;
+
+        if (source_colors < palette_size)
+            memset(&info->bmiColors[source_colors], 0, sizeof(RGBQUAD) * (palette_size - source_colors));
+    }
+    else
+        info = (BITMAPINFO*)&bih;
+
+    This->desc.bmp.hbitmap = CreateDIBSection(0, info, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
     if (This->desc.bmp.hbitmap == 0)
     {
         hr = E_FAIL;
@@ -1041,17 +1119,20 @@ static HRESULT OLEPictureImpl_LoadWICSource(OLEPictureImpl *This, IWICBitmapSour
     This->desc.picType = PICTYPE_BITMAP;
     OLEPictureImpl_SetBitmap(This);
 
-    /* set transparent pixels to black, all others to white */
-    for(y = 0; y < height; y++){
-        for(x = 0; x < width; x++){
-            DWORD *pixel = (DWORD*)(bits + stride*y + 4*x);
-            if((*pixel & 0x80000000) == 0)
-            {
-                has_alpha = TRUE;
-                *(DWORD *)(mask + stride * y + 4 * x) = black;
+    if (IsEqualGUID(&guid, &GUID_WICPixelFormat32bppBGRA))
+    {
+        /* set transparent pixels to black, all others to white */
+        for(y = 0; y < height; y++){
+            for(x = 0; x < width; x++){
+                DWORD *pixel = (DWORD*)(bits + stride*y + 4*x);
+                if((*pixel & 0x80000000) == 0)
+                {
+                    has_alpha = TRUE;
+                    *(DWORD *)(mask + stride * y + 4 * x) = black;
+                }
+                else
+                    *(DWORD *)(mask + stride * y + 4 * x) = white;
             }
-            else
-                *(DWORD *)(mask + stride * y + 4 * x) = white;
         }
     }
 
@@ -1096,28 +1177,24 @@ static HRESULT OLEPictureImpl_LoadWICSource(OLEPictureImpl *This, IWICBitmapSour
 
 end:
     free(mask);
+    free(dyn_info);
     IWICBitmapSource_Release(real_source);
     return hr;
 }
 
-static HRESULT OLEPictureImpl_LoadWICDecoder(OLEPictureImpl *This, REFCLSID decoder_clsid, BYTE *xbuf, ULONG xread)
+static HRESULT OLEPictureImpl_LoadWICDecoder(OLEPictureImpl *This, REFGUID format_guid, BYTE *xbuf, ULONG xread)
 {
     HRESULT hr;
     IWICImagingFactory *factory;
     IWICBitmapDecoder *decoder;
     IWICBitmapFrameDecode *framedecode;
-    HRESULT initresult;
     IWICStream *stream;
 
-    initresult = CoInitialize(NULL);
+    hr = WICCreateImagingFactory_Proxy(WINCODEC_SDK_VERSION, &factory);
+    if (FAILED(hr))
+        return hr;
 
-    hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
-        &IID_IWICImagingFactory, (void**)&factory);
-    if (SUCCEEDED(hr)) /* created factory */
-    {
-        hr = IWICImagingFactory_CreateStream(factory, &stream);
-        IWICImagingFactory_Release(factory);
-    }
+    hr = IWICImagingFactory_CreateStream(factory, &stream);
 
     if (SUCCEEDED(hr)) /* created stream */
     {
@@ -1125,8 +1202,7 @@ static HRESULT OLEPictureImpl_LoadWICDecoder(OLEPictureImpl *This, REFCLSID deco
 
         if (SUCCEEDED(hr)) /* initialized stream */
         {
-            hr = CoCreateInstance(decoder_clsid, NULL, CLSCTX_INPROC_SERVER,
-                &IID_IWICBitmapDecoder, (void**)&decoder);
+            hr = IWICImagingFactory_CreateDecoder(factory, format_guid, &GUID_VendorMicrosoftBuiltIn, &decoder);
             if (SUCCEEDED(hr)) /* created decoder */
             {
                 hr = IWICBitmapDecoder_Initialize(decoder, (IStream*)stream, WICDecodeMetadataCacheOnLoad);
@@ -1143,11 +1219,12 @@ static HRESULT OLEPictureImpl_LoadWICDecoder(OLEPictureImpl *This, REFCLSID deco
 
     if (SUCCEEDED(hr)) /* got framedecode */
     {
-        hr = OLEPictureImpl_LoadWICSource(This, (IWICBitmapSource*)framedecode);
+        hr = OLEPictureImpl_LoadWICSource(This, factory, (IWICBitmapSource*)framedecode);
         IWICBitmapFrameDecode_Release(framedecode);
     }
 
-    if (SUCCEEDED(initresult)) CoUninitialize();
+    IWICImagingFactory_Release(factory);
+
     return hr;
 }
 
@@ -1454,16 +1531,16 @@ static HRESULT WINAPI OLEPictureImpl_Load(IPersistStream* iface, IStream *pStm) 
 
   switch (magic) {
   case BITMAP_FORMAT_GIF: /* GIF */
-    hr = OLEPictureImpl_LoadWICDecoder(This, &CLSID_WICGifDecoder, xbuf, xread);
+    hr = OLEPictureImpl_LoadWICDecoder(This, &GUID_ContainerFormatGif, xbuf, xread);
     break;
   case BITMAP_FORMAT_JPEG: /* JPEG */
-    hr = OLEPictureImpl_LoadWICDecoder(This, &CLSID_WICJpegDecoder, xbuf, xread);
+    hr = OLEPictureImpl_LoadWICDecoder(This, &GUID_ContainerFormatJpeg, xbuf, xread);
     break;
   case BITMAP_FORMAT_BMP: /* Bitmap */
-    hr = OLEPictureImpl_LoadWICDecoder(This, &CLSID_WICBmpDecoder, xbuf, xread);
+    hr = OLEPictureImpl_LoadWICDecoder(This, &GUID_ContainerFormatBmp, xbuf, xread);
     break;
   case BITMAP_FORMAT_PNG: /* PNG */
-    hr = OLEPictureImpl_LoadWICDecoder(This, &CLSID_WICPngDecoder, xbuf, xread);
+    hr = OLEPictureImpl_LoadWICDecoder(This, &GUID_ContainerFormatPng, xbuf, xread);
     break;
   case BITMAP_FORMAT_APM: /* APM */
     hr = OLEPictureImpl_LoadAPM(This, xbuf, xread);
@@ -2593,7 +2670,7 @@ HRESULT WINAPI OleLoadPicturePath( LPOLESTR szURLorPath, LPUNKNOWN punkCaller,
       file_candidate = szURLorPath;
 
   /* Handle candidate DOS paths separately. */
-  if (file_candidate[1] == ':') {
+  if (file_candidate[0] && file_candidate[1] == ':') {
       hRes = create_stream(file_candidate, &stream);
       if (FAILED(hRes))
 	  return INET_E_RESOURCE_NOT_FOUND;

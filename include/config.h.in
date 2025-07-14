@@ -48,9 +48,6 @@
 /* Define to 1 if you have the 'dlinfo' function. */
 #undef HAVE_DLINFO
 
-/* Define to 1 if you have the <EGL/egl.h> header file. */
-#undef HAVE_EGL_EGL_H
-
 /* Define to 1 if you have the <elf.h> header file. */
 #undef HAVE_ELF_H
 
@@ -174,6 +171,9 @@
 /* Define to 1 if you have the <linux/filter.h> header file. */
 #undef HAVE_LINUX_FILTER_H
 
+/* Define to 1 if you have the <linux/fs.h> header file. */
+#undef HAVE_LINUX_FS_H
+
 /* Define if Linux-style gethostbyname_r and gethostbyaddr_r are available */
 #undef HAVE_LINUX_GETHOSTBYNAME_R_6
 
@@ -212,6 +212,9 @@
 
 /* Define to 1 if you have the <linux/ucdrom.h> header file. */
 #undef HAVE_LINUX_UCDROM_H
+
+/* Define to 1 if you have the <linux/userfaultfd.h> header file. */
+#undef HAVE_LINUX_USERFAULTFD_H
 
 /* Define to 1 if you have the <linux/videodev2.h> header file. */
 #undef HAVE_LINUX_VIDEODEV2_H
@@ -776,9 +779,6 @@
 
 /* Define to the soname of the libodbc library. */
 #undef SONAME_LIBODBC
-
-/* Define to the soname of the libOSMesa library. */
-#undef SONAME_LIBOSMESA
 
 /* Define to the soname of the libSDL2 library. */
 #undef SONAME_LIBSDL2

@@ -54,6 +54,16 @@ struct bluetooth_device_free_params
     unix_name_t device;
 };
 
+struct bluetooth_gatt_service_free_params
+{
+    unix_name_t service;
+};
+
+struct bluetooth_device_disconnect_params
+{
+    unix_name_t device;
+};
+
 struct bluetooth_adapter_get_unique_name_params
 {
     unix_name_t adapter;
@@ -80,6 +90,12 @@ struct bluetooth_adapter_stop_discovery_params
     unix_name_t adapter;
 };
 
+struct bluetooth_adapter_remove_device_params
+{
+    unix_name_t adapter;
+    unix_name_t device;
+};
+
 struct bluetooth_auth_send_response_params
 {
     unix_name_t device;
@@ -87,6 +103,12 @@ struct bluetooth_auth_send_response_params
     UINT32 numeric_or_passkey;
     BOOL negative;
     BOOL *authenticated;
+};
+
+struct bluetooth_device_start_pairing_params
+{
+    unix_name_t device;
+    IRP *irp;
 };
 
 struct bluetooth_get_event_params
@@ -103,12 +125,17 @@ enum bluetoothapis_funcs
     unix_bluetooth_adapter_get_unique_name,
     unix_bluetooth_adapter_start_discovery,
     unix_bluetooth_adapter_stop_discovery,
+    unix_bluetooth_adapter_remove_device,
     unix_bluetooth_adapter_free,
 
     unix_bluetooth_device_free,
+    unix_bluetooth_device_disconnect,
+    unix_bluetooth_device_start_pairing,
 
     unix_bluetooth_auth_agent_enable_incoming,
     unix_bluetooth_auth_send_response,
+
+    unix_bluetooth_gatt_service_free,
 
     unix_bluetooth_get_event,
 

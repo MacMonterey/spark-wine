@@ -36,16 +36,6 @@
 
 #define ALIGN_SIZE(size, alignment) (((size) + ((ULONG_PTR)(alignment) - 1)) & ~(((ULONG_PTR)(alignment) - 1)))
 
-struct PROCESS_BASIC_INFORMATION_PRIVATE
-{
-    NTSTATUS  ExitStatus;
-    PPEB      PebBaseAddress;
-    DWORD_PTR AffinityMask;
-    DWORD_PTR BasePriority;
-    ULONG_PTR UniqueProcessId;
-    ULONG_PTR InheritedFromUniqueProcessId;
-};
-
 static LONG *child_failures;
 static WORD cb_count, cb_count_sys;
 static DWORD page_size;
@@ -1642,7 +1632,7 @@ static void test_image_mapping(const char *dll_name, DWORD scn_page_access, BOOL
     addr1 = NULL;
     size = 0;
     status = pNtMapViewOfSection(hmap, GetCurrentProcess(), &addr1, 0, 0, &offset,
-                                 &size, 1 /* ViewShare */, 0, PAGE_READONLY);
+                                 &size, ViewShare, 0, PAGE_READONLY);
     ok(NT_SUCCESS(status), "NtMapViewOfSection error %lx\n", status);
     ok(addr1 != 0, "mapped address should be valid\n");
 
@@ -1660,7 +1650,7 @@ static void test_image_mapping(const char *dll_name, DWORD scn_page_access, BOOL
     addr2 = NULL;
     size = 0;
     status = pNtMapViewOfSection(hmap, GetCurrentProcess(), &addr2, 0, 0, &offset,
-                                 &size, 1 /* ViewShare */, 0, PAGE_READONLY);
+                                 &size, ViewShare, 0, PAGE_READONLY);
     ok(status == STATUS_IMAGE_NOT_AT_BASE, "expected STATUS_IMAGE_NOT_AT_BASE, got %lx\n", status);
     ok(addr2 != 0, "mapped address should be valid\n");
     ok(addr2 != addr1, "mapped addresses should be different\n");
@@ -2380,7 +2370,7 @@ static void test_import_resolution(void)
             size = 0;
             offset.QuadPart = 0;
             status = pNtMapViewOfSection( mapping, GetCurrentProcess(), (void **)&mod, 0, 0, &offset,
-                                          &size, 1 /* ViewShare */, 0, PAGE_READONLY );
+                                          &size, ViewShare, 0, PAGE_READONLY );
             todo_wine_if (test == 5)
             ok( status == (test == 6 ? STATUS_IMAGE_NOT_AT_BASE : STATUS_SUCCESS),
                 "NtMapViewOfSection failed %lx\n", status );
@@ -3269,7 +3259,7 @@ static BOOL WINAPI dll_entry_point(HINSTANCE hinst, DWORD reason, LPVOID param)
         addr = NULL;
         size = 0;
         ret = pNtMapViewOfSection(handle, process, &addr, 0, 0, &offset,
-                                  &size, 1 /* ViewShare */, 0, PAGE_READONLY);
+                                  &size, ViewShare, 0, PAGE_READONLY);
         ok(ret == STATUS_SUCCESS, "NtMapViewOfSection error %#lx\n", ret);
         ret = pNtUnmapViewOfSection(process, addr);
         ok(ret == STATUS_SUCCESS, "NtUnmapViewOfSection error %#lx\n", ret);
@@ -3409,7 +3399,7 @@ static void child_process(const char *dll_name, DWORD target_offset)
     DWORD ret, dummy, i, code, expected_code;
     HANDLE file, thread, process;
     HMODULE hmod;
-    struct PROCESS_BASIC_INFORMATION_PRIVATE pbi;
+    PROCESS_BASIC_INFORMATION pbi;
     DWORD_PTR affinity;
     void *cookie;
 
@@ -3716,7 +3706,7 @@ static void child_process(const char *dll_name, DWORD target_offset)
 static void test_ExitProcess(void)
 {
 #if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)
-#include "pshpack1.h"
+#pragma pack(push,1)
 #ifdef __x86_64__
     static struct section_data
     {
@@ -3739,7 +3729,7 @@ static void test_ExitProcess(void)
         void *target;
     } section_data = { 0x58000040, 0xd61f0000, dll_entry_point };
 #endif
-#include "poppack.h"
+#pragma pack(pop)
     DWORD dummy, file_align;
     HANDLE file, thread, process, hmap, hmap_dup;
     char temp_path[MAX_PATH], dll_name[MAX_PATH], cmdline[MAX_PATH * 2];
@@ -3748,7 +3738,7 @@ static void test_ExitProcess(void)
     PROCESS_INFORMATION pi;
     STARTUPINFOA si = { sizeof(si) };
     CONTEXT ctx;
-    struct PROCESS_BASIC_INFORMATION_PRIVATE pbi;
+    PROCESS_BASIC_INFORMATION pbi;
     MEMORY_BASIC_INFORMATION mbi;
     DWORD_PTR affinity;
     PROCESS_PRIORITY_CLASS ppc;
@@ -4039,7 +4029,7 @@ static void test_ExitProcess(void)
     addr = NULL;
     size = 0;
     ret = pNtMapViewOfSection(hmap, pi.hProcess, &addr, 0, 0, &offset,
-                              &size, 1 /* ViewShare */, 0, PAGE_READONLY);
+                              &size, ViewShare, 0, PAGE_READONLY);
     ok(!ret, "NtMapViewOfSection error %#lx\n", ret);
     ret = pNtUnmapViewOfSection(pi.hProcess, addr);
     ok(!ret, "NtUnmapViewOfSection error %#lx\n", ret);
@@ -4182,7 +4172,7 @@ if (0)
     addr = NULL;
     size = 0;
     ret = pNtMapViewOfSection(hmap, pi.hProcess, &addr, 0, 0, &offset,
-                              &size, 1 /* ViewShare */, 0, PAGE_READONLY);
+                              &size, ViewShare, 0, PAGE_READONLY);
     ok(ret == STATUS_PROCESS_IS_TERMINATING, "expected STATUS_PROCESS_IS_TERMINATING, got %#lx\n", ret);
 
     SetLastError(0xdeadbeef);
@@ -4626,9 +4616,26 @@ static void test_wow64_redirection(void)
     char buffer[MAX_PATH];
     static const char *dlls[] = {"wlanapi.dll", "dxgi.dll", "dwrite.dll"};
     unsigned i;
+    HMODULE mod, mod_fixed, kernelbase;
+    IMAGE_NT_HEADERS *nt;
+    WORD machine;
 
     if (!is_wow64)
         return;
+
+    kernelbase = GetModuleHandleW(L"kernelbase.dll");
+    nt = RtlImageNtHeader(kernelbase);
+    machine = nt->FileHeader.Machine;
+
+    ok(!GetModuleHandleA("rasapi32.dll"), "rasapi32.dll is already loaded.\n");
+
+    mod = LoadLibraryExW(L"c:\\windows\\system32\\rasapi32.dll", 0, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+    mod_fixed = (HMODULE)((ULONG_PTR)mod & ~(ULONG_PTR)3);
+    ok(!!mod_fixed, "got NULL.\n" );
+    nt = RtlImageNtHeader(mod_fixed);
+    ok(!!nt, "got NULL.\n");
+    ok(nt->FileHeader.Machine == machine, "got wrong machine.\n");
+    FreeLibrary(mod);
 
     /* Disable FS redirection, then test loading system libraries (pick ones that shouldn't
      * already be loaded in this process).
@@ -4641,6 +4648,34 @@ static void test_wow64_redirection(void)
         snprintf(buffer, ARRAY_SIZE(buffer), "%s\\%s", syswow_dir, dlls[i]);
         test_wow64_redirection_for_dll(buffer, TRUE);
     }
+
+    mod = LoadLibraryExW(L"c:\\windows\\system32\\kernelbase.dll", 0, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+    ok(!!mod, "got NULL.\n" );
+    ok(mod == kernelbase, "got different modules.\n");
+    FreeLibrary(mod);
+
+    mod = LoadLibraryExW(L"c:\\windows\\system32\\kernelbase.dll", 0, LOAD_LIBRARY_AS_DATAFILE);
+    ok(!!mod, "got NULL.\n" );
+    ok(mod == kernelbase, "got different modules.\n");
+    FreeLibrary(mod);
+
+    ok(!GetModuleHandleA("rasapi32.dll"), "rasapi32.dll is already loaded.\n");
+    mod = LoadLibraryExW(L"c:\\windows\\system32\\rasapi32.dll", 0, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+    mod_fixed = (HMODULE)((ULONG_PTR)mod & ~(ULONG_PTR)3);
+    ok(!!mod_fixed, "got NULL.\n" );
+    nt = RtlImageNtHeader(mod_fixed);
+    ok(!!nt, "got NULL.\n");
+    ok(nt->FileHeader.Machine != machine, "got 32 bit dll.\n");
+    FreeLibrary(mod);
+
+    ok(!GetModuleHandleA("rasapi32.dll"), "rasapi32.dll is already loaded.\n");
+    mod = LoadLibraryExW(L"c:\\windows\\system32\\rasapi32.dll", 0, LOAD_LIBRARY_AS_DATAFILE);
+    mod_fixed = (HMODULE)((ULONG_PTR)mod & ~(ULONG_PTR)3);
+    ok(!!mod_fixed, "got NULL.\n" );
+    nt = RtlImageNtHeader(mod_fixed);
+    ok(!!nt, "got NULL.\n");
+    ok(nt->FileHeader.Machine != machine, "got 32 bit dll.\n");
+    FreeLibrary(mod);
 
     ok(pWow64RevertWow64FsRedirection(OldValue), "Re-enabling FS redirection failed\n");
     /* and results don't depend whether redirection is enabled or not */

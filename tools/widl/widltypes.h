@@ -346,6 +346,7 @@ struct _attr_t {
   /* parser-internal */
   struct list entry;
   struct location where;
+  unsigned int md_member;
 };
 
 struct integer
@@ -364,7 +365,7 @@ struct _expr_t {
     double dval;
     const char *sval;
     const expr_t *ext;
-    decl_spec_t tref;
+    var_t *var;
   } u;
   const expr_t *ext2;
   int is_const;
@@ -402,6 +403,7 @@ struct iface_details
   struct _type_t *inherit;
   struct _type_t *disp_inherit;
   struct _type_t *async_iface;
+  struct _type_t *runtime_class;
   typeref_list_t *requires;
 };
 
@@ -496,6 +498,40 @@ enum type_type
     TYPE_DELEGATE,
 };
 
+enum
+{
+    MD_ATTR_CONTRACT,
+    MD_ATTR_FLAGS,
+    MD_ATTR_APICONTRACT,
+    MD_ATTR_CONTRACTVERSION,
+    MD_ATTR_VERSION,
+    MD_ATTR_UUID,
+    MD_ATTR_EXCLUSIVETO,
+    MD_ATTR_STATIC,
+    MD_ATTR_THREADING,
+    MD_ATTR_MARSHALINGBEHAVIOR,
+    MD_ATTR_OVERLOAD,
+    MD_ATTR_DEFAULT_OVERLOAD,
+    MD_ATTR_DEPRECATED,
+    MD_ATTR_MAX,
+};
+
+struct metadata
+{
+    unsigned int ref;
+    unsigned int def;
+    unsigned int extends;
+    unsigned int member[MD_ATTR_MAX];
+    /* get/put methods */
+    unsigned int class_property;
+    unsigned int iface_property;
+    unsigned int propertymap;
+    /* add/remove methods */
+    unsigned int class_event;
+    unsigned int iface_event;
+    unsigned int eventmap;
+};
+
 struct _type_t {
   const char *name;               /* C++ name with parameters in brackets */
   struct namespace *namespace;
@@ -527,6 +563,7 @@ struct _type_t {
   unsigned int typestring_offset;
   unsigned int ptrdesc;           /* used for complex structs */
   int typelib_idx;
+  struct metadata md;
   struct location where;
   unsigned int ignore : 1;
   unsigned int defined : 1;
@@ -683,6 +720,11 @@ static inline enum type_type type_get_type_detect_alias(const type_t *type)
 
 #define STATEMENTS_FOR_EACH_FUNC(stmt, stmts) \
   if (stmts) LIST_FOR_EACH_ENTRY( stmt, stmts, statement_t, entry ) \
+    if (stmt->type == STMT_DECLARATION && stmt->u.var->declspec.stgclass == STG_NONE && \
+        type_get_type_detect_alias(stmt->u.var->declspec.type) == TYPE_FUNCTION)
+
+#define STATEMENTS_FOR_EACH_FUNC_REV(stmt, stmts) \
+  if (stmts) LIST_FOR_EACH_ENTRY_REV( stmt, stmts, statement_t, entry ) \
     if (stmt->type == STMT_DECLARATION && stmt->u.var->declspec.stgclass == STG_NONE && \
         type_get_type_detect_alias(stmt->u.var->declspec.type) == TYPE_FUNCTION)
 

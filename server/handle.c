@@ -129,6 +129,7 @@ static const struct object_ops handle_table_ops =
     NULL,                            /* satisfied */
     no_signal,                       /* signal */
     no_get_fd,                       /* get_fd */
+    default_get_sync,                /* get_sync */
     default_map_access,              /* map_access */
     default_get_sd,                  /* get_sd */
     default_set_sd,                  /* set_sd */
@@ -722,7 +723,7 @@ DECL_HANDLER(get_object_name)
 
     if (!(obj = get_handle_obj( current->process, req->handle, 0, NULL ))) return;
 
-    if ((name = obj->ops->get_full_name( obj, &reply->total )))
+    if ((name = obj->ops->get_full_name( obj, get_reply_max_size(), &reply->total )))
         set_reply_data_ptr( name, min( reply->total, get_reply_max_size() ));
     release_object( obj );
 }

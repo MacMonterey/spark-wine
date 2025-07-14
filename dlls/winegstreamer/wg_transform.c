@@ -96,6 +96,7 @@ struct wg_transform
     GstCaps *input_caps;
 
     bool draining;
+    INT64 ts_offset;
 };
 
 static struct wg_transform *get_transform(wg_transform_t trans)
@@ -129,9 +130,6 @@ static void align_video_info_planes(MFVideoInfo *video_info, gsize plane_align,
     }
 
     align->stride_align[0] = plane_align;
-    align->stride_align[1] = plane_align;
-    align->stride_align[2] = plane_align;
-    align->stride_align[3] = plane_align;
 
     gst_video_info_align(info, align);
 
@@ -497,7 +495,15 @@ static GstCaps *transform_get_parsed_caps(GstCaps *caps, const char *media_type)
     else if (gst_structure_get_int(structure, "wmvversion", &value))
         gst_caps_set_simple(parsed_caps, "parsed", G_TYPE_BOOLEAN, true, "wmvversion", G_TYPE_INT, value, NULL);
     else
+    {
+        if (!strcmp(media_type, "video/x-h264"))
+        {
+            gst_caps_set_simple(parsed_caps, "stream-format", G_TYPE_STRING, "byte-stream", NULL);
+            gst_caps_set_simple(parsed_caps, "alignment", G_TYPE_STRING, "au", NULL);
+        }
+
         gst_caps_set_simple(parsed_caps, "parsed", G_TYPE_BOOLEAN, true, NULL);
+    }
 
     return parsed_caps;
 }
@@ -508,6 +514,7 @@ static bool transform_create_decoder_elements(struct wg_transform *transform,
     GstCaps *parsed_caps = NULL, *sink_caps = NULL;
     GstElement *element;
     bool ret = false;
+    char *str;
 
     if (!strcmp(input_mime, "audio/x-raw") || !strcmp(input_mime, "video/x-raw"))
         return true;
@@ -528,6 +535,15 @@ static bool transform_create_decoder_elements(struct wg_transform *transform,
 
     if (element)
     {
+        if (!(element = create_element("capsfilter", "good")) ||
+                !append_element(transform->container, element, first, last))
+            goto done;
+        if ((str = gst_caps_to_string(parsed_caps)))
+        {
+            gst_util_set_object_arg(G_OBJECT(element), "caps", str);
+            free(str);
+        }
+
         /* We try to intercept buffers produced by the parser, so if we push a large buffer into the
          * parser, it won't push everything into the decoder all in one go.
          */
@@ -823,6 +839,7 @@ NTSTATUS wg_transform_push_data(void *args)
     struct wg_transform_push_data_params *params = args;
     struct wg_transform *transform = get_transform(params->transform);
     struct wg_sample *sample = params->sample;
+    GstCaps *transform_timestamp;
     const gchar *input_mime;
     GstVideoInfo video_info;
     GstBuffer *buffer;
@@ -864,13 +881,33 @@ NTSTATUS wg_transform_push_data(void *args)
     }
 
     if (sample->flags & WG_SAMPLE_FLAG_HAS_PTS)
-        GST_BUFFER_PTS(buffer) = sample->pts * 100;
+    {
+        if (sample->pts < transform->ts_offset)
+        {
+            if (transform->ts_offset)
+                GST_FIXME("ts_offset is already set to %"GST_TIME_FORMAT", overwriting",
+                        GST_TIME_ARGS(-transform->ts_offset));
+
+            GST_TRACE("Setting ts_offset to %"GST_TIME_FORMAT, GST_TIME_ARGS(-sample->pts));
+            transform->ts_offset = sample->pts;
+        }
+
+        GST_BUFFER_PTS(buffer) = (sample->pts - transform->ts_offset) * 100;
+    }
     if (sample->flags & WG_SAMPLE_FLAG_HAS_DURATION)
         GST_BUFFER_DURATION(buffer) = sample->duration * 100;
     if (!(sample->flags & WG_SAMPLE_FLAG_SYNC_POINT))
         GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
     if (sample->flags & WG_SAMPLE_FLAG_DISCONTINUITY)
         GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_DISCONT);
+
+    if (transform->attrs.preserve_timestamps && (sample->flags & WG_SAMPLE_FLAG_HAS_PTS)
+            && (transform_timestamp = gst_caps_new_empty_simple("timestamp/x-wg-transform")))
+    {
+        gst_buffer_add_reference_timestamp_meta(buffer, transform_timestamp, GST_BUFFER_PTS(buffer), GST_BUFFER_DURATION(buffer));
+        gst_caps_unref(transform_timestamp);
+    }
+
     gst_atomic_queue_push(transform->input_queue, buffer);
 
     params->result = S_OK;
@@ -947,22 +984,43 @@ static NTSTATUS copy_buffer(GstBuffer *buffer, struct wg_sample *sample, gsize *
 
 static void set_sample_flags_from_buffer(struct wg_sample *sample, GstBuffer *buffer, gsize total_size)
 {
-    if (GST_BUFFER_PTS_IS_VALID(buffer))
+    GstReferenceTimestampMeta *timestamps;
+    GstCaps *transform_timestamp;
+
+    transform_timestamp = gst_caps_new_empty_simple("timestamp/x-wg-transform");
+    timestamps = gst_buffer_get_reference_timestamp_meta(buffer, transform_timestamp);
+    gst_caps_unref(transform_timestamp);
+
+    if (timestamps)
     {
-        sample->flags |= WG_SAMPLE_FLAG_HAS_PTS;
-        sample->pts = GST_BUFFER_PTS(buffer) / 100;
+        /* GStreamer can overwrite our timestamps, so we use the wg-transform timestamps instead */
+        sample->flags |= WG_SAMPLE_FLAG_HAS_PTS | WG_SAMPLE_FLAG_PRESERVE_TIMESTAMPS;
+        sample->pts = timestamps->timestamp / 100;
+        if (timestamps->duration != GST_CLOCK_TIME_NONE)
+        {
+            sample->flags |= WG_SAMPLE_FLAG_HAS_DURATION;
+            sample->duration = timestamps->duration / 100;
+        }
     }
-    if (GST_BUFFER_DURATION_IS_VALID(buffer))
+    else
     {
-        GstClockTime duration = GST_BUFFER_DURATION(buffer) / 100;
-
-        duration = (duration * sample->size) / total_size;
-        GST_BUFFER_DURATION(buffer) -= duration * 100;
         if (GST_BUFFER_PTS_IS_VALID(buffer))
-            GST_BUFFER_PTS(buffer) += duration * 100;
+        {
+            sample->flags |= WG_SAMPLE_FLAG_HAS_PTS;
+            sample->pts = GST_BUFFER_PTS(buffer) / 100;
+        }
+        if (GST_BUFFER_DURATION_IS_VALID(buffer))
+        {
+            GstClockTime duration = GST_BUFFER_DURATION(buffer) / 100;
 
-        sample->flags |= WG_SAMPLE_FLAG_HAS_DURATION;
-        sample->duration = duration;
+            duration = (duration * sample->size) / total_size;
+            GST_BUFFER_DURATION(buffer) -= duration * 100;
+            if (GST_BUFFER_PTS_IS_VALID(buffer))
+                GST_BUFFER_PTS(buffer) += duration * 100;
+
+            sample->flags |= WG_SAMPLE_FLAG_HAS_DURATION;
+            sample->duration = duration;
+        }
     }
     if (!GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT))
         sample->flags |= WG_SAMPLE_FLAG_SYNC_POINT;
@@ -1169,6 +1227,10 @@ NTSTATUS wg_transform_read_data(void *args)
     else
         status = read_transform_output(sample, output_buffer);
 
+    if ((sample->flags & (WG_SAMPLE_FLAG_PRESERVE_TIMESTAMPS | WG_SAMPLE_FLAG_HAS_PTS)) ==
+            (WG_SAMPLE_FLAG_PRESERVE_TIMESTAMPS | WG_SAMPLE_FLAG_HAS_PTS))
+        sample->pts += transform->ts_offset;
+
     if (status)
     {
         wg_allocator_release_sample(transform->allocator, sample, false);
@@ -1228,15 +1290,23 @@ NTSTATUS wg_transform_flush(void *args)
     struct wg_transform *transform = get_transform(*(wg_transform_t *)args);
     GstBuffer *input_buffer;
     GstSample *sample;
+    GstEvent *event;
     NTSTATUS status;
 
     GST_LOG("transform %p", transform);
+
+    /* this ensures no messages are travelling through the pipeline whilst we flush */
+    event = gst_event_new_flush_start();
+    gst_pad_push_event(transform->my_src, event);
 
     while ((input_buffer = gst_atomic_queue_pop(transform->input_queue)))
         gst_buffer_unref(input_buffer);
 
     if (transform->stepper)
         wg_stepper_flush(transform->stepper);
+
+    event = gst_event_new_flush_stop(true);
+    gst_pad_push_event(transform->my_src, event);
 
     if ((status = wg_transform_drain(args)))
         return status;

@@ -197,8 +197,6 @@ BOOL Str_SetPtrAtoW(LPWSTR *lppDest, LPCSTR lpSrc);
 BOOL Str_SetPtrWtoA(LPSTR *lppDest, LPCWSTR lpSrc);
 BOOL imagelist_has_alpha(HIMAGELIST, UINT);
 
-#define COMCTL32_VERSION_MINOR 81
-
 /* Our internal stack structure of the window procedures to subclass */
 typedef struct _SUBCLASSPROCS {
     SUBCLASSPROC subproc;
@@ -215,6 +213,10 @@ typedef struct
    int is_unicode;
    int running;
 } SUBCLASS_INFO, *LPSUBCLASS_INFO;
+
+/* WM_NOTIFY unicode to ansi conversion and forwarding stuff */
+
+LRESULT COMCTL32_forward_notify_to_ansi_window(HWND hwnd_notify, NMHDR *hdr, WCHAR **unicode_buffer, DWORD *unicode_buffer_size);
 
 /* undocumented functions */
 

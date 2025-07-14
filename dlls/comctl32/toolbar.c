@@ -6359,7 +6359,16 @@ TOOLBAR_Notify (TOOLBAR_INFO *infoPtr, LPNMHDR lpnmh)
         FIXME("TTN_GETDISPINFOA - should not be received; please report\n");
         return 0;
 
+    case CBEN_ENDEDITW:
+        if (infoPtr->bUnicode)
+            return SendMessageW(infoPtr->hwndNotify, WM_NOTIFY, lpnmh->idFrom, (LPARAM)lpnmh);
+        return COMCTL32_forward_notify_to_ansi_window(infoPtr->hwndNotify, lpnmh, NULL, NULL);
+
+    case CBEN_ENDEDITA:
+        return SendMessageW(infoPtr->hwndNotify, WM_NOTIFY, lpnmh->idFrom, (LPARAM)lpnmh);
+
     default:
+        WARN("Should WM_NOTIFY NMHDR code 0x%x be forwarded?\n", lpnmh->code);
         return 0;
     }
 }
@@ -6856,6 +6865,11 @@ ToolbarWindowProc (HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 	case WM_GETFONT:
 		return TOOLBAR_GetFont (infoPtr);
+
+        case WM_GETOBJECT:
+            if ((LONG)lParam == OBJID_QUERYCLASSNAMEIDX)
+                return 0x1000c;
+	    return DefWindowProcW (hwnd, uMsg, wParam, lParam);
 
 	case WM_KEYDOWN:
 	    return TOOLBAR_KeyDown (infoPtr, wParam, lParam);

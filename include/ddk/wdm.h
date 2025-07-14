@@ -1012,7 +1012,7 @@ typedef NTSTATUS (WINAPI *PIO_COMPLETION_ROUTINE)(
 #define SL_INVOKE_ON_ERROR              0x80
 
 #if !defined(_WIN64)
-#include <pshpack4.h>
+#pragma pack(push,4)
 #endif
 typedef struct _IO_STACK_LOCATION {
   UCHAR  MajorFunction;
@@ -1155,7 +1155,7 @@ typedef struct _IO_STACK_LOCATION {
   PVOID  Context;
 } IO_STACK_LOCATION, *PIO_STACK_LOCATION;
 #if !defined(_WIN64)
-#include <poppack.h>
+#pragma pack(pop)
 #endif
 
 /* MDL definitions */
@@ -1351,7 +1351,12 @@ typedef struct _KUSER_SHARED_DATA {
     LARGE_INTEGER TimeZoneBiasEffectiveStart;              /* 0x3c8 */
     LARGE_INTEGER TimeZoneBiasEffectiveEnd;                /* 0x3d0 */
     XSTATE_CONFIGURATION XState;                           /* 0x3d8 */
-} KSHARED_USER_DATA, *PKSHARED_USER_DATA;
+    KSYSTEM_TIME FeatureConfigurationChangeStamp;          /* 0x720 */
+    ULONG Spare;
+    ULONG64 UserPointerAuthMask;                           /* 0x730 */
+} KUSER_SHARED_DATA, *PKUSER_SHARED_DATA;
+
+C_ASSERT( sizeof(KUSER_SHARED_DATA) == 0x738 );
 
 #define SHARED_GLOBAL_FLAGS_QPC_BYPASS_ENABLED 0x01
 #define SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_HV_PAGE 0x02
@@ -1749,6 +1754,10 @@ void      WINAPI ExReleaseResourceForThreadLite(ERESOURCE*,ERESOURCE_THREAD);
 ULONG     WINAPI ExSetTimerResolution(ULONG,BOOLEAN);
 void      WINAPI ExUnregisterCallback(void*);
 
+#define PLUGPLAY_REGKEY_DEVICE            1
+#define PLUGPLAY_REGKEY_DRIVER            2
+#define PLUGPLAY_REGKEY_CURRENT_HWPROFILE 4
+
 #define PLUGPLAY_PROPERTY_PERSISTENT 0x0001
 
 void      WINAPI IoFreeErrorLogEntry(void*);
@@ -1781,6 +1790,7 @@ NTSTATUS  WINAPI IoDeleteSymbolicLink(UNICODE_STRING*);
 DEVICE_OBJECT * WINAPI IoGetAttachedDeviceReference(DEVICE_OBJECT*);
 PEPROCESS WINAPI IoGetCurrentProcess(void);
 NTSTATUS  WINAPI IoGetDeviceInterfaces(const GUID*,PDEVICE_OBJECT,ULONG,PWSTR*);
+NTSTATUS  WINAPI IoGetDeviceInterfacePropertyData(UNICODE_STRING*,const DEVPROPKEY*,LCID,ULONG,ULONG,void*,ULONG*,DEVPROPTYPE*);
 NTSTATUS  WINAPI IoGetDeviceObjectPointer(UNICODE_STRING*,ACCESS_MASK,PFILE_OBJECT*,PDEVICE_OBJECT*);
 NTSTATUS  WINAPI IoGetDeviceProperty(PDEVICE_OBJECT,DEVICE_REGISTRY_PROPERTY,ULONG,PVOID,PULONG);
 NTSTATUS  WINAPI IoGetDevicePropertyData(PDEVICE_OBJECT,const DEVPROPKEY*,LCID,ULONG,ULONG,void*,ULONG*,DEVPROPTYPE*);
@@ -1802,6 +1812,7 @@ void      WINAPI IoReleaseRemoveLockEx(IO_REMOVE_LOCK*,void*,ULONG);
 NTSTATUS  WINAPI IoReportTargetDeviceChange(DEVICE_OBJECT*,void*);
 NTSTATUS  WINAPI IoReportTargetDeviceChangeAsynchronous(DEVICE_OBJECT*,void*,PDEVICE_CHANGE_COMPLETE_CALLBACK,void*);
 void      WINAPI IoReuseIrp(IRP*,NTSTATUS);
+NTSTATUS  WINAPI IoSetDeviceInterfacePropertyData(UNICODE_STRING*,const DEVPROPKEY*,LCID,ULONG,DEVPROPTYPE,ULONG,void*);
 NTSTATUS  WINAPI IoSetDeviceInterfaceState(UNICODE_STRING*,BOOLEAN);
 NTSTATUS  WINAPI IoSetDevicePropertyData(DEVICE_OBJECT*,const DEVPROPKEY*,LCID,ULONG,DEVPROPTYPE,ULONG,void*);
 NTSTATUS  WINAPI IoWMIRegistrationControl(PDEVICE_OBJECT,ULONG);

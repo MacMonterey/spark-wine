@@ -108,7 +108,8 @@ extern void set_fd_signaled( struct fd *fd, int signaled );
 extern char *dup_fd_name( struct fd *root, const char *name ) __WINE_DEALLOC(free) __WINE_MALLOC;
 extern void get_nt_name( struct fd *fd, struct unicode_str *name );
 
-extern int default_fd_signaled( struct object *obj, struct wait_queue_entry *entry );
+extern struct object *default_fd_get_sync( struct object *obj );
+extern WCHAR *default_fd_get_full_name( struct object *obj, data_size_t max, data_size_t *ret_len );
 extern int default_fd_get_poll_events( struct fd *fd );
 extern void default_poll_event( struct fd *fd, int event );
 extern void fd_cancel_async( struct fd *fd, struct async *async );
@@ -193,15 +194,15 @@ extern struct mapping *create_session_mapping( struct object *root, const struct
                                                unsigned int attr, const struct security_descriptor *sd );
 extern void set_session_mapping( struct mapping *mapping );
 
-extern const volatile void *alloc_shared_object(void);
-extern void free_shared_object( const volatile void *object_shm );
-extern void invalidate_shared_object( const volatile void *object_shm );
-extern struct obj_locator get_shared_object_locator( const volatile void *object_shm );
+extern session_shm_t *shared_session;
+extern volatile void *alloc_shared_object(void);
+extern void free_shared_object( volatile void *object_shm );
+extern void invalidate_shared_object( volatile void *object_shm );
+extern struct obj_locator get_shared_object_locator( volatile void *object_shm );
 
 #define SHARED_WRITE_BEGIN( object_shm, type )                          \
     do {                                                                \
-        const type *__shared = (object_shm);                            \
-        type *shared = (type *)__shared;                                \
+        type *shared = (object_shm);                                    \
         shared_object_t *__obj = CONTAINING_RECORD( shared, shared_object_t, shm );  \
         LONG64 __seq = __obj->seq + 1, __end = __seq + 1;               \
         assert( (__seq & 1) != 0 );                                     \

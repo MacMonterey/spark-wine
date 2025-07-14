@@ -486,11 +486,39 @@ static void test_GdipImageGetFrameDimensionsCount(void)
     GdipDisposeImage((GpImage*)bm);
 }
 
+static void _load_resource(int line, const WCHAR *filename, BYTE **data, DWORD *size)
+{
+    HRSRC resource = FindResourceW(NULL, filename, (const WCHAR *)RT_RCDATA);
+    ok_(__FILE__, line)(!!resource, "FindResourceW failed, error %lu\n", GetLastError());
+    *data = LockResource(LoadResource(GetModuleHandleW(NULL), resource));
+    ok_(__FILE__, line)(!!*data, "LockResource failed, error %lu\n", GetLastError());
+    *size = SizeofResource(GetModuleHandleW(NULL), resource);
+    ok_(__FILE__, line)(*size > 0, "SizeofResource failed, error %lu\n", GetLastError());
+}
+
+static void create_test_resource(const WCHAR *filename, int resource)
+{
+    DWORD written, length;
+    HANDLE file;
+    void *ptr;
+
+    file = CreateFileW(filename, GENERIC_READ|GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, 0);
+    ok(file != INVALID_HANDLE_VALUE, "file creation failed, at %s, error %ld\n", wine_dbgstr_w(filename), GetLastError());
+
+    _load_resource(__LINE__, MAKEINTRESOURCEW(resource), (BYTE **)&ptr, &length);
+    WriteFile(file, ptr, length, &written, NULL);
+    ok(written == length, "couldn't write resource\n");
+    CloseHandle(file);
+}
+
 static void test_LoadingImages(void)
 {
+    static const GUID format_ico = { 0xb96b3cb5U, 0x0728U, 0x11d3U, {0x9d, 0x7b, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e} };
+    static const WCHAR filename_ico[] = L"a.ico";
     GpStatus stat;
     GpBitmap *bm;
     GpImage *img;
+    GUID format;
 
     stat = GdipCreateBitmapFromFile(0, 0);
     expect(InvalidParameter, stat);
@@ -530,6 +558,22 @@ static void test_LoadingImages(void)
     stat = GdipLoadImageFromFileICM(L"nonexistent", &img);
     todo_wine expect(OutOfMemory, stat);
     ok(!img, "returned %p\n", img);
+
+    create_test_resource(filename_ico, 5);
+
+    bm = NULL;
+    stat = GdipLoadImageFromFile(filename_ico, (GpImage**)&bm);
+    expect(Ok, stat);
+    if (stat != Ok) goto cleanup;
+
+    stat = GdipGetImageRawFormat((GpImage*)bm, &format);
+    expect(Ok, stat);
+    expect_guid(&format_ico, &format, __LINE__, FALSE);
+
+cleanup:
+    if (bm)
+        GdipDisposeImage((GpImage*)bm);
+    ok(DeleteFileW(filename_ico), "Delete failed.\n");
 }
 
 static void test_SavingImages(void)
@@ -4122,7 +4166,7 @@ static void test_image_properties(void)
 #define IFD_FLOAT     11
 #define IFD_DOUBLE    12
 
-#include "pshpack2.h"
+#pragma pack(push,2)
 struct IFD_entry
 {
     SHORT id;
@@ -4214,7 +4258,7 @@ static const struct tiff_data
     { { 0x01020304, 0x05060708 }, { 0x10203040, 0x50607080 }, { 0x11223344, 0x55667788 } },
     { 0x11, 0x22, 0x33, 0 }
 };
-#include "poppack.h"
+#pragma pack(pop)
 
 static void test_tiff_properties(void)
 {
@@ -5286,9 +5330,9 @@ static void test_CloneBitmapArea(void)
     0xff,0xff,0xff,0x00, 0x80,0x80,0x80,0x00, 0x00,0x00,0x00,0x00
     };
     static BYTE bmp_3x3_data_24bpp_rgb[] = {
-    0xff,0x00,0x00, 0x00,0xff,0x00, 0x00,0x00,0xff,
-    0xff,0xff,0x00, 0x00,0xff,0xff, 0xff,0x00,0xff,
-    0xff,0xff,0xff, 0x80,0x80,0x80, 0x00,0x00,0x00
+    0xff,0x00,0x00, 0x00,0xff,0x00, 0x00,0x00,0xff, 0x00,0x00,0x00,
+    0xff,0xff,0x00, 0x00,0xff,0xff, 0xff,0x00,0xff, 0x00,0x00,0x00,
+    0xff,0xff,0xff, 0x80,0x80,0x80, 0x00,0x00,0x00, 0x00,0x00,0x00
     };
 
     static const struct test_data {
@@ -6412,7 +6456,7 @@ static void test_graphics_clear(void)
     GdipDisposeImage((GpImage *)bitmap);
 }
 
-#include "pshpack2.h"
+#pragma pack(push,2)
 static const struct tiff_1x1_data
 {
     USHORT byte_order;
@@ -6455,7 +6499,7 @@ static const struct tiff_1x1_data
     { 8,8,8,0 },
     { 1,0,2,3,4,5,6,7,8,9,0,1,2,3,4,5 }
 };
-#include "poppack.h"
+#pragma pack(pop)
 
 static void test_tiff_color_formats(void)
 {
@@ -6481,7 +6525,9 @@ static void test_tiff_color_formats(void)
         { 2, 4, 8, PixelFormat32bppARGB },
         { 2, 4, 16, PixelFormat48bppRGB },
         { 2, 4, 24, 0 },
+#if 0 /* FIXME */
         { 2, 4, 32, 0 },
+#endif
         /* 1 - BlackIsZero (Bilevel) */
         { 1, 1, 1, PixelFormat1bppIndexed },
 #if 0 /* FIXME: PNG vs TIFF mismatch */

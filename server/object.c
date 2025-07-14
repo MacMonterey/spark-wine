@@ -111,6 +111,7 @@ static const struct object_ops apc_reserve_ops =
     no_satisfied,               /* satisfied */
     no_signal,                  /* signal */
     no_get_fd,                  /* get_fd */
+    default_get_sync,           /* get_sync */
     default_map_access,         /* map_access */
     default_get_sd,             /* get_sd */
     default_set_sd,             /* set_sd */
@@ -135,6 +136,7 @@ static const struct object_ops completion_reserve_ops =
     no_satisfied,              /* satisfied */
     no_signal,                 /* signal */
     no_get_fd,                 /* get_fd */
+    default_get_sync,          /* get_sync */
     default_map_access,        /* map_access */
     default_get_sd,            /* get_sd */
     default_set_sd,            /* set_sd */
@@ -267,7 +269,7 @@ const WCHAR *get_object_name( struct object *obj, data_size_t *len )
 }
 
 /* get the full path name of an existing object */
-WCHAR *default_get_full_name( struct object *obj, data_size_t *ret_len )
+WCHAR *default_get_full_name( struct object *obj, data_size_t max, data_size_t *ret_len )
 {
     static const WCHAR backslash = '\\';
     struct object *ptr = obj;
@@ -292,6 +294,7 @@ WCHAR *default_get_full_name( struct object *obj, data_size_t *ret_len )
         memcpy( ret + len, &backslash, sizeof(WCHAR) );
         obj = name->parent;
     }
+    if (*ret_len > max) set_error( STATUS_INFO_LENGTH_MISMATCH );
     return (WCHAR *)ret;
 }
 
@@ -639,6 +642,11 @@ struct fd *no_get_fd( struct object *obj )
     return NULL;
 }
 
+struct object *default_get_sync( struct object *obj )
+{
+    return grab_object( obj );
+}
+
 unsigned int default_map_access( struct object *obj, unsigned int access )
 {
     return map_access( access, &obj->ops->type->mapping );
@@ -777,7 +785,7 @@ int default_set_sd( struct object *obj, const struct security_descriptor *sd,
     return set_sd_defaults_from_token( obj, sd, set_info, current->process->token );
 }
 
-WCHAR *no_get_full_name( struct object *obj, data_size_t *ret_len )
+WCHAR *no_get_full_name( struct object *obj, data_size_t max, data_size_t *ret_len )
 {
     return NULL;
 }

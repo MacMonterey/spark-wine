@@ -1002,7 +1002,7 @@ HKL WINAPI NtUserGetKeyboardLayout( DWORD thread_id )
     HKL layout = thread->kbd_layout;
 
     if (thread_id && thread_id != GetCurrentThreadId())
-        FIXME( "couldn't return keyboard layout for thread %04x\n", (int)thread_id );
+        FIXME( "couldn't return keyboard layout for thread %04x\n", thread_id );
 
     if (!layout) return get_locale_kbd_layout();
     return layout;
@@ -1233,7 +1233,7 @@ INT WINAPI NtUserGetKeyNameText( LONG lparam, WCHAR *buffer, INT size )
     const KBDTABLES *kbd_tables;
     VSC_LPWSTR *key_name;
 
-    TRACE_(keyboard)( "lparam %#x, buffer %p, size %d.\n", (int)lparam, buffer, size );
+    TRACE_(keyboard)( "lparam %#x, buffer %p, size %d.\n", lparam, buffer, size );
 
     if (!buffer || !size) return 0;
     if ((len = user_driver->pGetKeyNameText( lparam, buffer, size )) >= 0) return len;
@@ -1569,7 +1569,7 @@ int WINAPI NtUserGetMouseMovePointsEx( UINT size, MOUSEMOVEPOINT *ptin, MOUSEMOV
     unsigned int i;
 
 
-    TRACE( "%d, %p, %p, %d, %d\n", size, ptin, ptout, count, (int)resolution );
+    TRACE( "%d, %p, %p, %d, %d\n", size, ptin, ptout, count, resolution );
 
     if ((size != sizeof(MOUSEMOVEPOINT)) || (count < 0) || (count > ARRAY_SIZE( positions )))
     {
@@ -1743,7 +1743,7 @@ void update_mouse_tracking_info( HWND hwnd )
     /* stop the timer if the tracking list is empty */
     if (!(tracking_info.info.dwFlags & (TME_HOVER | TME_LEAVE)))
     {
-        kill_system_timer( tracking_info.info.hwndTrack, SYSTEM_TIMER_TRACK_MOUSE );
+        NtUserKillSystemTimer( tracking_info.info.hwndTrack, SYSTEM_TIMER_TRACK_MOUSE );
         tracking_info.info.hwndTrack = 0;
         tracking_info.info.dwFlags = 0;
         tracking_info.info.dwHoverTime = 0;
@@ -1761,11 +1761,11 @@ BOOL WINAPI NtUserTrackMouseEvent( TRACKMOUSEEVENT *info )
     POINT pos;
 
     TRACE( "size %u, flags %#x, hwnd %p, time %u\n",
-           (int)info->cbSize, (int)info->dwFlags, info->hwndTrack, (int)info->dwHoverTime );
+           info->cbSize, info->dwFlags, info->hwndTrack, info->dwHoverTime );
 
     if (info->cbSize != sizeof(TRACKMOUSEEVENT))
     {
-        WARN( "wrong size %u\n", (int)info->cbSize );
+        WARN( "wrong size %u\n", info->cbSize );
         RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
         return FALSE;
     }
@@ -1793,7 +1793,7 @@ BOOL WINAPI NtUserTrackMouseEvent( TRACKMOUSEEVENT *info )
     TRACE( "point %s hwnd %p hittest %d\n", wine_dbgstr_point(&pos), hwnd, hittest );
 
     if (info->dwFlags & ~(TME_CANCEL | TME_HOVER | TME_LEAVE | TME_NONCLIENT))
-        FIXME( "ignoring flags %#x\n", (int)info->dwFlags & ~(TME_CANCEL | TME_HOVER | TME_LEAVE | TME_NONCLIENT) );
+        FIXME( "ignoring flags %#x\n", info->dwFlags & ~(TME_CANCEL | TME_HOVER | TME_LEAVE | TME_NONCLIENT) );
 
     if (info->dwFlags & TME_CANCEL)
     {
@@ -1804,7 +1804,7 @@ BOOL WINAPI NtUserTrackMouseEvent( TRACKMOUSEEVENT *info )
             /* if we aren't tracking on hover or leave remove this entry */
             if (!(tracking_info.info.dwFlags & (TME_HOVER | TME_LEAVE)))
             {
-                kill_system_timer( tracking_info.info.hwndTrack, SYSTEM_TIMER_TRACK_MOUSE );
+                NtUserKillSystemTimer( tracking_info.info.hwndTrack, SYSTEM_TIMER_TRACK_MOUSE );
                 tracking_info.info.hwndTrack = 0;
                 tracking_info.info.dwFlags = 0;
                 tracking_info.info.dwHoverTime = 0;
@@ -1830,7 +1830,7 @@ BOOL WINAPI NtUserTrackMouseEvent( TRACKMOUSEEVENT *info )
         if ((tracking_info.info.dwFlags & TME_LEAVE) && tracking_info.info.hwndTrack != NULL)
             check_mouse_leave(hwnd, hittest);
 
-        kill_system_timer( tracking_info.info.hwndTrack, SYSTEM_TIMER_TRACK_MOUSE );
+        NtUserKillSystemTimer( tracking_info.info.hwndTrack, SYSTEM_TIMER_TRACK_MOUSE );
         tracking_info.info.hwndTrack = 0;
         tracking_info.info.dwFlags = 0;
         tracking_info.info.dwHoverTime = 0;
@@ -2107,7 +2107,7 @@ HWND WINAPI NtUserSetActiveWindow( HWND hwnd )
  */
 HWND WINAPI NtUserSetFocus( HWND hwnd )
 {
-    HWND hwndTop = hwnd;
+    HWND hwndTop = hwnd, active;
     HWND previous = get_focus();
 
     TRACE( "%p prev %p\n", hwnd, previous );
@@ -2142,7 +2142,8 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
         if (call_hooks( WH_CBT, HCBT_SETFOCUS, (WPARAM)hwnd, (LPARAM)previous, 0 )) return 0;
 
         /* activate hwndTop if needed. */
-        if (hwndTop != get_active_window())
+        if (!(active = get_active_window()) && !set_foreground_window( hwndTop, FALSE )) return 0;
+        if (hwndTop != active)
         {
             if (!set_active_window( hwndTop, NULL, FALSE, FALSE, 0 )) return 0;
             if (!is_window( hwnd )) return 0;  /* Abort if window destroyed */
@@ -2159,6 +2160,14 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
 
     /* change focus and send messages */
     return set_focus_window( hwnd );
+}
+
+/*****************************************************************
+ *           NtUserSetForegroundWindow  (win32u.@)
+ */
+BOOL WINAPI NtUserSetForegroundWindow( HWND hwnd )
+{
+    return set_foreground_window( hwnd, FALSE );
 }
 
 /*******************************************************************
@@ -2326,7 +2335,7 @@ BOOL WINAPI NtUserCreateCaret( HWND hwnd, HBITMAP bitmap, int width, int height 
     if (prev && !hidden)  /* hide the previous one */
     {
         /* FIXME: won't work if prev belongs to a different process */
-        kill_system_timer( prev, SYSTEM_TIMER_CARET );
+        NtUserKillSystemTimer( prev, SYSTEM_TIMER_CARET );
         if (old_state) display_caret( prev, &r );
     }
 
@@ -2365,7 +2374,7 @@ BOOL WINAPI NtUserDestroyCaret(void)
     if (ret && prev && !hidden)
     {
         /* FIXME: won't work if prev belongs to a different process */
-        kill_system_timer( prev, SYSTEM_TIMER_CARET );
+        NtUserKillSystemTimer( prev, SYSTEM_TIMER_CARET );
         if (old_state) display_caret( prev, &r );
     }
     if (caret.bitmap) NtGdiDeleteObjectApp( caret.bitmap );
@@ -2536,7 +2545,7 @@ BOOL WINAPI NtUserHideCaret( HWND hwnd )
     if (ret && !hidden)
     {
         if (old_state) display_caret( hwnd, &r );
-        kill_system_timer( hwnd, SYSTEM_TIMER_CARET );
+        NtUserKillSystemTimer( hwnd, SYSTEM_TIMER_CARET );
     }
     return ret;
 }
@@ -2666,8 +2675,8 @@ BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
 BOOL WINAPI NtUserGetPointerInfoList( UINT32 id, POINTER_INPUT_TYPE type, UINT_PTR unk0, UINT_PTR unk1, SIZE_T size,
                                       UINT32 *entry_count, UINT32 *pointer_count, void *pointer_info )
 {
-    FIXME( "id %#x, type %#x, unk0 %#zx, unk1 %#zx, size %#zx, entry_count %p, pointer_count %p, pointer_info %p stub!\n",
-           id, (int)type, (size_t)unk0, (size_t)unk1, (size_t)size, entry_count, pointer_count, pointer_info );
+    FIXME( "id %#x, type %#x, unk0 %#lx, unk1 %#lx, size %#lx, entry_count %p, pointer_count %p, pointer_info %p stub!\n",
+           id, type, (long)unk0, (long)unk1, size, entry_count, pointer_count, pointer_info );
     RtlSetLastWin32Error( ERROR_CALL_NOT_IMPLEMENTED );
     return FALSE;
 }
@@ -2772,4 +2781,17 @@ BOOL WINAPI NtUserRegisterTouchPadCapable( BOOL capable )
     FIXME( "capable %u stub!\n", capable );
     RtlSetLastWin32Error( ERROR_CALL_NOT_IMPLEMENTED );
     return FALSE;
+}
+
+/**********************************************************************
+ *       NtUserScheduleDispatchNotification    (win32u.@)
+ */
+INT WINAPI NtUserScheduleDispatchNotification( HWND hwnd )
+{
+    FIXME("hwnd %p stub!\n", hwnd);
+
+    if (is_window(hwnd))
+        return 2;
+
+    return 0;
 }

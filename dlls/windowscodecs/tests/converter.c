@@ -249,7 +249,8 @@ static BOOL compare_bits(const struct bitmap_data *expect, UINT buffersize, cons
             }
     }
     else if (IsEqualGUID(expect->format, &GUID_WICPixelFormat32bppGrayFloat)
-            || IsEqualGUID(expect->format, &GUID_WICPixelFormat128bppRGBFloat))
+            || IsEqualGUID(expect->format, &GUID_WICPixelFormat128bppRGBFloat)
+            || IsEqualGUID(expect->format, &GUID_WICPixelFormat128bppRGBAFloat))
     {
         UINT i;
         const float *a=(const float*)expect->bits, *b=(const float*)converted_bits;
@@ -665,11 +666,65 @@ static const WORD bits_64bppRGBA_2[] = {
 static const struct bitmap_data testdata_64bppRGBA_2 = {
     &GUID_WICPixelFormat64bppRGBA, 64, (BYTE*)bits_64bppRGBA_2, 3, 2, 96.0, 96.0};
 
+static const float bits_96bppRGBFloat[] = {
+    0.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 0.214039f,0.214053f,0.214039f,
+    1.0f,1.0f,1.0f, 0.000012f,0.000012f,0.000012f, 0.0f,0.0f,0.000012f};
+static const struct bitmap_data testdata_96bppRGBFloat = {
+    &GUID_WICPixelFormat96bppRGBFloat, 96, (const BYTE *)bits_96bppRGBFloat, 3, 2, 96.0, 96.0};
+
+static const float bits_96bppRGBFloat_2[] = {
+    0.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 1.0f,0.0f,0.0f,
+    0.0f,0.0f,1.0f, 0.0f,0.205079f,0.0f, 0.205079f,0.0f,0.0f};
+static const struct bitmap_data testdata_96bppRGBFloat_2 = {
+    &GUID_WICPixelFormat96bppRGBFloat, 96, (const BYTE *)bits_96bppRGBFloat_2, 3, 2, 96.0, 96.0};
+
+static const BYTE bits_32bppBGRA_3[] = {
+    0,0,0,255, 0,255,0,255, 0,0,255,255,
+    255,0,0,255, 0,125,0,255, 0,0,125,255};
+static const struct bitmap_data testdata_32bppBGRA_3 = {
+    &GUID_WICPixelFormat32bppBGRA, 32, bits_32bppBGRA_3, 3, 2, 96.0, 96.0};
+
+static const WORD bits_48bppRGBHalf[] = {
+    0,0,0, 0,0x3c00,0, 0x3c00,0,0,
+    0,0,0x3c00, 0,0x3290,0, 0x3290,0,0 };
+static const struct bitmap_data testdata_48bppRGBHalf = {
+    &GUID_WICPixelFormat48bppRGBHalf, 48, (const BYTE *)bits_48bppRGBHalf, 3, 2, 96.0, 96.0};
+
 static const float bits_128bppRGBFloat[] = {
     0.0f,0.0f,0.0f,1.0f, 0.0f,1.0f,0.0f,1.0f, 0.214039f,0.214053f,0.214039f,1.0f,
     1.0f,1.0f,1.0f,1.0f, 0.000012f,0.000012f,0.000012f,1.0f, 0.0f,0.0f,0.000012f,1.0f,};
 static const struct bitmap_data testdata_128bppRGBFloat = {
     &GUID_WICPixelFormat128bppRGBFloat, 128, (const BYTE *)bits_128bppRGBFloat, 3, 2, 96.0, 96.0};
+
+static const float bits_128bppRGBFloat_2[] = {
+    0.0f,0.0f,0.0f,1.0f, 0.0f,1.0f,0.0f,1.0f, 1.0f,0.0f,0.0f,1.0f,
+    0.0f,0.0f,1.0f,1.0f, 0.0f,0.205079f,0.0f,1.0f, 0.205079f,0.0f,0.0f,1.0f};
+static const struct bitmap_data testdata_128bppRGBFloat_2 = {
+    &GUID_WICPixelFormat128bppRGBFloat, 128, (const BYTE *)bits_128bppRGBFloat_2, 3, 2, 96.0, 96.0};
+
+static const BYTE bits_24bppBGR_2[] = {
+    0,0,0, 0,255,0, 0,0,255,
+    255,0,0, 0,125,0, 0,0,125};
+static const struct bitmap_data testdata_24bppBGR_2 = {
+    &GUID_WICPixelFormat24bppBGR, 24, bits_24bppBGR_2, 3, 2, 96.0, 96.0};
+
+static const BYTE bits_32bppBGRA_2[] = {
+    0,0,0,0, 0,255,0,128, 0,0,255,255,
+    255,0,0,0, 0,125,0,255, 0,0,125,128};
+static const struct bitmap_data testdata_32bppBGRA_2 = {
+    &GUID_WICPixelFormat32bppBGRA, 32, bits_32bppBGRA_2, 3, 2, 96.0, 96.0};
+
+static const float bits_128bppRGBAFloat[] = {
+    0.0f,0.0f,0.0f,1.0f, 0.0f,1.0f,0.0f,1.0f, 1.0f,0.0f,0.0f,1.0f,
+    0.0f,0.0f,1.0f,1.0f, 0.0f,0.205079f,0.0f,1.0f, 0.205079f,0.0f,0.0f,1.0f};
+static const struct bitmap_data testdata_128bppRGBAFloat = {
+    &GUID_WICPixelFormat128bppRGBAFloat, 128, (const BYTE *)bits_128bppRGBAFloat, 3, 2, 96.0, 96.0};
+
+static const float bits_128bppRGBAFloat_2[] = {
+    0.0f,0.0f,0.0f,0.0f, 0.0f,1.0f,0.0f,0.501961f, 1.0f,0.0f,0.0f,1.0f,
+    0.0f,0.0f,1.0f,0.0f, 0.0f,0.205079f,0.0f,1.0f, 0.205079f,0.0f,0.0f,0.5019f};
+static const struct bitmap_data testdata_128bppRGBAFloat_2 = {
+    &GUID_WICPixelFormat128bppRGBAFloat, 128, (const BYTE *)bits_128bppRGBAFloat_2, 3, 2, 96.0, 96.0};
 
 static void test_conversion(const struct bitmap_data *src, const struct bitmap_data *dst, const char *name, BOOL todo)
 {
@@ -774,13 +829,13 @@ static void test_can_convert(void)
         {WIC_PIXEL_FORMAT(16bppBGRA5551), TRUE, TRUE, 33, TRUE},
         {WIC_PIXEL_FORMAT(24bppBGR), TRUE, TRUE, 27},
         {WIC_PIXEL_FORMAT(24bppRGB), TRUE, TRUE, 30},
-        {WIC_PIXEL_FORMAT(32bppBGR), TRUE, TRUE, 15},
-        {WIC_PIXEL_FORMAT(32bppBGRA), TRUE, TRUE, 15},
-        {WIC_PIXEL_FORMAT(32bppPBGRA), TRUE, TRUE, 15},
-        {WIC_PIXEL_FORMAT(32bppRGB), TRUE, TRUE, 13, TRUE},
-        {WIC_PIXEL_FORMAT(32bppRGBA), TRUE, TRUE, 13, TRUE},
-        {WIC_PIXEL_FORMAT(32bppPRGBA), TRUE, TRUE, 13, TRUE},
-        {WIC_PIXEL_FORMAT(32bppGrayFloat), TRUE, TRUE, 14},
+        {WIC_PIXEL_FORMAT(32bppBGR), TRUE, TRUE, 13},
+        {WIC_PIXEL_FORMAT(32bppBGRA), TRUE, TRUE, 13},
+        {WIC_PIXEL_FORMAT(32bppPBGRA), TRUE, TRUE, 13},
+        {WIC_PIXEL_FORMAT(32bppRGB), TRUE, TRUE, 11, TRUE},
+        {WIC_PIXEL_FORMAT(32bppRGBA), TRUE, TRUE, 11, TRUE},
+        {WIC_PIXEL_FORMAT(32bppPRGBA), TRUE, TRUE, 11, TRUE},
+        {WIC_PIXEL_FORMAT(32bppGrayFloat), TRUE, TRUE, 12},
 
         {WIC_PIXEL_FORMAT(48bppRGB), TRUE, TRUE, 35},
         {WIC_PIXEL_FORMAT(48bppBGR), TRUE, TRUE, 35, TRUE},
@@ -796,9 +851,9 @@ static void test_can_convert(void)
         {WIC_PIXEL_FORMAT(48bppBGRFixedPoint)},
         {WIC_PIXEL_FORMAT(96bppRGBFixedPoint)},
         {WIC_PIXEL_FORMAT(96bppRGBFloat), TRUE, TRUE, 35, TRUE},
-        {WIC_PIXEL_FORMAT(128bppRGBAFloat), TRUE, TRUE, 35},
+        {WIC_PIXEL_FORMAT(128bppRGBAFloat), TRUE, TRUE, 33},
         {WIC_PIXEL_FORMAT(128bppPRGBAFloat), TRUE, TRUE, 35},
-        {WIC_PIXEL_FORMAT(128bppRGBFloat), TRUE, TRUE, 34},
+        {WIC_PIXEL_FORMAT(128bppRGBFloat), TRUE, TRUE, 33},
 
         {WIC_PIXEL_FORMAT(32bppCMYK)},
 
@@ -990,42 +1045,30 @@ typedef struct property_opt_test_data
     BOOL skippable;
 } property_opt_test_data;
 
-static const WCHAR wszTiffCompressionMethod[] = {'T','i','f','f','C','o','m','p','r','e','s','s','i','o','n','M','e','t','h','o','d',0};
-static const WCHAR wszCompressionQuality[] = {'C','o','m','p','r','e','s','s','i','o','n','Q','u','a','l','i','t','y',0};
-static const WCHAR wszInterlaceOption[] = {'I','n','t','e','r','l','a','c','e','O','p','t','i','o','n',0};
-static const WCHAR wszFilterOption[] = {'F','i','l','t','e','r','O','p','t','i','o','n',0};
-static const WCHAR wszImageQuality[] = {'I','m','a','g','e','Q','u','a','l','i','t','y',0};
-static const WCHAR wszBitmapTransform[] = {'B','i','t','m','a','p','T','r','a','n','s','f','o','r','m',0};
-static const WCHAR wszLuminance[] = {'L','u','m','i','n','a','n','c','e',0};
-static const WCHAR wszChrominance[] = {'C','h','r','o','m','i','n','a','n','c','e',0};
-static const WCHAR wszJpegYCrCbSubsampling[] = {'J','p','e','g','Y','C','r','C','b','S','u','b','s','a','m','p','l','i','n','g',0};
-static const WCHAR wszSuppressApp0[] = {'S','u','p','p','r','e','s','s','A','p','p','0',0};
-static const WCHAR wszEnableV5Header32bppBGRA[] = {'E','n','a','b','l','e','V','5','H','e','a','d','e','r','3','2','b','p','p','B','G','R','A',0};
-
 static const struct property_opt_test_data testdata_tiff_props[] = {
-    { wszTiffCompressionMethod, VT_UI1,         VT_UI1,  WICTiffCompressionDontCare },
-    { wszCompressionQuality,    VT_R4,          VT_EMPTY },
+    { L"TiffCompressionMethod", VT_UI1,         VT_UI1,  WICTiffCompressionDontCare },
+    { L"CompressionQuality",    VT_R4,          VT_EMPTY },
     { NULL }
 };
 
 static const struct property_opt_test_data testdata_png_props[] = {
-    { wszInterlaceOption, VT_BOOL, VT_BOOL, 0 },
-    { wszFilterOption,    VT_UI1,  VT_UI1, WICPngFilterUnspecified, 0.0f, TRUE /* not supported on XP/2k3 */},
+    { L"InterlaceOption", VT_BOOL, VT_BOOL, 0 },
+    { L"FilterOption",    VT_UI1,  VT_UI1, WICPngFilterUnspecified, 0.0f, TRUE /* not supported on XP/2k3 */},
     { NULL }
 };
 
 static const struct property_opt_test_data testdata_jpeg_props[] = {
-    { wszImageQuality,         VT_R4,           VT_EMPTY },
-    { wszBitmapTransform,      VT_UI1,          VT_UI1, WICBitmapTransformRotate0 },
-    { wszLuminance,            VT_I4|VT_ARRAY,  VT_EMPTY },
-    { wszChrominance,          VT_I4|VT_ARRAY,  VT_EMPTY },
-    { wszJpegYCrCbSubsampling, VT_UI1,          VT_UI1, WICJpegYCrCbSubsamplingDefault, 0.0f, TRUE }, /* not supported on XP/2k3 */
-    { wszSuppressApp0,         VT_BOOL,         VT_BOOL, FALSE },
+    { L"ImageQuality",         VT_R4,           VT_EMPTY },
+    { L"BitmapTransform",      VT_UI1,          VT_UI1, WICBitmapTransformRotate0 },
+    { L"Luminance",            VT_I4|VT_ARRAY,  VT_EMPTY },
+    { L"Chrominance",          VT_I4|VT_ARRAY,  VT_EMPTY },
+    { L"JpegYCrCbSubsampling", VT_UI1,          VT_UI1, WICJpegYCrCbSubsamplingDefault, 0.0f, TRUE }, /* not supported on XP/2k3 */
+    { L"SuppressApp0",         VT_BOOL,         VT_BOOL, FALSE },
     { NULL }
 };
 
 static const struct property_opt_test_data testdata_bmp_props[] = {
-    { wszEnableV5Header32bppBGRA, VT_BOOL, VT_BOOL, VARIANT_FALSE, 0.0f, TRUE }, /* Supported since Win7 */
+    { L"EnableV5Header32bppBGRA", VT_BOOL, VT_BOOL, VARIANT_FALSE, 0.0f, TRUE }, /* Supported since Win7 */
     { NULL }
 };
 
@@ -1466,13 +1509,24 @@ static void check_png_format(IStream *stream, const WICPixelFormatGUID *format)
         ok(png.filter == 0, "wrong filter %d\n", png.filter);
         ok(png.interlace == 0 || png.interlace == 1, "wrong interlace %d\n", png.interlace);
     }
+    else if (IsEqualGUID(format, &GUID_WICPixelFormat64bppRGBA))
+    {
+        ok(be_uint(png.width) == 32, "wrong width %u\n", be_uint(png.width));
+        ok(be_uint(png.height) == 2, "wrong height %u\n", be_uint(png.height));
+
+        ok(png.bit_depth == 16, "wrong bit_depth %d\n", png.bit_depth);
+        ok(png.color_type == 6, "wrong color_type %d\n", png.color_type);
+        ok(png.compression == 0, "wrong compression %d\n", png.compression);
+        ok(png.filter == 0, "wrong filter %d\n", png.filter);
+        ok(png.interlace == 0, "wrong interlace %d\n", png.interlace);
+    }
     else
         ok(0, "unknown PNG pixel format %s\n", wine_dbgstr_guid(format));
 }
 
 static void check_gif_format(IStream *stream, const WICPixelFormatGUID *format)
 {
-#include "pshpack1.h"
+#pragma pack(push,1)
     struct logical_screen_descriptor
     {
         char signature[6];
@@ -1487,7 +1541,7 @@ static void check_gif_format(IStream *stream, const WICPixelFormatGUID *format)
         BYTE background_color_index;
         BYTE pixel_aspect_ratio;
     } lsd;
-#include "poppack.h"
+#pragma pack(pop)
     UINT color_resolution;
     HRESULT hr;
 
@@ -2027,7 +2081,7 @@ static const struct bitmap_data *single_frame[2] = {
     NULL};
 
 static const struct setting png_interlace_settings[] = {
-    {wszInterlaceOption, PROPBAG2_TYPE_DATA, VT_BOOL, (void*)VARIANT_TRUE},
+    {L"InterlaceOption", PROPBAG2_TYPE_DATA, VT_BOOL, (void*)VARIANT_TRUE},
     {NULL}
 };
 
@@ -2295,6 +2349,14 @@ START_TEST(converter)
     test_conversion(&testdata_48bppRGB, &testdata_64bppRGBA_2, "48bppRGB -> 64bppRGBA", FALSE);
 
     test_conversion(&testdata_48bppRGB, &testdata_128bppRGBFloat, "48bppRGB -> 128bppRGBFloat", FALSE);
+    test_conversion(&testdata_24bppBGR_2, &testdata_128bppRGBAFloat, "24bppBGR -> 128bppRGBAFloat", FALSE);
+    test_conversion(&testdata_32bppBGRA_2, &testdata_128bppRGBAFloat_2, "32bppBGRA -> 128bppRGBAFloat", FALSE);
+    test_conversion(&testdata_96bppRGBFloat, &testdata_128bppRGBFloat, "96bppRGBFloat -> 128bppRGBFloat", FALSE);
+    test_conversion(&testdata_96bppRGBFloat_2, &testdata_32bppBGRA_3, "96bppRGBFloat -> 32bppBGRA", FALSE);
+    test_conversion(&testdata_128bppRGBAFloat_2, &testdata_32bppBGRA_2, "128bppRGBAFloat -> 32bppBGRA", FALSE);
+
+    test_conversion(&testdata_48bppRGBHalf, &testdata_32bppBGRA_3, "48bppRGBHalf -> 32bppBGRA", FALSE);
+    test_conversion(&testdata_48bppRGBHalf, &testdata_128bppRGBFloat_2, "48bppRGBHalf -> 128bppRGBFloat", FALSE);
 
     test_invalid_conversion();
     test_default_converter();
@@ -2323,6 +2385,8 @@ if (!strcmp(winetest_platform, "windows")) /* FIXME: enable once implemented in 
     test_encoder(&testdata_32bppBGR, &CLSID_WICPngEncoder,
                  &testdata_24bppBGR, &CLSID_WICPngDecoder, "PNG encoder 32bppBGR");
 }
+    test_encoder(&testdata_64bppRGBA, &CLSID_WICPngEncoder,
+                 &testdata_64bppRGBA, &CLSID_WICPngDecoder, "PNG encoder 64bppRGBA");
 
     test_encoder(&testdata_BlackWhite, &CLSID_WICBmpEncoder,
                  &testdata_1bppIndexed, &CLSID_WICBmpDecoder, "BMP encoder BlackWhite");

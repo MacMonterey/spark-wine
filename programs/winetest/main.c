@@ -648,7 +648,8 @@ static void* extract_rcdata (LPCSTR name, LPCSTR type, DWORD* size)
     HRSRC rsrc;
     HGLOBAL hdl;
     LPVOID addr;
-    
+
+    *size = 0;
     if (!(rsrc = FindResourceA(NULL, name, type)) ||
         !(*size = SizeofResource (0, rsrc)) ||
         !(hdl = LoadResource (0, rsrc)) ||
@@ -927,16 +928,15 @@ static void *filter_data( const char *data, DWORD size, DWORD *output_size )
 }
 
 static void report_test_done( struct wine_test *test, const char *subtest, const char *file, DWORD pid, DWORD ticks,
-                              HANDLE out_file, UINT status, const char *data, DWORD size )
+                              HANDLE out_file, UINT status, const char *data, DWORD size, DWORD *output_size )
 {
     char *filtered_data;
-    DWORD output_size;
 
-    if (!(filtered_data = filter_data( data, size, &output_size ))) return;
+    if (!(filtered_data = filter_data( data, size, output_size ))) return;
 
-    if (quiet_mode <= 1 || status || output_size > MAX_OUTPUT_SIZE) WriteFile( out_file, data, size, &size, NULL );
+    if (quiet_mode <= 1 || status || *output_size > MAX_OUTPUT_SIZE) WriteFile( out_file, data, size, &size, NULL );
     xprintf( "%s:%s:%04lx done (%d) in %lds %luB\n", test->name, subtest, pid, status, ticks / 1000, size );
-    if (output_size > MAX_OUTPUT_SIZE) xprintf( "%s:%s:%04lx The test prints too much data (%lu bytes)\n", test->name, subtest, pid, size );
+    if (*output_size > MAX_OUTPUT_SIZE) xprintf( "%s:%s:%04lx The test prints too much data (%lu bytes)\n", test->name, subtest, pid, size );
 
     if (filtered_data && junit)
     {
@@ -1028,7 +1028,7 @@ static void report_test_done( struct wine_test *test, const char *subtest, const
             output( junit, "<system-out>Test exited with status %d</system-out><failure/>", status );
             output( junit, "</testcase>\n" );
         }
-        if (output_size > MAX_OUTPUT_SIZE)
+        if (*output_size > MAX_OUTPUT_SIZE)
         {
             output( junit, "    <testcase classname=\"%s:%s\" name=\"%s:%s output overflow\" file=\"%s\" assertions=\"%d\" time=\"%f\">",
                      test->name, subtest, test->name, subtest, file, total, ticks / 1000.0 );
@@ -1065,7 +1065,7 @@ run_test (struct wine_test* test, const char* subtest, HANDLE out_file, const ch
         char *data, tmpname[MAX_PATH];
         HANDLE tmpfile = create_temp_file( tmpname );
         int status;
-        DWORD pid, size, start = GetTickCount();
+        DWORD pid, size, output_size = 0, start = GetTickCount();
         char *cmd = strmake("%s %s", test->exename, subtest);
 
         report_test_start( test, subtest, file );
@@ -1077,10 +1077,10 @@ run_test (struct wine_test* test, const char* subtest, HANDLE out_file, const ch
         free(cmd);
 
         data = flush_temp_file( tmpname, tmpfile, &size );
-        report_test_done( test, subtest, file, pid, GetTickCount() - start, out_file, status, data, size );
+        report_test_done( test, subtest, file, pid, GetTickCount() - start, out_file, status, data, size, &output_size );
         free( data );
 
-        if (status || size > MAX_OUTPUT_SIZE) failures++;
+        if (status || output_size > MAX_OUTPUT_SIZE) failures++;
     }
     if (failures) report (R_STATUS, "Running tests - %u failures", failures);
 }
@@ -1162,6 +1162,23 @@ static void get_dll_path(HMODULE dll, char **path, char *filename)
     strcpy(filename, dllpath);
     *strrchr(dllpath, '\\') = '\0';
     *path = xstrdup( dllpath );
+}
+
+static const char *get_compiler_version(void)
+{
+#ifdef __clang__
+# ifdef _MSC_VER
+    return strmake( "clang %s (msvc %u)", __clang_version__, _MSC_VER );
+# else
+    return strmake( "clang %s", __clang_version__ );
+# endif
+#elif defined __GNUC__
+    return strmake( "gcc %u.%u.%u (%s)", __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, __VERSION__ );
+#elif defined _MSC_VER
+    return strmake( "msvc %u", _MSC_VER );
+#else
+    return "unknown";
+#endif
 }
 
 static BOOL CALLBACK
@@ -1286,8 +1303,6 @@ static char *
 run_tests (char *logname, char *outdir)
 {
     int i;
-    char *strres, *eol, *nextline;
-    DWORD strsize;
     char tmppath[MAX_PATH], tempdir[MAX_PATH+4];
     BOOL newdir;
     DWORD needed;
@@ -1349,23 +1364,9 @@ run_tests (char *logname, char *outdir)
     }
     xprintf ("Version 4\n");
     xprintf ("Tests from build %s\n", build_id[0] ? build_id : "-" );
-    xprintf ("Archive: -\n");  /* no longer used */
     xprintf ("Tag: %s\n", tag);
     xprintf ("Build info:\n");
-    strres = extract_rcdata ("BUILD_INFO", "STRINGRES", &strsize);
-    while (strres) {
-        eol = memchr (strres, '\n', strsize);
-        if (!eol) {
-            nextline = NULL;
-            eol = strres + strsize;
-        } else {
-            strsize -= eol - strres + 1;
-            nextline = strsize?eol+1:NULL;
-            if (eol > strres && *(eol-1) == '\r') eol--;
-        }
-        xprintf ("    %.*s\n", (int)(eol-strres), strres);
-        strres = nextline;
-    }
+    xprintf ("    Compiler: %s\n", get_compiler_version());
     xprintf ("Operating system version:\n");
     print_version ();
     print_language ();

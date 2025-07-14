@@ -1025,6 +1025,7 @@ static SQLRETURN col_attribute_win32_a( struct statement *stmt, SQLUSMALLINT col
             field_id = SQL_COLUMN_NAME;
             break;
 
+        case SQL_COLUMN_NAME:
         case SQL_COLUMN_TYPE:
         case SQL_COLUMN_DISPLAY_SIZE:
         case SQL_MAX_COLUMNS_IN_TABLE:
@@ -1641,6 +1642,24 @@ static SQLRETURN disconnect_win32( struct connection *con )
     return SQL_ERROR;
 }
 
+static void cleanup_object( struct object *obj );
+
+static void destroy_dependent_objects( struct connection *con )
+{
+    struct object *obj, *next;
+
+    LIST_FOR_EACH_ENTRY_SAFE( obj, next, &con->hdr.children, struct object, entry)
+    {
+        EnterCriticalSection( &obj->cs );
+        cleanup_object( obj );
+        obj->closed = TRUE;
+        LeaveCriticalSection( &obj->cs );
+
+        /* Unlink from the parent object */
+        destroy_object( obj );
+    }
+}
+
 /*************************************************************************
  *				SQLDisconnect           [ODBC32.009]
  */
@@ -1661,6 +1680,11 @@ SQLRETURN WINAPI SQLDisconnect(SQLHDBC ConnectionHandle)
     {
         ret = disconnect_win32( con );
     }
+
+    /* Driver drops allocated statements automatically. After successful disconnect
+       it's possible to free connection handle right away. */
+    if (!ret)
+        destroy_dependent_objects( con );
 
     TRACE("Returning %d\n", ret);
     unlock_object( &con->hdr );
@@ -2139,6 +2163,31 @@ static void free_param_bindings( struct statement *stmt )
     }
 }
 
+static void cleanup_object( struct object *obj )
+{
+    switch (obj->type)
+    {
+    case SQL_HANDLE_ENV:
+    {
+        struct environment *env = (struct environment *)obj;
+        RegCloseKey( env->drivers_key );
+        RegCloseKey( env->sources_key );
+        env->drivers_key = env->sources_key = NULL;
+        env->drivers_idx = env->sources_idx = 0;
+        break;
+    }
+    case SQL_HANDLE_STMT:
+    {
+        struct statement *stmt = (struct statement *)obj;
+        free_col_bindings( stmt );
+        free_param_bindings( stmt );
+        free_descriptors( stmt );
+        break;
+    }
+    default: break;
+    }
+}
+
 /*************************************************************************
  *				SQLFreeHandle           [ODBC32.031]
  */
@@ -2157,27 +2206,7 @@ SQLRETURN WINAPI SQLFreeHandle(SQLSMALLINT HandleType, SQLHANDLE Handle)
         ret = free_handle( HandleType, obj );
         obj->closed = TRUE;
 
-        switch (HandleType)
-        {
-        case SQL_HANDLE_ENV:
-        {
-            struct environment *env = (struct environment *)obj;
-            RegCloseKey( env->drivers_key );
-            RegCloseKey( env->sources_key );
-            env->drivers_key = env->sources_key = NULL;
-            env->drivers_idx = env->sources_idx = 0;
-            break;
-        }
-        case SQL_HANDLE_STMT:
-        {
-            struct statement *stmt = (struct statement *)obj;
-            free_col_bindings( stmt );
-            free_param_bindings( stmt );
-            free_descriptors( stmt );
-            break;
-        }
-        default: break;
-        }
+        cleanup_object( obj );
     }
 
     TRACE("Returning %d\n", ret);
@@ -2456,9 +2485,9 @@ static SQLRETURN get_data_unix( struct statement *stmt, SQLUSMALLINT column, SQL
 {
     INT64 len;
     SQLRETURN ret;
-    struct SQLGetData_params params = { stmt->hdr.unix_handle, column, type, value, buflen, &len };
+    struct SQLGetData_params params = { stmt->hdr.unix_handle, column, type, value, buflen, retlen ? &len : NULL};
 
-    if (SUCCESS((ret = ODBC_CALL( SQLGetData, &params )))) *retlen = len;
+    if (SUCCESS((ret = ODBC_CALL( SQLGetData, &params ))) && retlen) *retlen = len;
     return ret;
 }
 
@@ -2929,6 +2958,7 @@ static SQLRETURN get_info_win32_a( struct connection *con, SQLUSMALLINT type, SQ
     SQLRETURN ret = SQL_ERROR;
     WCHAR *strW = NULL;
     SQLPOINTER buf = value;
+    BOOL strvalue = FALSE;
 
     if (con->hdr.win32_funcs->SQLGetInfo)
         return con->hdr.win32_funcs->SQLGetInfo( con->hdr.win32_handle, type, value, buflen, retlen );
@@ -2975,18 +3005,30 @@ static SQLRETURN get_info_win32_a( struct connection *con, SQLUSMALLINT type, SQ
         case SQL_TABLE_TERM:
         case SQL_USER_NAME:
         case SQL_XOPEN_CLI_YEAR:
-            if (!(strW = malloc( buflen * sizeof(WCHAR) ))) return SQL_ERROR;
-            buf = strW;
+            if (buf)
+            {
+                if (!(strW = malloc( buflen * sizeof(WCHAR) ))) return SQL_ERROR;
+                buf = strW;
+                buflen *= sizeof(WCHAR);
+            }
+            strvalue = TRUE;
             break;
 
         default: break;
         }
 
-        ret = SQLGetInfoW( con->hdr.win32_handle, type, buf, buflen, retlen );
-        if (SUCCESS( ret ) && strW)
+        ret = con->hdr.win32_funcs->SQLGetInfoW( con->hdr.win32_handle, type, buf, buflen, retlen );
+        if (SUCCESS( ret ))
         {
-            int len = WideCharToMultiByte( CP_ACP, 0, strW, -1, (char *)value, buflen, NULL, NULL );
-            if (retlen) *retlen = len - 1;
+            if (strW)
+            {
+                int len = WideCharToMultiByte( CP_ACP, 0, strW, -1, (char *)value, buflen / sizeof(WCHAR), NULL, NULL );
+                if (retlen) *retlen = len - 1;
+            }
+            else if (strvalue && retlen)
+            {
+                *retlen /= sizeof(WCHAR);
+            }
         }
         free( strW );
     }
@@ -3760,6 +3802,12 @@ SQLRETURN WINAPI SQLSetEnvAttr(SQLHENV EnvironmentHandle, SQLINTEGER Attribute, 
     TRACE("(EnvironmentHandle %p, Attribute %d, Value %p, StringLength %d)\n", EnvironmentHandle, Attribute, Value,
           StringLength);
 
+    if (!env && Attribute == SQL_ATTR_CONNECTION_POOLING)
+    {
+        FIXME("Ignoring SQL_ATTR_CONNECTION_POOLING attribute.\n");
+        return SQL_SUCCESS;
+    }
+
     if (env->hdr.unix_handle)
     {
         ret = set_env_attr_unix( env, Attribute, Value, StringLength );
@@ -3933,14 +3981,22 @@ static SQLRETURN set_stmt_attr_win32_a( struct statement *stmt, SQLINTEGER attr,
 
     if (stmt->hdr.win32_funcs->SQLSetStmtAttrW)
     {
+        BOOL stringvalue = !(len < SQL_LEN_BINARY_ATTR_OFFSET /* Binary buffer */
+                || (len == SQL_IS_POINTER) /* Other pointer */
+                || (len == SQL_IS_INTEGER || len == SQL_IS_UINTEGER)); /* Fixed-length */
         WCHAR *strW;
 
-        if (len == SQL_IS_POINTER || len < SQL_LEN_BINARY_ATTR_OFFSET)
-            return stmt->hdr.win32_funcs->SQLSetStmtAttrW( stmt->hdr.win32_handle, attr, value, len );
-
-        if (!(strW = strnAtoW( value, len ))) return SQL_ERROR;
-        ret = stmt->hdr.win32_funcs->SQLSetStmtAttrW( stmt->hdr.win32_handle, attr, strW, len );
-        free( strW );
+        /* Driver-defined attribute range */
+        if (stringvalue && attr >= SQL_DRIVER_STMT_ATTR_BASE && attr <= 0x7fff)
+        {
+            if (!(strW = strnAtoW( value, len ))) return SQL_ERROR;
+            ret = stmt->hdr.win32_funcs->SQLSetStmtAttrW( stmt->hdr.win32_handle, attr, strW, len );
+            free( strW );
+        }
+        else
+        {
+            ret = stmt->hdr.win32_funcs->SQLSetStmtAttrW( stmt->hdr.win32_handle, attr, value, len );
+        }
     }
     return ret;
 }
@@ -5814,7 +5870,7 @@ SQLRETURN WINAPI SQLColAttributesW(SQLHSTMT StatementHandle, SQLUSMALLINT Column
 
 static const char *debugstr_sqlwstr( const SQLWCHAR *str, SQLSMALLINT len )
 {
-    if (len == SQL_NTS) len = wcslen( str );
+    if (len == SQL_NTS) return wine_dbgstr_w( str );
     return wine_dbgstr_wn( str, len );
 }
 
@@ -6252,6 +6308,7 @@ static SQLRETURN col_attribute_win32_w( struct statement *stmt, SQLUSMALLINT col
             field_id = SQL_COLUMN_NAME;
             break;
 
+        case SQL_COLUMN_NAME:
         case SQL_COLUMN_TYPE:
         case SQL_COLUMN_DISPLAY_SIZE:
         case SQL_MAX_COLUMNS_IN_TABLE:

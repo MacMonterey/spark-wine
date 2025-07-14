@@ -162,7 +162,7 @@ static BOOL show_scroll_bar( HWND hwnd, int bar, BOOL show_horz, BOOL show_vert 
         return FALSE;  /* Nothing to do! */
     }
 
-    old_style = set_window_style( hwnd, set_bits, clear_bits );
+    old_style = set_window_style_bits( hwnd, set_bits, clear_bits );
     if ((old_style & clear_bits) != 0 || (old_style & set_bits) != set_bits)
     {
         /* frame has been changed, let the window redraw itself */
@@ -686,7 +686,7 @@ void handle_scroll_event( HWND hwnd, int bar, UINT msg, POINT pt )
     }
 
     TRACE( "Event: hwnd=%p bar=%d msg=%s pt=%d,%d hit=%d\n",
-           hwnd, bar, debugstr_msg_name( msg, hwnd ), (int)pt.x, (int)pt.y, hittest );
+           hwnd, bar, debugstr_msg_name( msg, hwnd ), pt.x, pt.y, hittest );
 
     switch (g_tracking_info.hit_test)
     {
@@ -1460,7 +1460,7 @@ BOOL WINAPI NtUserShowScrollBar( HWND hwnd, INT bar, BOOL show )
  */
 BOOL WINAPI NtUserGetScrollBarInfo( HWND hwnd, LONG id, SCROLLBARINFO *info )
 {
-    TRACE( "hwnd=%p id=%d info=%p\n", hwnd, (int)id, info );
+    TRACE( "hwnd=%p id=%d info=%p\n", hwnd, id, info );
 
     /* Refer OBJID_CLIENT requests to the window */
     if (id == OBJID_CLIENT)

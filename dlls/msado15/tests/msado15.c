@@ -83,6 +83,7 @@ static void test_Recordset(void)
     hr = _Recordset_get_Fields( recordset, &fields2 );
     ok( hr == S_OK, "got %08lx\n", hr );
     ok( fields2 == fields, "expected same object\n" );
+    Fields_Release( fields );
 
     count = -1;
     hr = Fields_get_Count( fields2, &count );
@@ -93,6 +94,7 @@ static void test_Recordset(void)
     ok( hr == MAKE_ADO_HRESULT( adErrObjectClosed ), "got %08lx\n", hr );
 
     Fields_Release( fields2 );
+    ok( !_Recordset_Release( recordset ), "_Recordset not released\n" );
 
     hr = CoCreateInstance( &CLSID_Recordset, NULL, CLSCTX_INPROC_SERVER, &IID__Recordset, (void **)&recordset );
     ok( hr == S_OK, "got %08lx\n", hr );
@@ -186,6 +188,11 @@ static void test_Recordset(void)
     hr = _Recordset_get_Fields( recordset, &fields );
     ok( hr == S_OK, "got %08lx\n", hr );
 
+    V_VT( &missing ) = VT_ERROR;
+    V_ERROR( &missing ) = DISP_E_PARAMNOTFOUND;
+    hr = _Recordset_Open( recordset, missing, missing, adOpenStatic, adLockBatchOptimistic, adCmdUnspecified );
+    ok( hr == MAKE_ADO_HRESULT( adErrInvalidConnection ), "got %08lx\n", hr );
+
     name = SysAllocString( L"field" );
     hr = Fields__Append( fields, name, adInteger, 4, adFldUnspecified );
     ok( hr == S_OK, "got %08lx\n", hr );
@@ -258,7 +265,8 @@ if (0)
     hr = _Recordset_get_ActiveConnection( recordset, NULL );
 }
 
-    VariantInit(&active);
+    V_VT(&active) = VT_UNKNOWN;
+    V_UNKNOWN(&active) = (IUnknown *)0xdeadbeef;
     hr = _Recordset_get_ActiveConnection( recordset, &active );
     ok( hr == S_OK, "got %08lx\n", hr );
     ok( V_VT(&active) == VT_DISPATCH, "got %d\n", V_VT(&active) );
@@ -429,9 +437,9 @@ if (0)
     ok( hr == S_OK, "got %08lx\n", hr );
     ok( state == adStateClosed, "got %ld\n", state );
 
-    Field_Release( field );
+    ok (!Field_Release( field ), "Field not released\n" );
     Fields_Release( fields );
-    _Recordset_Release( recordset );
+    ok( !_Recordset_Release( recordset ), "_Recordset not released\n" );
 }
 
 /* This interface is queried for but is not documented anywhere. */
@@ -710,10 +718,10 @@ static void test_ADORecordsetConstruction(void)
 
     hr = _Recordset_QueryInterface( recordset, &IID_ADORecordsetConstruction, (void**)&construct );
     ok( hr == S_OK, "got %08lx\n", hr );
-    if (FAILED(hr))
-    {
-        goto done;
-    }
+
+    hr = _Recordset_get_Fields( recordset, &fields );
+    ok( hr == S_OK, "got %08lx\n", hr );
+    ok( fields != NULL, "NULL value\n");
 
     testrowset.IRowset_iface.lpVtbl = &rowset_vtbl;
     testrowset.IRowsetInfo_iface.lpVtbl = &rowset_info;
@@ -730,10 +738,6 @@ static void test_ADORecordsetConstruction(void)
     ref = get_refcount( rowset );
     ok( ref == 2, "got %ld\n", ref );
 
-    hr = _Recordset_get_Fields( recordset, &fields );
-    ok( hr == S_OK, "got %08lx\n", hr );
-    ok( fields != NULL, "NULL value\n");
-
     ref = get_refcount( rowset );
     ok( ref == 2, "got %ld\n", ref );
 
@@ -742,6 +746,7 @@ static void test_ADORecordsetConstruction(void)
     ok( count == 1, "got %ld\n", count );
     if (count > 0)
     {
+        unsigned char prec, scale;
         VARIANT index;
         ADO_LONGPTR size;
         DataTypeEnum type;
@@ -750,6 +755,7 @@ static void test_ADORecordsetConstruction(void)
         V_BSTR( &index ) = SysAllocString( L"Column1" );
 
         hr = Fields_get_Item( fields, index, &field );
+        VariantClear(&index);
         ok( hr == S_OK, "got %08lx\n", hr );
 
         hr = Field_get_Type( field, &type );
@@ -759,8 +765,12 @@ static void test_ADORecordsetConstruction(void)
         hr = Field_get_DefinedSize( field, &size );
         ok( hr == S_OK, "got %08lx\n", hr );
         ok( size == 5, "got %Id\n", size );
-
-        VariantClear(&index);
+        hr = Field_get_Precision( field, &prec );
+        ok( hr == S_OK, "got %08lx\n", hr );
+        ok( prec == 1, "got %u\n", prec );
+        hr = Field_get_NumericScale( field, &scale );
+        ok( hr == S_OK, "got %08lx\n", hr );
+        ok( scale == 1, "got %u\n", scale );
 
         Field_Release(field);
     }
@@ -772,14 +782,14 @@ static void test_ADORecordsetConstruction(void)
 
     ADORecordsetConstruction_Release(construct);
 
-done:
-    _Recordset_Release( recordset );
+    ok( !_Recordset_Release( recordset ), "_Recordset not released\n" );
 }
 
 static void test_Fields(void)
 {
     _Recordset *recordset;
     ISupportErrorInfo *errorinfo;
+    unsigned char prec, scale;
     Fields *fields;
     Field *field, *field2;
     VARIANT val, index;
@@ -834,6 +844,7 @@ static void test_Fields(void)
     V_VT( &index ) = VT_BSTR;
     V_BSTR( &index ) = name;
     hr = Fields_get_Item( fields, index, &field );
+    ok( hr == S_OK, "got %08lx\n", hr );
 
     /* calling get_Item again returns the same object and adds reference */
     hr = Fields_get_Item( fields, index, &field2 );
@@ -865,10 +876,28 @@ static void test_Fields(void)
     hr = Field_get_Attributes( field, &attrs );
     ok( hr == S_OK, "got %08lx\n", hr );
     ok( !attrs, "got %ld\n", attrs );
+    hr = Field_get_Precision( field, &prec );
+    ok( hr == S_OK, "got %08lx\n", hr );
+    ok( !prec, "got %u\n", prec );
+    hr = Field_get_NumericScale( field, &scale );
+    ok( hr == S_OK, "got %08lx\n", hr );
+    ok( !scale, "got %u\n", scale );
+
+    hr = Field_put_Precision( field, 7 );
+    ok( hr == S_OK, "got %08lx\n", hr );
+    hr = Field_get_Precision( field, &prec );
+    ok( hr == S_OK, "got %08lx\n", hr );
+    ok( prec == 7, "got %u\n", prec );
+
+    hr = Field_put_NumericScale( field, 12 );
+    ok( hr == S_OK, "got %08lx\n", hr );
+    hr = Field_get_NumericScale( field, &scale );
+    ok( hr == S_OK, "got %08lx\n", hr );
+    ok( scale == 12, "got %u\n", scale );
 
     Field_Release( field );
     Fields_Release( fields );
-    _Recordset_Release( recordset );
+    ok( !_Recordset_Release( recordset ), "_Recordset not released\n" );
 }
 
 static HRESULT str_to_byte_array( const char *data, VARIANT *ret )
@@ -1179,6 +1208,12 @@ if (0)   /* Crashes on windows */
     ok(hr == E_INVALIDARG, "Unexpected hr 0x%08lx\n", hr);
 }
 
+    str = NULL;
+    hr = _Connection_get_Version(connection, &str);
+    ok(hr == S_OK, "Failed to get state, hr 0x%08lx\n", hr);
+    ok(str != NULL, "got %p\n", str);
+    SysFreeString(str);
+
     state = -1;
     hr = _Connection_get_State(connection, &state);
     ok(hr == S_OK, "Failed to get state, hr 0x%08lx\n", hr);
@@ -1248,6 +1283,7 @@ if (0)   /* Crashes on windows */
     hr = _Connection_get_Provider(connection, &str);
     ok(hr == S_OK, "Failed, hr 0x%08lx\n", hr);
     ok(!wcscmp(str, L"MSDASQL.1"), "wrong string %s\n", wine_dbgstr_w(str));
+    SysFreeString(str);
 
     /* Restore default */
     str = SysAllocString(L"MSDASQL");
@@ -1257,7 +1293,6 @@ if (0)   /* Crashes on windows */
 
     hr = _Connection_put_Provider(connection, NULL);
     ok(hr == MAKE_ADO_HRESULT(adErrInvalidArgument), "got 0x%08lx\n", hr);
-    SysFreeString(str);
 
     str = (BSTR)0xdeadbeef;
     hr = _Connection_get_ConnectionString(connection, &str);
@@ -1286,6 +1321,7 @@ if (0) /* Crashes on windows */
     hr = _Connection_get_ConnectionString(connection, &str2);
     ok(hr == S_OK, "Failed, hr 0x%08lx\n", hr);
     ok(!wcscmp(str, str2), "wrong string %s\n", wine_dbgstr_w(str2));
+    SysFreeString(str2);
 
     hr = _Connection_Open(connection, NULL, NULL, NULL, 0);
     ok(hr == E_FAIL, "Failed, hr 0x%08lx\n", hr);
@@ -1299,15 +1335,16 @@ if (0) /* Crashes on windows */
     hr = _Connection_get_ConnectionString(connection, &str2);
     ok(hr == S_OK, "Failed, hr 0x%08lx\n", hr);
     todo_wine ok(!wcscmp(str3, str2) || broken(!wcscmp(str, str2)) /* XP */, "wrong string %s\n", wine_dbgstr_w(str2));
+    SysFreeString(str2);
 
     hr = _Connection_Open(connection, str, NULL, NULL, adConnectUnspecified);
     ok(hr == E_FAIL, "Failed, hr 0x%08lx\n", hr);
-    SysFreeString(str);
 
     str2 = NULL;
     hr = _Connection_get_ConnectionString(connection, &str2);
     ok(hr == S_OK, "Failed, hr 0x%08lx\n", hr);
     todo_wine ok(!wcscmp(str3, str2) || broken(!wcscmp(str, str2)) /* XP */, "wrong string %s\n", wine_dbgstr_w(str2));
+    SysFreeString(str);
     SysFreeString(str2);
     SysFreeString(str3);
 
@@ -1318,7 +1355,7 @@ if (0) /* Crashes on windows */
     hr = _Connection_get_ConnectionString(connection, &str);
     ok(hr == S_OK, "Failed, hr 0x%08lx\n", hr);
     ok(str == NULL, "got %p\n", str);
-    _Connection_Release(connection);
+    ok(!_Connection_Release(connection), "_Connection not released\n");
 }
 
 static void test_Command(void)
@@ -1430,7 +1467,7 @@ static void test_Command(void)
     Parameters_Release(parameters);
     Parameters_Release(parameters2);
 
-    _Command_Release( command );
+    ok( !_Command_Release( command ), "_Command not released\n" );
 }
 
 struct conn_event {
@@ -1639,7 +1676,7 @@ static void test_ConnectionPoint(void)
     refs = IConnectionPoint_Release( point );
     ok( refs == 1, "got %lu", refs );
 
-    IConnectionPointContainer_Release( pointcontainer );
+    ok( !IConnectionPointContainer_Release( pointcontainer ), "IConnectionPointContainer not released\n" );
 
     ok( !conn_event.refs, "got %ld\n", conn_event.refs );
 }

@@ -35,6 +35,9 @@ WINE_DEFAULT_DEBUG_CHANNEL(imm);
 
 static void post_ime_update(HWND hwnd, UINT cursor_pos, WCHAR *comp_str, WCHAR *result_str)
 {
+    /* Windows uses an empty string to clear the composition string. */
+    if (!comp_str && !result_str) comp_str = (WCHAR *)L"";
+
     NtUserMessageCall(hwnd, WINE_IME_POST_UPDATE, cursor_pos, (LPARAM)comp_str, result_str,
             NtUserImeDriverCall, FALSE);
 }
@@ -55,6 +58,23 @@ static WCHAR *strdupUtoW(const char *str)
         ret[reslen] = 0;
     }
     return ret;
+}
+
+static void wayland_text_input_reset_pending_state(struct wayland_text_input *text_input)
+{
+    free(text_input->preedit.string);
+    text_input->preedit.string = NULL;
+    text_input->preedit.cursor_pos = 0;
+    free(text_input->commit_string);
+    text_input->commit_string = NULL;
+}
+
+static void wayland_text_input_reset_all_state(struct wayland_text_input *text_input)
+{
+    free(text_input->current_preedit.string);
+    text_input->current_preedit.string = NULL;
+    text_input->current_preedit.cursor_pos = 0;
+    wayland_text_input_reset_pending_state(text_input);
 }
 
 static void text_input_enter(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
@@ -93,6 +113,7 @@ static void text_input_leave(void *data, struct zwp_text_input_v3 *zwp_text_inpu
         post_ime_update(text_input->focused_hwnd, 0, NULL, NULL);
         text_input->focused_hwnd = NULL;
     }
+    wayland_text_input_reset_all_state(text_input);
     pthread_mutex_unlock(&text_input->mutex);
 }
 
@@ -100,15 +121,22 @@ static void text_input_preedit_string(void *data, struct zwp_text_input_v3 *zwp_
         const char *text, int32_t cursor_begin, int32_t cursor_end)
 {
     struct wayland_text_input *text_input = data;
-    TRACE("data %p, text_input %p, text %s, cursor_begin %d.\n", data, zwp_text_input_v3,
-            debugstr_a(text), cursor_begin);
+    DWORD begin = 0, end = 0;
+    WCHAR *textW;
+
+    TRACE("data %p, text_input %p, text %s, cursor %d - %d.\n", data, zwp_text_input_v3,
+            debugstr_a(text), cursor_begin, cursor_end);
+
+    if ((textW = strdupUtoW(text)))
+    {
+        if (cursor_begin > 0) RtlUTF8ToUnicodeN(NULL, 0, &begin, text, cursor_begin);
+        if (cursor_end > 0) RtlUTF8ToUnicodeN(NULL, 0, &end, text, cursor_end);
+    }
 
     pthread_mutex_lock(&text_input->mutex);
-    if ((text_input->preedit_string = strdupUtoW(text)) && cursor_begin > 0)
-    {
-        RtlUTF8ToUnicodeN(NULL, 0, &text_input->preedit_cursor_pos, text, cursor_begin);
-        text_input->preedit_cursor_pos /= sizeof(WCHAR);
-    }
+    free(text_input->preedit.string);
+    text_input->preedit.string = textW;
+    text_input->preedit.cursor_pos = MAKELONG(begin / sizeof(WCHAR), end / sizeof(WCHAR));
     pthread_mutex_unlock(&text_input->mutex);
 }
 
@@ -119,6 +147,7 @@ static void text_input_commit_string(void *data, struct zwp_text_input_v3 *zwp_t
     TRACE("data %p, text_input %p, text %s.\n", data, zwp_text_input_v3, debugstr_a(text));
 
     pthread_mutex_lock(&text_input->mutex);
+    free(text_input->commit_string);
     text_input->commit_string = strdupUtoW(text);
     pthread_mutex_unlock(&text_input->mutex);
 }
@@ -137,18 +166,22 @@ static void text_input_done(void *data, struct zwp_text_input_v3 *zwp_text_input
     pthread_mutex_lock(&text_input->mutex);
     /* Some compositors will send a done event for every commit, regardless of
      * the focus state of the text input. This behavior is arguably out of spec,
-     * but otherwise harmless, so just ignore the new state in such cases. */
-    if (text_input->focused_hwnd)
+     * but otherwise harmless, so just ignore the new state in such cases.
+     * Additionally ignore done events that don't actually modify the state. */
+    if (text_input->focused_hwnd &&
+        (text_input->commit_string ||
+         text_input->preedit.cursor_pos != text_input->current_preedit.cursor_pos ||
+         !!text_input->preedit.string != !!text_input->current_preedit.string ||
+         (text_input->preedit.string && text_input->current_preedit.string &&
+          wcscmp(text_input->preedit.string, text_input->current_preedit.string))))
     {
-        post_ime_update(text_input->focused_hwnd, text_input->preedit_cursor_pos,
-                text_input->preedit_string, text_input->commit_string);
+        post_ime_update(text_input->focused_hwnd, text_input->preedit.cursor_pos,
+                text_input->preedit.string, text_input->commit_string);
     }
-
-    free(text_input->preedit_string);
-    text_input->preedit_string = NULL;
-    text_input->preedit_cursor_pos = 0;
-    free(text_input->commit_string);
-    text_input->commit_string = NULL;
+    free(text_input->current_preedit.string);
+    text_input->current_preedit = text_input->preedit;
+    text_input->preedit.string = NULL;
+    wayland_text_input_reset_pending_state(text_input);
     pthread_mutex_unlock(&text_input->mutex);
 }
 
@@ -181,6 +214,7 @@ void wayland_text_input_deinit(void)
     zwp_text_input_v3_destroy(text_input->zwp_text_input_v3);
     text_input->zwp_text_input_v3 = NULL;
     text_input->focused_hwnd = NULL;
+    wayland_text_input_reset_all_state(text_input);
     pthread_mutex_unlock(&text_input->mutex);
 };
 

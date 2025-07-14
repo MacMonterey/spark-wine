@@ -105,6 +105,7 @@ struct base_device
 {
     struct unix_device unix_device;
     void (*read_report)(struct unix_device *iface);
+    BOOL started;
 
     struct udev_device *udev_device;
     char devnode[MAX_PATH];
@@ -212,6 +213,8 @@ static void stop_polling_device(struct unix_device *iface)
     int i;
 
     if (impl->device_fd == -1) return; /* already removed */
+    if (!impl->started) return; /* not started */
+    impl->started = FALSE;
 
     for (i = 2; i < poll_count; ++i)
         if (poll_fds[i].fd == impl->device_fd) break;
@@ -243,6 +246,7 @@ static void start_polling_device(struct unix_device *iface)
         poll_count++;
 
         write(deviceloop_control[1], "u", 1);
+        impl->started = TRUE;
     }
 }
 
@@ -1229,7 +1233,13 @@ static void udev_add_device(struct udev_device *dev, int fd)
     get_device_subsystem_info(dev, "usb", "usb_device", &desc, &bus);
     if (bus == BUS_BLUETOOTH) desc.is_bluetooth = TRUE;
 
-    subsystem = udev_device_get_subsystem(dev);
+    if (!(subsystem = udev_device_get_subsystem(dev)))
+    {
+        WARN("udev_device_get_subsystem failed for %s.\n", debugstr_a(devnode));
+        close(fd);
+        return;
+    }
+
     if (!strcmp(subsystem, "hidraw"))
     {
         static const WCHAR hidraw[] = {'h','i','d','r','a','w',0};
@@ -1322,6 +1332,10 @@ static void udev_add_device(struct udev_device *dev, int fd)
         bus_event_queue_device_created(&event_queue, &impl->unix_device, &desc);
     }
 #endif
+    else
+    {
+        close(fd);
+    }
 }
 
 #ifdef HAVE_SYS_INOTIFY_H

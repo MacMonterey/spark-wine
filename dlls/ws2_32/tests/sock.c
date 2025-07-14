@@ -8113,6 +8113,7 @@ static void test_write_watch(void)
     ok( count == 9 || !count /* Win 11 */, "wrong count %Iu\n", count );
     ok( !base[0], "data set\n" );
 
+    base[0x1000] = 1;
     send(src, "test message", sizeof("test message"), 0);
 
     ret = GetOverlappedResult( (HANDLE)dest, &ov, &bytesReturned, TRUE );
@@ -8122,9 +8123,18 @@ static void test_write_watch(void)
     ok( !memcmp( base + 0x4000, "message", 8 ), "wrong data %s\n", base + 0x4000 );
 
     count = 64;
+    ret = pGetWriteWatch( 0, base, size, results, &count, &pagesize );
+    ok( !ret, " GetWriteWatch failed %lu\n", GetLastError() );
+    todo_wine_if( count == 3 ) ok( count == 1, "wrong count %Iu\n", count );
+    todo_wine_if( count == 3 ) ok( results[0] == base + 0x1000, "got page %Iu.\n", ((char *)results[0] - base) / 0x1000 );
+
+    base[0x2000] = 1;
+    count = 64;
     ret = pGetWriteWatch( WRITE_WATCH_FLAG_RESET, base, size, results, &count, &pagesize );
     ok( !ret, "GetWriteWatch failed %lu\n", GetLastError() );
-    ok( count == 0, "wrong count %Iu\n", count );
+    todo_wine_if( count == 4 ) ok( count == 2, "wrong count %Iu\n", count );
+    todo_wine_if( count == 4 ) ok( results[0] == base + 0x1000, "got page %Iu.\n", ((char *)results[0] - base) / 0x1000 );
+    todo_wine_if( count == 4 ) ok( results[1] == base + 0x2000, "got page %Iu.\n", ((char *)results[1] - base) / 0x1000 );
 
     memset( base, 0, size );
     count = 64;
@@ -8155,7 +8165,7 @@ static void test_write_watch(void)
     count = 64;
     ret = pGetWriteWatch( WRITE_WATCH_FLAG_RESET, base, size, results, &count, &pagesize );
     ok( !ret, "GetWriteWatch failed %lu\n", GetLastError() );
-    ok( count == 0, "wrong count %Iu\n", count );
+    todo_wine_if( count == 2 ) ok( count == 0, "wrong count %Iu\n", count );
 
     memset( base, 0, size );
     count = 64;
@@ -8184,7 +8194,7 @@ static void test_write_watch(void)
         count = 64;
         ret = pGetWriteWatch( WRITE_WATCH_FLAG_RESET, base, size, results, &count, &pagesize );
         ok( !ret, "GetWriteWatch failed %lu\n", GetLastError() );
-        ok( count == 0, "wrong count %Iu\n", count );
+        todo_wine_if( count == 1 ) ok( count == 0, "wrong count %Iu\n", count );
     }
     WSACloseEvent( event );
     closesocket( dest );
@@ -12817,7 +12827,7 @@ static void test_bind_bluetooth(void)
     err = WSAGetLastError();
     if (sock == INVALID_SOCKET)
     {
-        ok(err == WSAEAFNOSUPPORT, "got error %d\n", err);
+        ok(err == WSAEAFNOSUPPORT || err == WSAEPROTONOSUPPORT, "got error %d\n", err);
         skip("Bluetooth is not supported\n");
         return;
     }
@@ -14463,6 +14473,53 @@ static void test_send_buffering(void)
     closesocket(client);
 }
 
+static void test_valid_handle(void)
+{
+    HANDLE duplicated, invalid;
+    SOCKET client, server;
+    char buffer[1];
+    WSABUF wsabuf;
+    DWORD size;
+    int ret;
+
+    /* Unlike WSAGetOverlappedResult(), duplicated handles are allowed. */
+
+    tcp_socketpair(&client, &server);
+    ret = DuplicateHandle(GetCurrentProcess(), (HANDLE)client,
+            GetCurrentProcess(), &duplicated, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    ok(ret, "got error %lu\n", GetLastError());
+    invalid = CreateEventA(NULL, TRUE, TRUE, NULL);
+
+    ret = send((SOCKET)duplicated, buffer, 1, 0);
+    ok(ret == 1, "got %d\n", ret);
+
+    ret = sendto((SOCKET)duplicated, buffer, 1, 0, NULL, 0);
+    ok(ret == 1, "got %d\n", ret);
+
+    wsabuf.buf = buffer;
+    wsabuf.len = 1;
+
+    ret = WSASend((SOCKET)duplicated, &wsabuf, 1, NULL, 0, NULL, NULL);
+    ok(ret == -1, "got %d\n", ret);
+    ok(WSAGetLastError() == WSAEFAULT, "got error %u\n", WSAGetLastError());
+
+    ret = WSASend((SOCKET)duplicated, &wsabuf, 1, &size, 0, NULL, NULL);
+    ok(!ret, "got %d\n", ret);
+
+    ret = WSASend((SOCKET)invalid, &wsabuf, 1, NULL, 0, NULL, NULL);
+    ok(ret == -1, "got %d\n", ret);
+    ok(WSAGetLastError() == WSAENOTSOCK, "got error %u\n", WSAGetLastError());
+
+    ret = WSASend(INVALID_SOCKET, &wsabuf, 1, NULL, 0, NULL, NULL);
+    ok(ret == -1, "got %d\n", ret);
+    ok(WSAGetLastError() == WSAENOTSOCK, "got error %u\n", WSAGetLastError());
+
+    CloseHandle(invalid);
+    CloseHandle(duplicated);
+    closesocket(client);
+    closesocket(server);
+}
+
 START_TEST( sock )
 {
     int i;
@@ -14548,6 +14605,7 @@ START_TEST( sock )
     test_tcp_sendto_recvfrom();
     test_broadcast();
     test_send_buffering();
+    test_valid_handle();
 
     /* There is apparently an obscure interaction between this test and
      * test_WSAGetOverlappedResult().

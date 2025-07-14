@@ -140,7 +140,7 @@ static const char* app_loader_template =
 ;
 
 static const char *output_file_name;
-static const char *output_debug_file;
+static struct strarray output_debug_files;
 static const char *output_implib;
 static const char *output;
 static int keep_generated = 0;
@@ -173,6 +173,7 @@ static bool is_shared;
 static bool is_gui_app;
 static bool is_unicode_app;
 static bool is_win16_app;
+static bool is_arm64x;
 static bool use_msvcrt;
 static bool use_pic = true;
 static bool use_build_id;
@@ -197,7 +198,6 @@ static const char *section_align;
 static const char *file_align;
 static const char *subsystem;
 static const char *entry_point;
-static const char *native_arch;
 static struct strarray file_args;
 static struct strarray linker_args;
 static struct strarray compiler_args;
@@ -207,9 +207,11 @@ static struct strarray delayimports;
 
 static void cleanup_output_files(void)
 {
+    unsigned int i;
     if (output_file_name) unlink( output_file_name );
-    if (output_debug_file) unlink( output_debug_file );
     if (output_implib) unlink( output_implib );
+    for (i = 0; i < output_debug_files.count; i++)
+        unlink( output_debug_files.str[i] );
 }
 
 static void clean_temp_files(void)
@@ -499,6 +501,7 @@ static struct strarray get_link_args( const char *output_name )
 {
     struct strarray link_args = get_translator();
     struct strarray flags = empty_strarray;
+    unsigned int i;
 
     strarray_addall( &link_args, linker_args );
 
@@ -562,8 +565,11 @@ static struct strarray get_link_args( const char *output_name )
         if (entry_point)
             strarray_add( &flags, strmake( "-Wl,--entry,%s%s", target.cpu == CPU_i386 ? "_" : "", entry_point ));
 
-        if (output_debug_file && strendswith(output_debug_file, ".pdb"))
-            strarray_add(&link_args, strmake("-Wl,--pdb=%s", output_debug_file));
+        for (i = 0; i < output_debug_files.count; i++)
+        {
+            if (!strendswith(output_debug_files.str[i], ".pdb")) continue;
+            strarray_add(&link_args, strmake("-Wl,--pdb=%s", output_debug_files.str[i]));
+        }
 
         if (use_build_id)
             strarray_add( &link_args, "-Wl,--build-id");
@@ -573,13 +579,15 @@ static struct strarray get_link_args( const char *output_name )
 
         if (strip) strarray_add( &link_args, "-s" );
 
-        if (!try_link( link_args, "-Wl,--file-alignment,0x1000" ))
-            strarray_add( &link_args, strmake( "-Wl,--file-alignment,%s", file_align ));
-        else if (!try_link( link_args, "-Wl,-Xlink=-filealign:0x1000" ))
+        if (!try_link( link_args, "-Wl,-Xlink=-filealign:0x1000,-Xlink=-align:0x1000,-Xlink=-driver" ))
             /* lld from llvm 10 does not support mingw style --file-alignment,
-             * but it's possible to use msvc syntax */
-            strarray_add( &link_args, strmake( "-Wl,-Xlink=-filealign:%s", file_align ));
-
+             * but it's possible to use msvc syntax
+             * the -driver option is needed to silence a warning about using -align */
+            strarray_add( &link_args, strmake( "-Wl,-Xlink=-filealign:%s,-Xlink=-align:%s,-Xlink=-driver",
+                                               file_align, section_align ));
+        else if (!try_link( link_args, "-Wl,--file-alignment,0x1000,--section-alignment,0x1000" ))
+            strarray_add( &link_args, strmake( "-Wl,--file-alignment,%s,--section-alignment,%s",
+                                               file_align, section_align ));
         strarray_addall( &link_args, flags );
         return link_args;
 
@@ -602,15 +610,20 @@ static struct strarray get_link_args( const char *output_name )
         else
             strarray_add( &flags, strmake("-Wl,-subsystem:%s", is_gui_app ? "windows" : "console" ));
 
-        if (output_debug_file && strendswith(output_debug_file, ".pdb"))
+        for (i = 0; i < output_debug_files.count; i++)
         {
-            strarray_add(&link_args, "-Wl,-debug");
-            strarray_add(&link_args, strmake("-Wl,-pdb:%s", output_debug_file));
+            if (strendswith(output_debug_files.str[i], ".pdb"))
+            {
+                strarray_add(&link_args, "-Wl,-debug");
+                strarray_add(&link_args, strmake("-Wl,-pdb:%s", output_debug_files.str[i]));
+            }
+            else strarray_add( &link_args, "-Wl,-debug:dwarf" );
         }
-        else if (strip)
+
+        if (strip)
             strarray_add( &link_args, "-s" );
-        else
-            strarray_add(&link_args, "-Wl,-debug:dwarf");
+        else if (!output_debug_files.count)
+            strarray_add( &link_args, "-Wl,-debug:dwarf" );
 
         if (use_build_id)
             strarray_add( &link_args, "-Wl,-build-id");
@@ -620,7 +633,7 @@ static struct strarray get_link_args( const char *output_name )
         else
             strarray_add(&link_args, strmake("-Wl,-implib:%s", make_temp_file( output_name, ".lib" )));
 
-        strarray_add( &link_args, strmake( "-Wl,-filealign:%s", file_align ));
+        strarray_add( &link_args, strmake( "-Wl,-filealign:%s,-align:%s,-driver", file_align, section_align ));
 
         strarray_addall( &link_args, flags );
         return link_args;
@@ -1368,11 +1381,11 @@ static void build(struct strarray input_files, const char *output)
 	if (files.str[i][1] == 'r') strarray_add( &resources, files.str[i] );
 
     build_spec_obj( spec_file, output_file, target_alias, files, resources, &spec_objs );
-    if (native_arch)
+    if (is_arm64x)
     {
         const char *suffix = strchr( target_alias, '-' );
         if (!suffix) suffix = "";
-        build_spec_obj( spec_file, output_file, strmake( "%s%s", native_arch, suffix ),
+        build_spec_obj( spec_file, output_file, strmake( "aarch64%s", suffix ),
                         files, empty_strarray, &spec_objs );
     }
 
@@ -1457,15 +1470,18 @@ static void build(struct strarray input_files, const char *output)
 
     spawn(link_args, 0);
 
-    if (output_debug_file && !strendswith(output_debug_file, ".pdb"))
+    for (i = 0; i < output_debug_files.count; i++)
     {
-        struct strarray tool, objcopy = build_tool_name(target_alias, tool_objcopy);
+        struct strarray tool, objcopy;
+
+        if (strendswith(output_debug_files.str[i], ".pdb")) continue;
+        objcopy = build_tool_name(target_alias, tool_objcopy);
 
         tool = empty_strarray;
         strarray_addall( &tool, objcopy );
         strarray_add(&tool, "--only-keep-debug");
         strarray_add(&tool, output_file_name);
-        strarray_add(&tool, output_debug_file);
+        strarray_add(&tool, output_debug_files.str[i]);
         spawn(tool, 1);
 
         tool = empty_strarray;
@@ -1477,7 +1493,7 @@ static void build(struct strarray input_files, const char *output)
         tool = empty_strarray;
         strarray_addall( &tool, objcopy );
         strarray_add(&tool, "--add-gnu-debuglink");
-        strarray_add(&tool, output_debug_file);
+        strarray_add(&tool, output_debug_files.str[i]);
         strarray_add(&tool, output_file_name);
         spawn(tool, 0);
     }
@@ -1818,8 +1834,8 @@ int main(int argc, char **argv)
                     }
                     else if (!strcmp("-marm64x", args.str[i] ))
                     {
+                        is_arm64x = true;
                         raw_linker_arg = 1;
-                        native_arch = "aarch64";
                     }
                     else if (!strncmp("-mcpu=", args.str[i], 6) ||
                              !strncmp("-mfpu=", args.str[i], 6) ||
@@ -1928,7 +1944,7 @@ int main(int argc, char **argv)
                             }
                             if (!strcmp(Wl.str[j], "--debug-file") && j < Wl.count - 1)
                             {
-                                output_debug_file = xstrdup( Wl.str[++j] );
+                                strarray_add( &output_debug_files, xstrdup( Wl.str[++j] ));
                                 continue;
                             }
                             if (!strcmp(Wl.str[j], "--whole-archive") ||
@@ -2047,8 +2063,14 @@ int main(int argc, char **argv)
     if (is_pe) use_msvcrt = true;
     if (output && strendswith( output, ".fake" )) fake_module = true;
 
-    if (!section_align) section_align = "0x1000";
+    if (!section_align)
+        section_align = (target.cpu == CPU_ARM64 || target.cpu == CPU_ARM64EC) ? "0x10000" : "0x1000";
+
     if (!file_align) file_align = section_align;
+
+    if (!is_pe && target.cpu != CPU_i386 && target.cpu != CPU_x86_64)
+        error( "Non-PE builds are not supported on this platform. You need to use something like '--target=%s-windows'.\n",
+               target.cpu == CPU_ARM ? "arm" : "aarch64" );
 
     if (!winebuild)
     {
@@ -2064,7 +2086,7 @@ int main(int argc, char **argv)
     else compile(file_args, output, compile_only);
 
     output_file_name = NULL;
-    output_debug_file = NULL;
+    output_debug_files.count = 0;
     output_implib = NULL;
     return 0;
 }

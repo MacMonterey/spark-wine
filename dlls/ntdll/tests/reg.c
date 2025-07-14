@@ -440,6 +440,7 @@ static void test_NtCreateKey(void)
     pRtlCreateUnicodeStringFromAsciiz( &str, "test_subkey\\" );
     status = pNtCreateKey( &subkey, am, &attr, 0, 0, 0, 0 );
     ok( status == STATUS_SUCCESS, "NtCreateKey failed: 0x%08lx\n", status );
+    pRtlFreeUnicodeString( &str );
 
     pRtlCreateUnicodeStringFromAsciiz( &str, "test_subkey\\" );
     status = pNtCreateKey( &subkey, am, &attr, 0, 0, 0, 0 );
@@ -451,6 +452,7 @@ static void test_NtCreateKey(void)
     pRtlCreateUnicodeStringFromAsciiz( &str, "test_subkey2\\\\" );
     status = pNtCreateKey( &subkey, am, &attr, 0, 0, 0, 0 );
     ok( status == STATUS_SUCCESS, "NtCreateKey failed: 0x%08lx\n", status );
+    pRtlFreeUnicodeString( &str );
     pRtlCreateUnicodeStringFromAsciiz( &str, "test_subkey2\\\\test\\\\" );
     status = pNtCreateKey( &subkey2, am, &attr, 0, 0, 0, 0 );
     ok( status == STATUS_SUCCESS, "NtCreateKey failed: 0x%08lx\n", status );
@@ -1344,7 +1346,11 @@ static DWORD get_key_value( HANDLE root, const char *name, DWORD flags )
     pRtlCreateUnicodeStringFromAsciiz( &str, name );
 
     status = pNtOpenKey( &key, flags | KEY_ALL_ACCESS, &attr );
-    if (status == STATUS_OBJECT_NAME_NOT_FOUND) return 0;
+    if (status == STATUS_OBJECT_NAME_NOT_FOUND)
+    {
+        pRtlFreeUnicodeString( &str );
+        return 0;
+    }
     ok( status == STATUS_SUCCESS, "%08lx: NtCreateKey failed: 0x%08lx\n", flags, status );
 
     status = pNtQueryValueKey( key, &value_str, KeyValuePartialInformation, info, len, &len );
@@ -2541,7 +2547,7 @@ static NTSTATUS WINAPI query_routine(const WCHAR *value_name, ULONG value_type, 
     ULONG expected_type;
 
     trace("Value name: %s\n", debugstr_w(value_name));
-    trace("Value data: %s\n", debugstr_w(value_data));
+    if (value_data_size) trace("Value data: %s\n", debugstr_w(value_data));
 
     if (!(test->flags & SKIP_NAME_CHECK))
     {
@@ -2894,6 +2900,8 @@ static struct query_reg_values_test query_reg_values_tests[] =
 
 static void test_RtlQueryRegistryValues(void)
 {
+    RTL_QUERY_REGISTRY_TABLE query_table[2];
+    UNICODE_STRING str;
     NTSTATUS status;
     unsigned int i;
 
@@ -2916,6 +2924,20 @@ static void test_RtlQueryRegistryValues(void)
     status = RegSetKeyValueW(HKEY_CURRENT_USER, L"WineTest\\subkey", L"Color", REG_SZ,
                              L"Yellow", sizeof(L"Yellow"));
     ok(status == ERROR_SUCCESS, "Failed to create registry value Color: %lu\n", status);
+
+    RtlInitUnicodeString(&str, NULL);
+    memset(query_table, 0, sizeof(query_table));
+    query_table[0].QueryRoutine = NULL;
+    query_table[0].Name = (WCHAR *)L"WindowsDrive";
+    query_table[0].EntryContext = &str;
+    query_table[0].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
+    query_table[0].DefaultType = REG_EXPAND_SZ << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT;
+    status = pRtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, winetestpath.Buffer, query_table, NULL, NULL);
+    ok(!status, "got %#lx.\n", status);
+    ok(!wcsicmp(str.Buffer, L"C:"), "got %s.\n", debugstr_w(str.Buffer));
+    ok(str.Length == 4, "got %d.\n", str.Length);
+    ok(str.MaximumLength == 6, "got %d.\n", str.Length);
+    RtlFreeHeap(GetProcessHeap(), 0, str.Buffer);
 
     for (i = 0; i < ARRAY_SIZE(query_reg_values_tests); i++)
     {

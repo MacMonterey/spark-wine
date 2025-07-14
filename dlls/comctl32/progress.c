@@ -520,6 +520,7 @@ static UINT PROGRESS_SetPos (PROGRESS_INFO *infoPtr, INT pos)
 	    TRACE("PBM_SETPOS: current pos changed from %d to %d\n", oldVal, infoPtr->CurVal);
             PROGRESS_Invalidate( infoPtr, oldVal, infoPtr->CurVal );
             UpdateWindow( infoPtr->Self );
+            NotifyWinEvent( EVENT_OBJECT_VALUECHANGE, infoPtr->Self, OBJID_CLIENT, 0 );
         }
         return oldVal;
     }
@@ -535,7 +536,11 @@ static UINT PROGRESS_SetState (HWND hwnd, PROGRESS_INFO *infoPtr, UINT state)
         return 0;
 
     if (state != prev_state)
+    {
+        NotifyWinEvent(EVENT_OBJECT_STATECHANGE, hwnd, OBJID_CLIENT, 0);
+
         InvalidateRect(hwnd, NULL, TRUE);
+    }
     return prev_state;
 }
 
@@ -608,6 +613,11 @@ static LRESULT WINAPI ProgressWindowProc(HWND hwnd, UINT message,
 
     case WM_SETFONT:
         return (LRESULT)PROGRESS_SetFont(infoPtr, (HFONT)wParam, (BOOL)lParam);
+
+    case WM_GETOBJECT:
+        if ((LONG)lParam == OBJID_QUERYCLASSNAMEIDX)
+            return 0x1000d;
+        return DefWindowProcW( hwnd, message, wParam, lParam );
 
     case WM_PRINTCLIENT:
     case WM_PAINT:

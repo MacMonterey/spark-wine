@@ -122,6 +122,8 @@ DEFINE_MEDIATYPE_GUID(MEDIASUBTYPE_wvp2,MAKEFOURCC('w','v','p','2'));
 DEFINE_MEDIATYPE_GUID(MEDIASUBTYPE_X264,MAKEFOURCC('X','2','6','4'));
 DEFINE_MEDIATYPE_GUID(MEDIASUBTYPE_x264,MAKEFOURCC('x','2','6','4'));
 
+DEFINE_GUID(MF_XVP_PLAYBACK_MODE, 0x3c5d293f, 0xad67, 0x4e29, 0xaf, 0x12, 0xcf, 0x3e, 0x23, 0x8a, 0xcc, 0xe9);
+
 static BOOL is_win8_plus;
 
 #define EXPECT_REF(obj,ref) _expect_ref((IUnknown*)obj, ref, __LINE__)
@@ -4652,12 +4654,26 @@ static void test_event_queue(void)
     hr = IMFMediaEventQueue_EndGetEvent(queue, result, &event);
     ok(hr == E_FAIL, "Unexpected hr %#lx.\n", hr);
 
+
     /* Shutdown behavior. */
+    hr = MFCreateMediaEvent(MEError, &GUID_NULL, E_FAIL, NULL, &event);
+    ok(hr == S_OK, "Failed to create event object, hr %#lx.\n", hr);
+    hr = IMFMediaEventQueue_QueueEvent(queue, event);
+    ok(hr == S_OK, "Failed to queue event, hr %#lx.\n", hr);
+    IMFMediaEvent_Release(event);
+
     hr = IMFMediaEventQueue_Shutdown(queue);
     ok(hr == S_OK, "Failed to shut down, hr %#lx.\n", hr);
 
+    event = (void *)0xdeadbeef;
+    hr = IMFMediaEventQueue_GetEvent(queue, 0, &event);
+    ok(hr == MF_E_SHUTDOWN, "Unexpected hr %#lx.\n", hr);
+    ok(event == (void *)0xdeadbeef, "Unexpected event %p.\n", event);
+    event = (void *)0xdeadbeef;
     hr = IMFMediaEventQueue_GetEvent(queue, MF_EVENT_FLAG_NO_WAIT, &event);
     ok(hr == MF_E_SHUTDOWN, "Unexpected hr %#lx.\n", hr);
+    ok(event == (void *)0xdeadbeef, "Unexpected event %p.\n", event);
+
 
     hr = MFCreateMediaEvent(MEError, &GUID_NULL, E_FAIL, NULL, &event);
     ok(hr == S_OK, "Failed to create event object, hr %#lx.\n", hr);
@@ -4704,6 +4720,33 @@ static void test_event_queue(void)
        "Unexpected refcount %ld, expected 1.\n", ret);
     IMFAsyncCallback_Release(&callback->IMFAsyncCallback_iface);
     IMFAsyncCallback_Release(&callback2->IMFAsyncCallback_iface);
+
+
+    callback = create_test_callback(&test_async_callback_result_vtbl);
+
+    hr = MFCreateEventQueue(&queue);
+    ok(hr == S_OK, "Failed to create event queue, hr %#lx.\n", hr);
+    hr = IMFMediaEventQueue_BeginGetEvent(queue, &callback->IMFAsyncCallback_iface, NULL);
+    ok(hr == S_OK, "Failed to Begin*, hr %#lx.\n", hr);
+    hr = IMFMediaEventQueue_QueueEventParamVar(queue, MEError, &GUID_NULL, E_FAIL, NULL);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaEventQueue_Shutdown(queue);
+    ok(hr == S_OK, "Failed to shut down, hr %#lx.\n", hr);
+
+    ret = WaitForSingleObject(callback->event, 500);
+    ok(ret == WAIT_OBJECT_0, "Unexpected return value %#lx.\n", ret);
+    result = callback->result;
+    callback->result = NULL;
+
+    event = (void *)0xdeadbeef;
+    hr = IMFMediaEventQueue_EndGetEvent(queue, result, &event);
+    ok(hr == MF_E_SHUTDOWN, "Unexpected hr %#lx.\n", hr);
+    ok(event == (void *)0xdeadbeef, "Unexpected event %p.\n", event);
+    IMFAsyncResult_Release(result);
+
+    IMFMediaEventQueue_Release(queue);
+    IMFAsyncCallback_Release(&callback->IMFAsyncCallback_iface);
+
 
     hr = MFShutdown();
     ok(hr == S_OK, "Failed to shut down, hr %#lx.\n", hr);
@@ -5701,6 +5744,13 @@ image_size_tests[] =
     { &MFVideoFormat_IYUV, 4, 2, 12, 0, 384, 12, 128 },
     { &MFVideoFormat_IYUV, 4, 3, 18, 0, 576, 18, 128 },
     { &MFVideoFormat_IYUV, 320, 240, 115200, 0, 138240, 115200, 384 },
+
+    { &MFVideoFormat_P010, 1, 2, 12, 6, 192, 6, 64 },
+    { &MFVideoFormat_P010, 2, 2, 12, 0, 192, 12, 64 },
+    { &MFVideoFormat_P010, 2, 4, 24, 0, 384, 24, 64 },
+    { &MFVideoFormat_P010, 3, 2, 24, 18, 192, 18, 64 },
+    { &MFVideoFormat_P010, 4, 2, 24, 0, 192, 24, 64 },
+    { &MFVideoFormat_P010, 320, 240, 230400, 0, 230400, 230400, 640 },
 };
 
 static void test_MFCalculateImageSize(void)
@@ -6760,6 +6810,208 @@ static void test_dxgi_device_manager(void)
     ID3D11Device_Release(d3d11_dev);
     ID3D11Device_Release(d3d11_dev2);
     IMFDXGIDeviceManager_Release(manager2);
+}
+
+static IMFSample *create_dxgi_sample(ID3D11Device *device, UINT32 color, UINT bind_flags)
+{
+    D3D11_TEXTURE2D_DESC desc = {
+        .Width = 1,
+        .Height = 1,
+        .MipLevels = 1,
+        .ArraySize = 1,
+        .Format = DXGI_FORMAT_B8G8R8A8_UNORM,
+        .SampleDesc = {
+            .Count = 1,
+            .Quality = 0,
+        },
+        .Usage = D3D11_USAGE_DEFAULT,
+        .BindFlags = bind_flags,
+        .CPUAccessFlags = 0,
+        .MiscFlags = 0,
+    };
+    D3D11_SUBRESOURCE_DATA data = {
+        .pSysMem = &color,
+        .SysMemPitch = 4,
+        .SysMemSlicePitch = 4,
+    };
+    IMFSample *sample;
+    ID3D11Texture2D *texture;
+    IMFMediaBuffer *buffer;
+    HRESULT hr;
+
+    hr = ID3D11Device_CreateTexture2D(device, &desc, &data, &texture);
+    ok(hr == S_OK, "Failed to create d3d11 texture, hr %#lx.\n", hr);
+
+    hr = pMFCreateDXGISurfaceBuffer(&IID_ID3D11Texture2D, (IUnknown *) texture, 0, FALSE, &buffer);
+    ok(hr == S_OK, "Failed to create dxgi surface buffer, hr %#lx.\n", hr);
+
+    hr = IMFMediaBuffer_SetCurrentLength(buffer, 4);
+    ok(hr == S_OK, "Failed to set media buffer length, hr %#lx.\n", hr);
+
+    hr = MFCreateSample(&sample);
+    ok(hr == S_OK, "Failed create sample, hr %#lx.\n", hr);
+
+    hr = IMFSample_AddBuffer(sample, buffer);
+    ok(hr == S_OK, "Failed add buffer to sample, hr %#lx.\n", hr);
+
+    hr = IMFSample_SetSampleTime(sample, 0);
+    ok(hr == S_OK, "Failed to set sample time, hr %#lx.\n", hr);
+
+    hr = IMFSample_SetSampleDuration(sample, 10000000/60);
+    ok(hr == S_OK, "Failed to set sample duration, hr %#lx.\n", hr);
+
+    IMFMediaBuffer_Release(buffer);
+    ID3D11Texture2D_Release(texture);
+
+    return sample;
+}
+
+static IMFSample *test_xvp_process_sample(IMFTransform *xvp, IMFSample *in_sample, IMFSample *out_sample)
+{
+    IMFMediaBuffer *out_buffer;
+    HRESULT hr;
+    MFT_OUTPUT_DATA_BUFFER out = {
+        .dwStreamID = 0,
+        .pSample = out_sample,
+        .dwStatus = 0,
+        .pEvents = NULL,
+    };
+    DWORD status;
+    BYTE *out_data;
+    DWORD out_length;
+
+    hr = IMFTransform_ProcessInput(xvp, 0, in_sample, 0);
+    ok(hr == S_OK, "Failed to process input, hr %#lx.\n", hr);
+
+    hr = IMFTransform_ProcessOutput(xvp, 0, 1, &out, &status);
+    ok(hr == S_OK, "Failed to process output, hr %#lx.\n", hr);
+
+    hr = IMFSample_ConvertToContiguousBuffer(out.pSample, &out_buffer);
+    ok(hr == S_OK, "Failed to convert sample to contiguous buffer, hr %#lx.\n", hr);
+
+    hr = IMFMediaBuffer_Lock(out_buffer, &out_data, &out_length, NULL);
+    ok(hr == S_OK, "Failed to lock buffer, hr %#lx.\n", hr);
+
+    ok(out_length == 4, "Output sample length should be 4.\n");
+    ok(*(UINT32 *) out_data == 0xdeadbeef, "Output sample should be populated with input data.\n");
+
+    hr = IMFMediaBuffer_Unlock(out_buffer);
+    ok(hr == S_OK, "Failed to unlock buffer, hr %#lx.\n", hr);
+
+    IMFMediaBuffer_Release(out_buffer);
+
+    if (out.pEvents) IMFCollection_Release(out.pEvents);
+
+    return out.pSample;
+}
+
+static void test_xvp_playback_mode(void)
+{
+    HRESULT hr;
+    UINT reset_token;
+    MFT_OUTPUT_STREAM_INFO out_info;
+    IMFDXGIDeviceManager *manager;
+    ID3D11Device *device;
+    IMFTransform *xvp;
+    IMFAttributes *xvp_attrs;
+    IMFSample *in_sample, *out_sample, *got_out_sample;
+    IMFMediaType *type;
+
+    if (!pMFCreateDXGIDeviceManager)
+    {
+        win_skip("MFCreateDXGIDeviceManager not found.\n");
+        return;
+    }
+
+    if (!pMFCreateDXGISurfaceBuffer)
+    {
+        win_skip("MFCreateDXGISurfaceBuffer() is not available.\n");
+        return;
+    }
+
+    hr = pD3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                           NULL, 0, D3D11_SDK_VERSION, &device, NULL, NULL);
+    if (FAILED(hr))
+    {
+        skip("Failed to create D3D11 device object.\n");
+        return;
+    }
+
+    hr = pMFCreateDXGIDeviceManager(&reset_token, &manager);
+    ok(hr == S_OK, "Failed to create device manager, hr %#lx.\n", hr);
+
+    hr = IMFDXGIDeviceManager_ResetDevice(manager, (IUnknown *) device, reset_token);
+    ok(hr == S_OK, "Failed to reset device manager, hr %#lx.\n", hr);
+
+    hr = CoCreateInstance(&CLSID_VideoProcessorMFT, NULL, CLSCTX_INPROC_SERVER, &IID_IMFTransform, (void **) &xvp);
+    ok(hr == S_OK, "Failed to create video processor MFT, hr %#lx.\n", hr);
+
+    hr = IMFTransform_ProcessMessage(xvp, MFT_MESSAGE_SET_D3D_MANAGER, (ULONG_PTR) manager);
+    if (hr == E_NOINTERFACE)
+    {
+        win_skip("D3D11 manager does not support video processing.\n");
+        goto end;
+    }
+    ok(hr == S_OK, "Failed to set D3D manager, hr %#lx.\n", hr);
+
+    hr = IMFTransform_GetAttributes(xvp, &xvp_attrs);
+    ok(hr == S_OK, "Failed to get video processor attributes\n");
+
+    hr = MFCreateMediaType(&type);
+    ok(hr == S_OK, "Failed create media type, hr %#lx.\n", hr);
+
+    hr = IMFMediaType_SetGUID(type, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
+    ok(hr == S_OK, "Failed to set major type, hr %#lx.\n", hr);
+
+    hr = IMFMediaType_SetGUID(type, &MF_MT_SUBTYPE, &MFVideoFormat_ARGB32);
+    ok(hr == S_OK, "Failed to set subtype, hr %#lx.\n", hr);
+
+    hr = IMFMediaType_SetUINT64(type, &MF_MT_FRAME_SIZE, ((UINT64) 1 << 32) | 1);
+    ok(hr == S_OK, "Failed to frame size, hr %#lx.\n", hr);
+
+    hr = IMFTransform_SetInputType(xvp, 0, type, 0);
+    ok(hr == S_OK, "Failed to set input type, hr %#lx.\n", hr);
+
+    hr = IMFTransform_SetOutputType(xvp, 0, type, 0);
+    ok(hr == S_OK, "Failed to set output type, hr %#lx.\n", hr);
+
+    hr = IMFTransform_GetOutputStreamInfo(xvp, 0, &out_info);
+    ok(hr == S_OK, "Failed to get output stream info, hr %#lx.\n", hr);
+
+    ok(out_info.cbSize == 4, "Output size should be 4.\n");
+
+    in_sample = create_dxgi_sample(device, 0xdeadbeef, 0);
+
+    if ((out_info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) || (out_info.dwFlags & MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES))
+    {
+        got_out_sample = test_xvp_process_sample(xvp, in_sample, NULL);
+        IMFSample_Release(got_out_sample);
+    }
+    else
+    {
+        win_skip("Video processor MFT can't provide output samples.\n");
+    }
+
+    hr = IMFTransform_ProcessMessage(xvp, MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
+    ok(hr == S_OK, "Failed to end streaming, hr %#lx.\n", hr);
+
+    hr = IMFAttributes_SetUINT32(xvp_attrs, &MF_XVP_PLAYBACK_MODE, TRUE);
+    ok(hr == S_OK, "Failed to set MF_XVP_PLAYBACK_MODE, hr %#lx.\n", hr);
+
+    out_sample = create_dxgi_sample(device, 0, D3D11_BIND_RENDER_TARGET);
+    got_out_sample = test_xvp_process_sample(xvp, in_sample, out_sample);
+
+    ok(got_out_sample == out_sample, "Video processor should use caller-provided sample.\n");
+
+    if (got_out_sample != out_sample) IMFSample_Release(got_out_sample);
+    IMFSample_Release(in_sample);
+    IMFSample_Release(out_sample);
+    IMFMediaType_Release(type);
+    IMFAttributes_Release(xvp_attrs);
+end:
+    IMFTransform_Release(xvp);
+    IMFDXGIDeviceManager_Release(manager);
+    ID3D11Device_Release(device);
 }
 
 static void test_MFCreateTransformActivate(void)
@@ -13709,6 +13961,7 @@ START_TEST(mfplat)
     test_MFInitMediaTypeFromAMMediaType();
     test_MFCreatePathFromURL();
     test_2dbuffer_copy();
+    test_xvp_playback_mode();
 
     CoUninitialize();
 }

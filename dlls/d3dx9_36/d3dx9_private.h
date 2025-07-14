@@ -200,6 +200,9 @@ enum d3dx_pixel_format_id
     D3DX_PIXEL_FORMAT_R32_FLOAT,
     D3DX_PIXEL_FORMAT_R32G32_FLOAT,
     D3DX_PIXEL_FORMAT_R32G32B32A32_FLOAT,
+    D3DX_PIXEL_FORMAT_P1_UINT,
+    D3DX_PIXEL_FORMAT_P2_UINT,
+    D3DX_PIXEL_FORMAT_P4_UINT,
     D3DX_PIXEL_FORMAT_P8_UINT,
     D3DX_PIXEL_FORMAT_P8_UINT_A8_UNORM,
     D3DX_PIXEL_FORMAT_U8V8W8Q8_SNORM,
@@ -373,18 +376,6 @@ const struct pixel_format_desc *get_format_info_idx(int idx);
 void format_to_d3dx_color(const struct pixel_format_desc *format, const BYTE *src, const PALETTEENTRY *palette,
         struct d3dx_color *dst);
 void format_from_d3dx_color(const struct pixel_format_desc *format, const struct d3dx_color *src, BYTE *dst);
-
-void copy_pixels(const BYTE *src, UINT src_row_pitch, UINT src_slice_pitch,
-    BYTE *dst, UINT dst_row_pitch, UINT dst_slice_pitch, const struct volume *size,
-    const struct pixel_format_desc *format);
-void convert_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src_slice_pitch,
-    const struct volume *src_size, const struct pixel_format_desc *src_format,
-    BYTE *dst, UINT dst_row_pitch, UINT dst_slice_pitch, const struct volume *dst_size,
-    const struct pixel_format_desc *dst_format, D3DCOLOR color_key, const PALETTEENTRY *palette);
-void point_filter_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src_slice_pitch,
-    const struct volume *src_size, const struct pixel_format_desc *src_format,
-    BYTE *dst, UINT dst_row_pitch, UINT dst_slice_pitch, const struct volume *dst_size,
-    const struct pixel_format_desc *dst_format, D3DCOLOR color_key, const PALETTEENTRY *palette);
 
 HRESULT lock_surface(IDirect3DSurface9 *surface, const RECT *surface_rect, D3DLOCKED_RECT *lock,
         IDirect3DSurface9 **temp_surface, BOOL write);

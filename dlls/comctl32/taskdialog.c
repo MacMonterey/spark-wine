@@ -84,6 +84,7 @@ struct taskdialog_info
     BOOL has_cancel;
     WCHAR *expanded_text;
     WCHAR *collapsed_text;
+    BOOL had_first_layout;
 };
 
 struct button_layout_info
@@ -851,7 +852,6 @@ static void taskdialog_layout(struct taskdialog_info *dialog_info)
 {
     const TASKDIALOGCONFIG *taskconfig = dialog_info->taskconfig;
     BOOL syslink = taskdialog_hyperlink_enabled(dialog_info);
-    static BOOL first_time = TRUE;
     RECT ref_rect;
     LONG dialog_width, dialog_height = 0;
     LONG h_spacing, v_spacing;
@@ -990,7 +990,9 @@ static void taskdialog_layout(struct taskdialog_info *dialog_info)
             line_count++;
         }
     }
-    line_count++;
+
+    if (dialog_info->button_count > 0)
+        line_count++;
 
     /* Try to balance lines so they are about the same size */
     for (i = 1; i < line_count - 1; i++)
@@ -1040,7 +1042,8 @@ static void taskdialog_layout(struct taskdialog_info *dialog_info)
     }
 
     /* Add height for last row button and spacing */
-    dialog_height += size.cy + v_spacing;
+    if (dialog_info->button_count > 0)
+        dialog_height += size.cy + v_spacing;
     dialog_height = max(dialog_height, expando_bottom);
 
     Free(button_layout_infos);
@@ -1074,12 +1077,12 @@ static void taskdialog_layout(struct taskdialog_info *dialog_info)
     dialog_height += GetSystemMetrics(SM_CYCAPTION);
     dialog_height += GetSystemMetrics(SM_CXDLGFRAME);
 
-    if (first_time)
+    if (!dialog_info->had_first_layout)
     {
         x = (ref_rect.left + ref_rect.right - dialog_width) / 2;
         y = (ref_rect.top + ref_rect.bottom - dialog_height) / 2;
         SetWindowPos(dialog_info->hwnd, 0, x, y, dialog_width, dialog_height, SWP_NOZORDER);
-        first_time = FALSE;
+        dialog_info->had_first_layout = TRUE;
     }
     else
         SetWindowPos(dialog_info->hwnd, 0, 0, 0, dialog_width, dialog_height, SWP_NOMOVE | SWP_NOZORDER);
@@ -1304,7 +1307,7 @@ static INT_PTR CALLBACK taskdialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             taskdialog_check_default_radio_buttons(dialog_info);
             return FALSE;
         case WM_COMMAND:
-            if (HIWORD(wParam) == BN_CLICKED)
+            if (dialog_info && HIWORD(wParam) == BN_CLICKED)
             {
                 taskdialog_on_button_click(dialog_info, (HWND)lParam, LOWORD(wParam));
                 break;

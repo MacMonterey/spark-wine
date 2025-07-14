@@ -203,7 +203,7 @@ static const char *iocodex(DWORD code)
    for(i=0; i<ARRAY_SIZE(iocodextable); i++)
       if (code==iocodextable[i].code)
 	 return iocodextable[i].codex;
-   snprintf(buffer, sizeof(buffer), "IOCTL_CODE_%x", (int)code);
+   snprintf(buffer, sizeof(buffer), "IOCTL_CODE_%x", code);
    return buffer;
 }
 
@@ -758,11 +758,37 @@ static NTSTATUS CDROM_GetDriveGeometry(int dev, int fd, DISK_GEOMETRY* dg)
  *		CDROM_GetMediaType
  *
  */
-static NTSTATUS CDROM_GetMediaType(int dev, GET_MEDIA_TYPES* medtype)
+static NTSTATUS CDROM_GetMediaType(int dev, int fd, GET_MEDIA_TYPES* medtype)
 {
-    FIXME(": faking success\n");
+    FIXME("semi-stub\n");
     medtype->DeviceType = FILE_DEVICE_CD_ROM;
     medtype->MediaInfoCount = 0;
+
+#if defined(HAVE_SG_IO_HDR_T_INTERFACE_ID) && defined(HAVE_LINUX_CDROM_H)
+    {
+        unsigned char drive_config[8];
+        unsigned char get_config_cmd[10] = { GPCMD_GET_CONFIGURATION, 0, 0xff, 0xff,
+                                             0, 0, 0, 0, sizeof(drive_config), 0 };
+        sg_io_hdr_t iocmd =
+        {
+            .interface_id = 'S',
+            .dxfer_direction = SG_DXFER_FROM_DEV,
+            .cmd_len = sizeof(get_config_cmd),
+            .dxfer_len = sizeof(drive_config),
+            .dxferp = drive_config,
+            .cmdp = get_config_cmd,
+            .timeout = 1000,
+        };
+        int err;
+
+        if ((err = ioctl(fd, SG_IO, &iocmd)))
+            return CDROM_GetStatusCode(err);
+
+        if (iocmd.status == 0 && (drive_config[6] || drive_config[7] >= 0x10))
+            medtype->DeviceType = FILE_DEVICE_DVD;
+    }
+#endif
+
     return STATUS_SUCCESS;
 }
 
@@ -1456,7 +1482,7 @@ static NTSTATUS CDROM_RawRead(int fd, const RAW_READ_INFO* raw, void* buffer, DW
 #endif
 
     TRACE("RAW_READ_INFO: DiskOffset=%s SectorCount=%i TrackMode=%i\n buffer=%p len=%i sz=%p\n",
-          wine_dbgstr_longlong(raw->DiskOffset.QuadPart), (int)raw->SectorCount, (int)raw->TrackMode, buffer, (int)len, sz);
+          wine_dbgstr_longlong(raw->DiskOffset.QuadPart), raw->SectorCount, raw->TrackMode, buffer, len, sz);
 
     if (len < raw->SectorCount * 2352) return STATUS_BUFFER_TOO_SMALL;
 
@@ -2205,8 +2231,8 @@ static NTSTATUS DVD_ReadKey(int fd, PDVD_COPY_PROTECT_KEY key)
 	auth_info.type = DVD_LU_SEND_TITLE_KEY;
 	auth_info.lstk.agid = (int)key->SessionId;
 	auth_info.lstk.lba = (int)(key->Parameters.TitleOffset.QuadPart>>11);
-	TRACE("DvdTitleKey session %d Quadpart 0x%08lx offset 0x%08x\n",
-	      (int)key->SessionId, (long)key->Parameters.TitleOffset.QuadPart,
+	TRACE("DvdTitleKey session %d Quadpart %s offset 0x%08x\n",
+	      key->SessionId, wine_dbgstr_longlong(key->Parameters.TitleOffset.QuadPart),
 	      auth_info.lstk.lba);
 	ret = CDROM_GetStatusCode(ioctl( fd, DVD_AUTH, &auth_info ));
 	if (ret == STATUS_SUCCESS)
@@ -2908,7 +2934,7 @@ NTSTATUS cdrom_DeviceIoControl( HANDLE device, HANDLE event, PIO_APC_ROUTINE apc
         sz = sizeof(GET_MEDIA_TYPES);
         if (in_buffer != NULL || in_size != 0) status = STATUS_INVALID_PARAMETER;
         else if (out_size < sz) status = STATUS_BUFFER_TOO_SMALL;
-        else status = CDROM_GetMediaType(dev, out_buffer);
+        else status = CDROM_GetMediaType(dev, fd, out_buffer);
         break;
 
     case IOCTL_STORAGE_GET_DEVICE_NUMBER:
@@ -3048,11 +3074,11 @@ NTSTATUS cdrom_DeviceIoControl( HANDLE device, HANDLE event, PIO_APC_ROUTINE apc
         else if (out_size < sz) status = STATUS_BUFFER_TOO_SMALL;
         else
         {
-            TRACE("before in 0x%08x out 0x%08x\n",(int)(in_buffer ? *(DVD_SESSION_ID *)in_buffer : 0),
-                  (int)*(DVD_SESSION_ID *)out_buffer);
+            TRACE("before in 0x%08x out 0x%08x\n",in_buffer ? *(DVD_SESSION_ID *)in_buffer : 0,
+                  *(DVD_SESSION_ID *)out_buffer);
             status = DVD_StartSession(fd, in_buffer, out_buffer);
-            TRACE("before in 0x%08x out 0x%08x\n",(int)(in_buffer ? *(DVD_SESSION_ID *)in_buffer : 0),
-                  (int)*(DVD_SESSION_ID *)out_buffer);
+            TRACE("before in 0x%08x out 0x%08x\n",in_buffer ? *(DVD_SESSION_ID *)in_buffer : 0,
+                  *(DVD_SESSION_ID *)out_buffer);
         }
         break;
     case IOCTL_DVD_END_SESSION:

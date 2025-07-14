@@ -761,10 +761,10 @@ static NTSTATUS ipv6_ipstats_get_all_parameters( const void *key, UINT key_size,
             for (i = 0; i < ARRAY_SIZE(ipstatlist); i++)
                 if (!ascii_strcasecmp( buf, ipstatlist[i].name ))
                 {
-                    if (ipstatlist[i].size == sizeof(long))
-                        *(long *)ipstatlist[i].elem = strtoul( value, NULL, 10 );
+                    if (ipstatlist[i].size == sizeof(UINT))
+                        *(UINT *)ipstatlist[i].elem = strtoul( value, NULL, 10 );
                     else
-                        *(long long *)ipstatlist[i].elem = strtoull( value, NULL, 10 );
+                        *(ULONGLONG *)ipstatlist[i].elem = strtoull( value, NULL, 10 );
                     status = STATUS_SUCCESS;
                 }
         }
@@ -1215,7 +1215,7 @@ static NTSTATUS ipv4_neighbour_enumerate_all( void *key_data, UINT key_size, voi
             for (j = 0; j < ARRAY_SIZE(ipv4_multicast_addresses); ++j)
             {
                 if (iface_static[i].unk & (1 << j)) continue;
-                if (num <= *count)
+                if (num < *count)
                 {
                     entry.addr.s_addr = ipv4_multicast_addresses[j];
                     ipv4_neighbour_fill_entry( &entry, key_data, rw_data, dynamic_data, static_data );

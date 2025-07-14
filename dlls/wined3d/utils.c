@@ -4251,6 +4251,7 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         enum wined3d_format_id id;
         VkFormat vk_format;
         const char *fixup;
+        bool legacy_fixup;
     }
     vulkan_formats[] =
     {
@@ -4272,7 +4273,7 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         {WINED3DFMT_R11G11B10_FLOAT,            VK_FORMAT_B10G11R11_UFLOAT_PACK32, },
         {WINED3DFMT_R8G8_UNORM,                 VK_FORMAT_R8G8_UNORM,              },
         {WINED3DFMT_R8G8_UINT,                  VK_FORMAT_R8G8_UINT,               },
-        {WINED3DFMT_R8G8_SNORM,                 VK_FORMAT_R8G8_SNORM,              },
+        {WINED3DFMT_R8G8_SNORM,                 VK_FORMAT_R8G8_SNORM,              "XY11", true},
         {WINED3DFMT_R8G8_SINT,                  VK_FORMAT_R8G8_SINT,               },
         {WINED3DFMT_R8G8B8A8_UNORM,             VK_FORMAT_R8G8B8A8_UNORM,          },
         {WINED3DFMT_R8G8B8A8_UNORM_SRGB,        VK_FORMAT_R8G8B8A8_SRGB,           },
@@ -4282,7 +4283,7 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         {WINED3DFMT_R16G16_FLOAT,               VK_FORMAT_R16G16_SFLOAT,           },
         {WINED3DFMT_R16G16_UNORM,               VK_FORMAT_R16G16_UNORM,            },
         {WINED3DFMT_R16G16_UINT,                VK_FORMAT_R16G16_UINT,             },
-        {WINED3DFMT_R16G16_SNORM,               VK_FORMAT_R16G16_SNORM,            },
+        {WINED3DFMT_R16G16_SNORM,               VK_FORMAT_R16G16_SNORM,            "XY11", true},
         {WINED3DFMT_R16G16_SINT,                VK_FORMAT_R16G16_SINT,             },
         {WINED3DFMT_D32_FLOAT,                  VK_FORMAT_D32_SFLOAT,              },
         {WINED3DFMT_R32_FLOAT,                  VK_FORMAT_R32_SFLOAT,              },
@@ -4332,13 +4333,14 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         {WINED3DFMT_D24_UNORM_S8_UINT,          VK_FORMAT_D24_UNORM_S8_UINT,       },
         {WINED3DFMT_NV12_PLANAR,                VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,},
     };
+    const struct wined3d_d3d_info *d3d_info = &adapter->d3d_info;
     VkFormat vk_format = VK_FORMAT_UNDEFINED;
     VkImageFormatProperties image_properties;
     VkFormatFeatureFlags texture_flags;
     VkFormatProperties properties;
     VkImageUsageFlags vk_usage;
+    const char *fixup = NULL;
     unsigned int caps;
-    const char *fixup;
     unsigned int i;
     uint32_t mask;
     VkResult vr;
@@ -4348,7 +4350,9 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         if (vulkan_formats[i].id == format->f.id)
         {
             vk_format = vulkan_formats[i].vk_format;
-            fixup = vulkan_formats[i].fixup;
+            if (!vulkan_formats[i].legacy_fixup
+                    || (d3d_info->wined3d_creation_flags & WINED3D_LEGACY_UNBOUND_RESOURCE_COLOR))
+                fixup = vulkan_formats[i].fixup;
             break;
         }
     }
@@ -5451,8 +5455,6 @@ const char *debug_d3dstate(uint32_t state)
         return "STATE_VIEWPORT";
     if (STATE_IS_SCISSORRECT(state))
         return "STATE_SCISSORRECT";
-    if (STATE_IS_CLIPPLANE(state))
-        return wine_dbg_sprintf("STATE_CLIPPLANE(%#x)", state - STATE_CLIPPLANE(0));
     if (STATE_IS_RASTERIZER(state))
         return "STATE_RASTERIZER";
     if (STATE_IS_DEPTH_BOUNDS(state))
@@ -5765,25 +5767,6 @@ void get_texture_matrix(const struct wined3d_stateblock_state *state,
     compute_texture_matrix(&state->transforms[WINED3D_TS_TEXTURE0 + tex],
             state->texture_states[tex][WINED3D_TSS_TEXTURE_TRANSFORM_FLAGS],
             generated, get_texcoord_format(state->vertex_declaration, coord_idx), mat);
-}
-
-void get_pointsize_minmax(const struct wined3d_context *context, const struct wined3d_state *state,
-        float *out_min, float *out_max)
-{
-    union
-    {
-        DWORD d;
-        float f;
-    } min, max;
-
-    min.d = state->render_states[WINED3D_RS_POINTSIZE_MIN];
-    max.d = state->render_states[WINED3D_RS_POINTSIZE_MAX];
-
-    if (min.f > max.f)
-        min.f = max.f;
-
-    *out_min = min.f;
-    *out_max = max.f;
 }
 
 static BOOL wined3d_get_primary_display(WCHAR *display)
@@ -6362,11 +6345,11 @@ void wined3d_ffp_get_fs_settings(const struct wined3d_state *state,
     for (; i < WINED3D_MAX_FFP_TEXTURES; ++i)
         memset(&settings->op[i], 0xff, sizeof(settings->op[i]));
 
-    if (!state->render_states[WINED3D_RS_FOGENABLE])
+    if (!state->extra_ps_args.fog_enable)
     {
         settings->fog = WINED3D_FFP_PS_FOG_OFF;
     }
-    else if (state->render_states[WINED3D_RS_FOGTABLEMODE] == WINED3D_FOG_NONE)
+    else if (state->extra_ps_args.fog_mode == WINED3D_FOG_NONE)
     {
         if (use_vs(state) || state->vertex_declaration->position_transformed)
         {
@@ -6391,7 +6374,7 @@ void wined3d_ffp_get_fs_settings(const struct wined3d_state *state,
     }
     else
     {
-        switch (state->render_states[WINED3D_RS_FOGTABLEMODE])
+        switch (state->extra_ps_args.fog_mode)
         {
             case WINED3D_FOG_LINEAR:
                 settings->fog = WINED3D_FFP_PS_FOG_LINEAR;
@@ -6401,6 +6384,9 @@ void wined3d_ffp_get_fs_settings(const struct wined3d_state *state,
                 break;
             case WINED3D_FOG_EXP2:
                 settings->fog = WINED3D_FFP_PS_FOG_EXP2;
+                break;
+            case WINED3D_FOG_NONE:
+                /* unreachable */
                 break;
         }
     }
@@ -6452,9 +6438,7 @@ void wined3d_ffp_get_fs_settings(const struct wined3d_state *state,
     if (d3d_info->ffp_alpha_test)
         settings->alpha_test_func = WINED3D_CMP_ALWAYS - 1;
     else
-        settings->alpha_test_func = (state->render_states[WINED3D_RS_ALPHATESTENABLE]
-                ? wined3d_sanitize_cmp_func(state->render_states[WINED3D_RS_ALPHAFUNC])
-                : WINED3D_CMP_ALWAYS) - 1;
+        settings->alpha_test_func = state->extra_ps_args.alpha_func - 1;
 
     if (d3d_info->emulated_flatshading)
         settings->flatshading = state->extra_ps_args.flat_shading;
@@ -6504,7 +6488,7 @@ void wined3d_ffp_get_vs_settings(const struct wined3d_state *state, const struct
         settings->diffuse = vdecl->diffuse;
         if (!state->render_states[WINED3D_RS_FOGENABLE])
             settings->fog_mode = WINED3D_FFP_VS_FOG_OFF;
-        else if (state->render_states[WINED3D_RS_FOGTABLEMODE] != WINED3D_FOG_NONE)
+        else if (state->extra_vs_args.pixel_fog)
             settings->fog_mode = WINED3D_FFP_VS_FOG_DEPTH;
         else
             settings->fog_mode = WINED3D_FFP_VS_FOG_FOGCOORD;
@@ -6520,7 +6504,7 @@ void wined3d_ffp_get_vs_settings(const struct wined3d_state *state, const struct
             settings->texcoords = wined3d_mask_from_size(WINED3D_MAX_FFP_TEXTURES);
 
         if (d3d_info->emulated_flatshading)
-            settings->flatshading = state->render_states[WINED3D_RS_SHADEMODE] == WINED3D_SHADE_FLAT;
+            settings->flatshading = state->extra_vs_args.flat_shading;
         else
             settings->flatshading = FALSE;
 
@@ -6542,8 +6526,7 @@ void wined3d_ffp_get_vs_settings(const struct wined3d_state *state, const struct
             break;
     }
 
-    settings->clipping = state->render_states[WINED3D_RS_CLIPPING]
-            && state->render_states[WINED3D_RS_CLIPPLANEENABLE];
+    settings->clipping = !!state->extra_vs_args.clip_planes;
     settings->diffuse = vdecl->diffuse;
     settings->normal = vdecl->normal;
     settings->normalize = settings->normal && state->render_states[WINED3D_RS_NORMALIZENORMALS];
@@ -6597,15 +6580,10 @@ void wined3d_ffp_get_vs_settings(const struct wined3d_state *state, const struct
 
     if (!state->render_states[WINED3D_RS_FOGENABLE])
         settings->fog_mode = WINED3D_FFP_VS_FOG_OFF;
-    else if (state->render_states[WINED3D_RS_FOGTABLEMODE] != WINED3D_FOG_NONE)
+    else if (state->extra_vs_args.pixel_fog)
     {
         settings->fog_mode = WINED3D_FFP_VS_FOG_DEPTH;
-
-        if (state->transforms[WINED3D_TS_PROJECTION]._14 == 0.0f
-                && state->transforms[WINED3D_TS_PROJECTION]._24 == 0.0f
-                && state->transforms[WINED3D_TS_PROJECTION]._34 == 0.0f
-                && state->transforms[WINED3D_TS_PROJECTION]._44 == 1.0f)
-            settings->ortho_fog = 1;
+        settings->ortho_fog = state->extra_vs_args.ortho_fog;
     }
     else if (state->render_states[WINED3D_RS_FOGVERTEXMODE] == WINED3D_FOG_NONE)
         settings->fog_mode = WINED3D_FFP_VS_FOG_FOGCOORD;
@@ -6615,7 +6593,7 @@ void wined3d_ffp_get_vs_settings(const struct wined3d_state *state, const struct
         settings->fog_mode = WINED3D_FFP_VS_FOG_DEPTH;
 
     if (d3d_info->emulated_flatshading)
-        settings->flatshading = state->render_states[WINED3D_RS_SHADEMODE] == WINED3D_SHADE_FLAT;
+        settings->flatshading = state->extra_vs_args.flat_shading;
     else
         settings->flatshading = FALSE;
 

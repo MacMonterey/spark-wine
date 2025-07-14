@@ -143,7 +143,7 @@ struct context_data
     union
     {
         struct { unsigned int eip, ebp, esp, eflags, cs, ss; } i386_regs;
-        struct { unsigned __int64 rip, rbp, rsp;
+        struct { unsigned __int64 rip, rsp;
                  unsigned int cs, ss, flags, __pad; } x86_64_regs;
         struct { unsigned int sp, lr, pc, cpsr; } arm_regs;
         struct { unsigned __int64 sp, pc, pstate; } arm64_regs;
@@ -151,7 +151,7 @@ struct context_data
     union
     {
         struct { unsigned int eax, ebx, ecx, edx, esi, edi; } i386_regs;
-        struct { unsigned __int64 rax,rbx, rcx, rdx, rsi, rdi,
+        struct { unsigned __int64 rax, rbx, rcx, rdx, rbp, rsi, rdi,
                                   r8, r9, r10, r11, r12, r13, r14, r15; } x86_64_regs;
         struct { unsigned int r[13]; } arm_regs;
         struct { unsigned __int64 x[31]; } arm64_regs;
@@ -1009,11 +1009,17 @@ typedef volatile struct
     int                  keystate_lock;    /* keystate is locked */
 } input_shm_t;
 
+typedef volatile struct
+{
+    unsigned int         dpi_context;      /* DPI awareness context */
+} window_shm_t;
+
 typedef volatile union
 {
     desktop_shm_t        desktop;
     queue_shm_t          queue;
     input_shm_t          input;
+    window_shm_t         window;
 } object_shm_t;
 
 typedef volatile struct
@@ -1022,6 +1028,11 @@ typedef volatile struct
     object_id_t          id;               /* object unique id, object data is valid if != 0 */
     object_shm_t         shm;              /* object shared data */
 } shared_object_t;
+
+typedef volatile struct
+{
+    struct user_entry user_entries[MAX_USER_HANDLES];
+} session_shm_t;
 
 struct obj_locator
 {
@@ -1201,14 +1212,16 @@ struct obj_locator
 /* Set a process information */
 @REQ(set_process_info)
     obj_handle_t handle;       /* process handle */
-    int          mask;         /* setting mask (see below) */
     int          priority;     /* priority class */
+    int          base_priority; /* process base priority */
     affinity_t   affinity;     /* affinity mask */
     obj_handle_t token;        /* primary token */
+    int          mask;         /* setting mask (see below) */
 @END
-#define SET_PROCESS_INFO_PRIORITY 0x01
-#define SET_PROCESS_INFO_AFFINITY 0x02
-#define SET_PROCESS_INFO_TOKEN    0x04
+#define SET_PROCESS_INFO_PRIORITY      0x01
+#define SET_PROCESS_INFO_BASE_PRIORITY 0x02
+#define SET_PROCESS_INFO_AFFINITY      0x04
+#define SET_PROCESS_INFO_TOKEN         0x08
 
 
 /* Retrieve information about a thread */
@@ -2220,6 +2233,23 @@ struct process_info
 @END
 
 
+/* Add a user atom */
+@REQ(add_user_atom)
+    VARARG(name,unicode_str);  /* atom name */
+@REPLY
+    atom_t        atom;        /* resulting atom */
+@END
+
+
+/* Get a user atom name */
+@REQ(get_user_atom_name)
+    atom_t       atom;         /* atom handle */
+@REPLY
+    data_size_t  total;        /* actual length of atom name */
+    VARARG(name,unicode_str);  /* atom name */
+@END
+
+
 /* Get a handle for the current thread message queue */
 @REQ(get_msg_queue_handle)
 @REPLY
@@ -2531,6 +2561,7 @@ enum message_type
     user_handle_t  parent;      /* parent window */
     user_handle_t  owner;       /* owner window */
     atom_t         atom;        /* class atom */
+    mod_handle_t   class_instance; /* class module instance */
     mod_handle_t   instance;    /* module instance */
     unsigned int   dpi_context; /* thread DPI context */
     unsigned int   style;       /* window style */
@@ -2542,7 +2573,6 @@ enum message_type
     user_handle_t  owner;       /* full handle of owner */
     int            extra;       /* number of extra bytes */
     client_ptr_t   class_ptr;   /* pointer to class in client address space */
-    unsigned int   dpi_context; /* window DPI context */
 @END
 
 
@@ -2574,44 +2604,34 @@ enum message_type
 /* Get information from a window handle */
 @REQ(get_window_info)
     user_handle_t  handle;      /* handle to the window */
+    int            offset;      /* offset of the info */
+    data_size_t    size;        /* size of the info value to read */
 @REPLY
-    user_handle_t  full_handle; /* full 32-bit handle */
     user_handle_t  last_active; /* last active popup */
-    process_id_t   pid;         /* process owning the window */
-    thread_id_t    tid;         /* thread owning the window */
-    atom_t         atom;        /* class atom */
     int            is_unicode;  /* ANSI or unicode */
-    unsigned int   dpi_context; /* window DPI context */
+    lparam_t       info;        /* current window info value */
+@END
+
+
+/* Initialize some window information */
+@REQ(init_window_info)
+    user_handle_t  handle;        /* handle to the window */
+    unsigned int   style;         /* window style */
+    unsigned int   ex_style;      /* window extended style */
+    short int      is_unicode;    /* ANSI or unicode */
+@REPLY
 @END
 
 
 /* Set some information in a window */
 @REQ(set_window_info)
-    unsigned short flags;         /* flags for fields to set (see below) */
-    short int      is_unicode;    /* ANSI or unicode */
     user_handle_t  handle;        /* handle to the window */
-    unsigned int   style;         /* window style */
-    unsigned int   ex_style;      /* window extended style */
-    data_size_t    extra_size;    /* size to set in extra bytes */
-    mod_handle_t   instance;      /* creator instance */
-    lparam_t       user_data;     /* user-specific data */
-    lparam_t       extra_value;   /* value to set in extra bytes or window id */
-    int            extra_offset;  /* offset to set in extra bytes */
+    int            offset;        /* offset of the info */
+    data_size_t    size;          /* size of the info value to write */
+    lparam_t       new_info;      /* new window info value */
 @REPLY
-    unsigned int   old_style;     /* old window style */
-    unsigned int   old_ex_style;  /* old window extended style */
-    mod_handle_t   old_instance;  /* old creator instance */
-    lparam_t       old_user_data; /* old user-specific data */
-    lparam_t       old_extra_value; /* old value in extra bytes */
-    lparam_t       old_id;        /* old window id */
+    lparam_t       old_info;      /* previous window info value */
 @END
-#define SET_WIN_STYLE     0x01
-#define SET_WIN_EXSTYLE   0x02
-#define SET_WIN_ID        0x04
-#define SET_WIN_INSTANCE  0x08
-#define SET_WIN_USERDATA  0x10
-#define SET_WIN_EXTRA     0x20
-#define SET_WIN_UNICODE   0x40
 
 
 /* Set the parent of a window */
@@ -2621,7 +2641,6 @@ enum message_type
 @REPLY
     user_handle_t  old_parent;  /* old parent window */
     user_handle_t  full_parent; /* full handle of new parent */
-    unsigned int   dpi_context; /* new DPI context */
 @END
 
 
@@ -3779,7 +3798,8 @@ struct handle_info
     unsigned int   session_id;    /* token session id */
     int            primary;       /* is the token primary or impersonation? */
     int            impersonation_level; /* level of impersonation */
-    int            elevation;     /* elevation type */
+    int            elevation_type; /* elevation type (TokenElevation*) */
+    int            is_elevated;   /* is the token elevated as per GetTokenInformation(TokenElevation) */
     int            group_count;   /* the number of groups the token is a member of */
     int            privilege_count; /* the number of privileges the token has */
 @END
@@ -3928,6 +3948,7 @@ struct handle_info
 
 /* Allocate an arbitrary user handle */
 @REQ(alloc_user_handle)
+    unsigned short type;          /* user object type */
 @REPLY
     user_handle_t  handle;        /* allocated handle */
 @END
@@ -3935,6 +3956,7 @@ struct handle_info
 
 /* Free an arbitrary user handle */
 @REQ(free_user_handle)
+    unsigned short type;          /* user object type */
     user_handle_t  handle;        /* handle to free*/
 @END
 

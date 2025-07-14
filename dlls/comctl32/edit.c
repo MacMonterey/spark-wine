@@ -3406,11 +3406,7 @@ static LRESULT EDIT_WM_KeyDown(EDITSTATE *es, INT key)
             if (control)
             {
                 if (EDIT_EM_SetSel(es, 0, get_text_length(es), FALSE))
-                {
-                    if (!notify_parent(es, EN_UPDATE)) break;
-                    notify_parent(es, EN_CHANGE);
                     EDIT_EM_ScrollCaret(es);
-                }
             }
             break;
 	}
@@ -4828,6 +4824,11 @@ static LRESULT CALLBACK EDIT_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         result = (LRESULT)es->font;
         break;
 
+    case WM_GETOBJECT:
+        if ((LONG)lParam == OBJID_QUERYCLASSNAMEIDX)
+            return 0x10004;
+        break;
+
     case WM_GETTEXT:
         result = (LRESULT)EDIT_WM_GetText(es, (INT)wParam, (LPWSTR)lParam);
         break;
@@ -4916,6 +4917,10 @@ static LRESULT CALLBACK EDIT_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
     case WM_VSCROLL:
         result = EDIT_WM_VScroll(es, LOWORD(wParam), (short)HIWORD(wParam));
+        break;
+
+    case WM_CAPTURECHANGED:
+        es->bCaptureState = FALSE;
         break;
 
     case WM_MOUSEWHEEL:

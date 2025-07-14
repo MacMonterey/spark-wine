@@ -168,26 +168,6 @@ NTSTATUS WINAPI NtGdiDdDDICloseAdapter( const D3DKMT_CLOSEADAPTER *desc )
     return status;
 }
 
-/******************************************************************************
- *           NtGdiDdDDIOpenAdapterFromDeviceName    (win32u.@)
- */
-NTSTATUS WINAPI NtGdiDdDDIOpenAdapterFromDeviceName( D3DKMT_OPENADAPTERFROMDEVICENAME *desc )
-{
-    D3DKMT_OPENADAPTERFROMLUID desc_luid;
-    NTSTATUS status;
-
-    FIXME( "desc %p stub.\n", desc );
-
-    if (!desc || !desc->pDeviceName) return STATUS_INVALID_PARAMETER;
-
-    memset( &desc_luid, 0, sizeof(desc_luid) );
-    if ((status = NtGdiDdDDIOpenAdapterFromLuid( &desc_luid ))) return status;
-
-    desc->AdapterLuid = desc_luid.AdapterLuid;
-    desc->hAdapter = desc_luid.hAdapter;
-    return STATUS_SUCCESS;
-}
-
 static UINT get_vulkan_physical_devices( VkPhysicalDevice **devices )
 {
     UINT device_count;
@@ -250,7 +230,7 @@ NTSTATUS WINAPI NtGdiDdDDIOpenAdapterFromLuid( D3DKMT_OPENADAPTERFROMLUID *desc 
         WARN( "Vulkan is unavailable.\n" );
     else if (!get_vulkan_uuid_from_luid( &desc->AdapterLuid, &uuid ))
         WARN( "Failed to find Vulkan device with LUID %08x:%08x.\n",
-              (int)desc->AdapterLuid.HighPart, (int)desc->AdapterLuid.LowPart );
+              desc->AdapterLuid.HighPart, desc->AdapterLuid.LowPart );
     else if (!(adapter->vk_device = get_vulkan_physical_device( &uuid )))
         WARN( "Failed to find vulkan device with GUID %s\n", debugstr_guid( &uuid ) );
 

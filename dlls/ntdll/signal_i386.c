@@ -72,35 +72,18 @@ extern DWORD EXC_CallHandler( EXCEPTION_RECORD *record, EXCEPTION_REGISTRATION_R
                               PEXCEPTION_HANDLER handler, PEXCEPTION_HANDLER nested_handler );
 
 
-#ifdef __WINE_PE_BUILD
-
-enum syscall_ids
-{
-#define SYSCALL_ENTRY(id,name,args) __id_##name = id,
-ALL_SYSCALLS32
-#undef SYSCALL_ENTRY
-};
-
-/*******************************************************************
- *         NtQueryInformationProcess
- */
-void NtQueryInformationProcess_wrapper(void)
-{
-    asm( ".globl " __ASM_STDCALL("NtQueryInformationProcess", 20) "\n"
-         __ASM_STDCALL("NtQueryInformationProcess", 20) ":\n\t"
-         "movl %0,%%eax\n\t"
-         "call *%%fs:0xc0\n\t"
-         "ret $20"  :: "i" (__id_NtQueryInformationProcess) );
-}
-#define NtQueryInformationProcess syscall_NtQueryInformationProcess
-
-#endif /* __WINE_PE_BUILD */
+#undef SYSCALL_ENTRY_NtQueryInformationProcess
+#define SYSCALL_ENTRY_NtQueryInformationProcess(id,name,args) \
+    __ASM_STDCALL_FUNC( name, args, \
+                        "movl $(" #id "),%eax\n\t" \
+                        "call *%fs:0xc0\n\t" \
+                        "ret $" #args )
 
 /*******************************************************************
  *         syscalls
  */
 #define SYSCALL_ENTRY(id,name,args) __ASM_SYSCALL_FUNC( id, name, args )
-ALL_SYSCALLS32
+ALL_SYSCALLS
 DEFINE_SYSCALL_HELPER32()
 #undef SYSCALL_ENTRY
 
@@ -539,7 +522,7 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
                    "leal -12(%esi),%edi\n\t"
                    /* clear the thread stack */
                    "andl $~0xfff,%edi\n\t"   /* round down to page size */
-                   "movl $0xf0000,%ecx\n\t"
+                   "movl $0xf000,%ecx\n\t"
                    "subl %ecx,%edi\n\t"
                    "movl %edi,%esp\n\t"
                    "xorl %eax,%eax\n\t"

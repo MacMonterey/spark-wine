@@ -32,29 +32,7 @@
 #define GetCurrentThread MacGetCurrentThread
 #define GetProcessInformation MacGetProcessInformation
 #define LoadResource MacLoadResource
-#define AnimatePalette MacAnimatePalette
-#define EqualRgn MacEqualRgn
-#define FillRgn MacFillRgn
-#define FrameRgn MacFrameRgn
-#define GetPixel MacGetPixel
-#define InvertRgn MacInvertRgn
-#define LineTo MacLineTo
-#define OffsetRgn MacOffsetRgn
-#define PaintRgn MacPaintRgn
 #define Polygon MacPolygon
-#define ResizePalette MacResizePalette
-#define SetRectRgn MacSetRectRgn
-#define EqualRect MacEqualRect
-#define FillRect MacFillRect
-#define FrameRect MacFrameRect
-#define GetCursor MacGetCursor
-#define InvertRect MacInvertRect
-#define OffsetRect MacOffsetRect
-#define PtInRect MacPtInRect
-#define SetCursor MacSetCursor
-#define SetRect MacSetRect
-#define ShowCursor MacShowCursor
-#define UnionRect MacUnionRect
 
 #include <ApplicationServices/ApplicationServices.h>
 
@@ -62,29 +40,7 @@
 #undef GetCurrentThread
 #undef GetProcessInformation
 #undef LoadResource
-#undef AnimatePalette
-#undef EqualRgn
-#undef FillRgn
-#undef FrameRgn
-#undef GetPixel
-#undef InvertRgn
-#undef LineTo
-#undef OffsetRgn
-#undef PaintRgn
 #undef Polygon
-#undef ResizePalette
-#undef SetRectRgn
-#undef EqualRect
-#undef FillRect
-#undef FrameRect
-#undef GetCursor
-#undef InvertRect
-#undef OffsetRect
-#undef PtInRect
-#undef SetCursor
-#undef SetRect
-#undef ShowCursor
-#undef UnionRect
 
 #include <pthread.h>
 
@@ -365,7 +321,8 @@ typedef struct macdrv_event {
         struct {
             void           *himc;
             CFStringRef     text;       /* new text or NULL if just completing existing text */
-            unsigned int    cursor_pos;
+            unsigned int    cursor_begin;
+            unsigned int    cursor_end;
             unsigned int    complete;   /* is completing text? */
         }                                           im_set_text;
         struct {
@@ -568,8 +525,8 @@ extern void macdrv_view_release_metal_view(macdrv_metal_view v);
 extern int macdrv_get_view_backing_size(macdrv_view v, int backing_size[2]);
 extern void macdrv_set_view_backing_size(macdrv_view v, const int backing_size[2]);
 extern uint32_t macdrv_window_background_color(void);
-extern void macdrv_send_text_input_event(int pressed, unsigned int flags, int repeat, int keyc,
-                                         void* data, int* done);
+extern void macdrv_send_keydown_to_input_source(unsigned int flags, int repeat, int keyc,
+                                                void* data, int* done);
 extern int macdrv_is_any_wine_window_visible(void);
 
 

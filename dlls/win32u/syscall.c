@@ -39,23 +39,29 @@ ULONG_PTR zero_bits = 0;
 static ULONG_PTR syscalls[] =
 {
 #define SYSCALL_ENTRY(id,name,args) (ULONG_PTR)name,
-#ifdef _WIN64
-    ALL_SYSCALLS64
-#else
-    ALL_SYSCALLS32
-#endif
+    ALL_SYSCALLS
 #undef SYSCALL_ENTRY
 };
 
 static BYTE arguments[ARRAY_SIZE(syscalls)] =
 {
 #define SYSCALL_ENTRY(id,name,args) args,
-#ifdef _WIN64
-    ALL_SYSCALLS64
-#else
-    ALL_SYSCALLS32
-#endif
+    ALL_SYSCALLS
 #undef SYSCALL_ENTRY
+};
+
+static const char *syscall_names[] =
+{
+#define SYSCALL_ENTRY(id,name,args) #name,
+    ALL_SYSCALLS
+#undef SYSCALL_ENTRY
+};
+
+static const char *usercall_names[NtUserCallCount] =
+{
+#define USER32_CALLBACK_ENTRY(name) "NtUser" #name,
+    ALL_USER32_CALLBACKS
+#undef USER32_CALLBACK_ENTRY
 };
 
 static NTSTATUS init( void *args )
@@ -70,6 +76,7 @@ static NTSTATUS init( void *args )
     }
 #endif
     KeAddSystemServiceTable( syscalls, NULL, ARRAY_SIZE(syscalls), arguments, 1 );
+    ntdll_add_syscall_debug_info( 1, syscall_names, usercall_names );
     return STATUS_SUCCESS;
 }
 

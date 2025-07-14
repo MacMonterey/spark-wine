@@ -412,14 +412,73 @@ static void gdi_alpha_blend(GpGraphics *graphics, INT dst_x, INT dst_y, INT dst_
     gdi_dc_release(graphics, dst_hdc);
 }
 
+static GpStatus get_graphics_device_bounds(GpGraphics* graphics, GpRectF* rect)
+{
+    RECT wnd_rect;
+    GpStatus stat=Ok;
+    GpUnit unit;
+
+    if(graphics->hwnd) {
+        if(!GetClientRect(graphics->hwnd, &wnd_rect))
+            return GenericError;
+
+        rect->X = wnd_rect.left;
+        rect->Y = wnd_rect.top;
+        rect->Width = wnd_rect.right - wnd_rect.left;
+        rect->Height = wnd_rect.bottom - wnd_rect.top;
+    }else if (graphics->image){
+        stat = GdipGetImageBounds(graphics->image, rect, &unit);
+        if (stat == Ok && unit != UnitPixel)
+            FIXME("need to convert from unit %i\n", unit);
+    }else if (GetObjectType(graphics->hdc) == OBJ_MEMDC){
+        HBITMAP hbmp;
+        BITMAP bmp;
+
+        rect->X = 0;
+        rect->Y = 0;
+
+        hbmp = GetCurrentObject(graphics->hdc, OBJ_BITMAP);
+        if (hbmp && GetObjectW(hbmp, sizeof(bmp), &bmp))
+        {
+            rect->Width = bmp.bmWidth;
+            rect->Height = bmp.bmHeight;
+        }
+        else
+        {
+            /* FIXME: ??? */
+            rect->Width = 1;
+            rect->Height = 1;
+        }
+    }else{
+        rect->X = 0;
+        rect->Y = 0;
+        rect->Width = GetDeviceCaps(graphics->hdc, HORZRES);
+        rect->Height = GetDeviceCaps(graphics->hdc, VERTRES);
+    }
+
+    return stat;
+}
+
 static GpStatus get_clip_hrgn(GpGraphics *graphics, HRGN *hrgn)
 {
     GpRegion *rgn;
     GpMatrix transform;
     GpStatus stat;
+    GpRectF bounds;
+    RECT gdi_bounds;
     BOOL identity;
 
-    stat = get_graphics_transform(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceDevice, &transform);
+    stat = get_graphics_device_bounds(graphics, &bounds);
+
+    if (stat == Ok)
+    {
+        gdi_bounds.left = floorf(bounds.X);
+        gdi_bounds.top = floorf(bounds.Y);
+        gdi_bounds.right = ceilf(bounds.X + bounds.Width);
+        gdi_bounds.bottom = ceilf(bounds.Y + bounds.Height);
+
+        stat = get_graphics_transform(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceDevice, &transform);
+    }
 
     if (stat == Ok)
         stat = GdipIsMatrixIdentity(&transform, &identity);
@@ -433,7 +492,7 @@ static GpStatus get_clip_hrgn(GpGraphics *graphics, HRGN *hrgn)
             stat = GdipTransformRegion(rgn, &transform);
 
         if (stat == Ok)
-            stat = GdipGetRegionHRgn(rgn, NULL, hrgn);
+            stat = get_region_hrgn(&rgn->node, &gdi_bounds, hrgn);
 
         GdipDeleteRegion(rgn);
     }
@@ -557,21 +616,23 @@ static GpStatus alpha_blend_pixels_hrgn(GpGraphics *graphics, INT dst_x, INT dst
         if (!hrgn)
             return OutOfMemory;
 
-        stat = get_clip_hrgn(graphics, &visible_rgn);
-        if (stat != Ok)
-        {
-            DeleteObject(hrgn);
-            return stat;
-        }
-
-        if (visible_rgn)
-        {
-            CombineRgn(hrgn, hrgn, visible_rgn, RGN_AND);
-            DeleteObject(visible_rgn);
-        }
-
         if (hregion)
             CombineRgn(hrgn, hrgn, hregion, RGN_AND);
+        else
+        {
+            stat = get_clip_hrgn(graphics, &visible_rgn);
+            if (stat != Ok)
+            {
+                DeleteObject(hrgn);
+                return stat;
+            }
+
+            if (visible_rgn)
+            {
+                CombineRgn(hrgn, hrgn, visible_rgn, RGN_AND);
+                DeleteObject(visible_rgn);
+            }
+        }
 
         size = GetRegionData(hrgn, 0, NULL);
 
@@ -616,27 +677,30 @@ static GpStatus alpha_blend_pixels_hrgn(GpGraphics *graphics, INT dst_x, INT dst
         if (stat != Ok)
             return stat;
 
-        stat = get_clip_hrgn(graphics, &hrgn);
-
-        if (stat != Ok)
-        {
-            gdi_dc_release(graphics, hdc);
-            return stat;
-        }
-
         save = SaveDC(hdc);
 
-        ExtSelectClipRgn(hdc, hrgn, RGN_COPY);
-
         if (hregion)
-            ExtSelectClipRgn(hdc, hregion, RGN_AND);
+            ExtSelectClipRgn(hdc, hregion, RGN_COPY);
+        else
+        {
+            stat = get_clip_hrgn(graphics, &hrgn);
+
+            if (stat != Ok)
+            {
+                RestoreDC(hdc, save);
+                gdi_dc_release(graphics, hdc);
+                return stat;
+            }
+
+            ExtSelectClipRgn(hdc, hrgn, RGN_COPY);
+
+            DeleteObject(hrgn);
+        }
 
         stat = alpha_blend_hdc_pixels(graphics, dst_x, dst_y, src, src_width,
             src_height, src_stride, fmt);
 
         RestoreDC(hdc, save);
-
-        DeleteObject(hrgn);
 
         gdi_dc_release(graphics, hdc);
 
@@ -2233,53 +2297,6 @@ static GpStatus restore_container(GpGraphics* graphics,
     return Ok;
 }
 
-static GpStatus get_graphics_device_bounds(GpGraphics* graphics, GpRectF* rect)
-{
-    RECT wnd_rect;
-    GpStatus stat=Ok;
-    GpUnit unit;
-
-    if(graphics->hwnd) {
-        if(!GetClientRect(graphics->hwnd, &wnd_rect))
-            return GenericError;
-
-        rect->X = wnd_rect.left;
-        rect->Y = wnd_rect.top;
-        rect->Width = wnd_rect.right - wnd_rect.left;
-        rect->Height = wnd_rect.bottom - wnd_rect.top;
-    }else if (graphics->image){
-        stat = GdipGetImageBounds(graphics->image, rect, &unit);
-        if (stat == Ok && unit != UnitPixel)
-            FIXME("need to convert from unit %i\n", unit);
-    }else if (GetObjectType(graphics->hdc) == OBJ_MEMDC){
-        HBITMAP hbmp;
-        BITMAP bmp;
-
-        rect->X = 0;
-        rect->Y = 0;
-
-        hbmp = GetCurrentObject(graphics->hdc, OBJ_BITMAP);
-        if (hbmp && GetObjectW(hbmp, sizeof(bmp), &bmp))
-        {
-            rect->Width = bmp.bmWidth;
-            rect->Height = bmp.bmHeight;
-        }
-        else
-        {
-            /* FIXME: ??? */
-            rect->Width = 1;
-            rect->Height = 1;
-        }
-    }else{
-        rect->X = 0;
-        rect->Y = 0;
-        rect->Width = GetDeviceCaps(graphics->hdc, HORZRES);
-        rect->Height = GetDeviceCaps(graphics->hdc, VERTRES);
-    }
-
-    return stat;
-}
-
 static GpStatus get_graphics_bounds(GpGraphics* graphics, GpRectF* rect)
 {
     GpStatus stat = get_graphics_device_bounds(graphics, rect);
@@ -3434,7 +3451,7 @@ GpStatus WINGDIPAPI GdipDrawImagePointsRect(GpGraphics *graphics, GpImage *image
             if (bitmap->format == PixelFormat16bppRGB555 ||
                 bitmap->format == PixelFormat24bppRGB)
                 dst_format = bitmap->format;
-            else if (bitmap->format & (PixelFormatAlpha|PixelFormatPAlpha))
+            else if (bitmap->image.flags & ImageFlagsHasAlpha)
                 dst_format = PixelFormat32bppPARGB;
             else
                 dst_format = PixelFormat32bppRGB;
@@ -3477,7 +3494,7 @@ GpStatus WINGDIPAPI GdipDrawImagePointsRect(GpGraphics *graphics, GpImage *image
 
             gdi_transform_acquire(graphics);
 
-            if (bitmap->format & (PixelFormatAlpha|PixelFormatPAlpha))
+            if (bitmap->image.flags & ImageFlagsHasAlpha)
             {
                 gdi_alpha_blend(graphics, pti[0].x, pti[0].y, pti[1].x - pti[0].x, pti[2].y - pti[0].y,
                                 src_hdc, srcx, srcy, srcwidth, srcheight);
@@ -4751,6 +4768,84 @@ GpStatus WINGDIPAPI GdipFillRectanglesI(GpGraphics *graphics, GpBrush *brush, GD
     return ret;
 }
 
+static GpStatus get_clipped_region_hrgn(GpGraphics* graphics, GpRegion* region, HRGN *hrgn)
+{
+    GpStatus status;
+    GpRegion *tmp_region, *device_region;
+    GpMatrix gdip_transform, gdi_transform;
+    BOOL gdip_identity, gdi_identity;
+    GpRectF device_bounds;
+
+    status = get_graphics_device_bounds(graphics, &device_bounds);
+
+    if (status == Ok)
+        status = get_graphics_transform(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceWorld, &gdip_transform);
+
+    if (status == Ok)
+        status = GdipIsMatrixIdentity(&gdip_transform, &gdip_identity);
+
+    if (status == Ok)
+        status = get_graphics_transform(graphics, WineCoordinateSpaceGdiDevice, CoordinateSpaceDevice, &gdi_transform);
+
+    if (status == Ok)
+        status = GdipIsMatrixIdentity(&gdi_transform, &gdi_identity);
+
+    if (status == Ok)
+        status = GdipCreateRegionRect(&device_bounds, &device_region);
+
+    if (status == Ok)
+    {
+        if (gdip_identity)
+            status = GdipCombineRegionRegion(device_region, region, CombineModeIntersect);
+        else
+        {
+            status = GdipCloneRegion(region, &tmp_region);
+
+            if (status == Ok)
+            {
+                status = GdipTransformRegion(tmp_region, &gdip_transform);
+
+                if (status == Ok)
+                    GdipCombineRegionRegion(device_region, tmp_region, CombineModeIntersect);
+
+                GdipDeleteRegion(tmp_region);
+            }
+        }
+
+        if (status == Ok)
+        {
+            if (gdi_identity)
+                status = GdipCombineRegionRegion(device_region, graphics->clip, CombineModeIntersect);
+            else
+            {
+                status = GdipCloneRegion(graphics->clip, &tmp_region);
+
+                if (status == Ok)
+                {
+                    status = GdipTransformRegion(tmp_region, &gdi_transform);
+
+                    if (status == Ok)
+                        GdipCombineRegionRegion(device_region, tmp_region, CombineModeIntersect);
+
+                    GdipDeleteRegion(tmp_region);
+                }
+            }
+        }
+
+        if (status == Ok)
+            status = GdipGetRegionHRgn(device_region, NULL, hrgn);
+
+        GdipDeleteRegion(device_region);
+    }
+
+    if (status == Ok && graphics->gdi_clip)
+    {
+        CombineRgn(*hrgn, *hrgn, graphics->gdi_clip, RGN_AND);
+    }
+
+    return status;
+}
+
 static GpStatus GDI32_GdipFillRegion(GpGraphics* graphics, GpBrush* brush,
     GpRegion* region)
 {
@@ -4771,18 +4866,11 @@ static GpStatus GDI32_GdipFillRegion(GpGraphics* graphics, GpBrush* brush,
     EndPath(hdc);
 
     hrgn = NULL;
-    status = get_clip_hrgn(graphics, &hrgn);
+    status = get_clipped_region_hrgn(graphics, region, &hrgn);
     if (status != Ok)
         goto end;
 
     ExtSelectClipRgn(hdc, hrgn, RGN_COPY);
-    DeleteObject(hrgn);
-
-    status = GdipGetRegionHRgn(region, graphics, &hrgn);
-    if (status != Ok)
-        goto end;
-
-    ExtSelectClipRgn(hdc, hrgn, RGN_AND);
     DeleteObject(hrgn);
 
     if (GetClipBox(hdc, &rc) != NULLREGION)
@@ -4805,9 +4893,6 @@ static GpStatus SOFTWARE_GdipFillRegion(GpGraphics *graphics, GpBrush *brush,
     GpRegion* region)
 {
     GpStatus stat;
-    GpRegion *temp_region;
-    GpMatrix world_to_device;
-    GpRectF graphics_bounds;
     DWORD *pixel_data;
     HRGN hregion;
     RECT bound_rect;
@@ -4819,27 +4904,7 @@ static GpStatus SOFTWARE_GdipFillRegion(GpGraphics *graphics, GpBrush *brush,
     stat = gdi_transform_acquire(graphics);
 
     if (stat == Ok)
-        stat = get_graphics_device_bounds(graphics, &graphics_bounds);
-
-    if (stat == Ok)
-        stat = GdipCloneRegion(region, &temp_region);
-
-    if (stat == Ok)
-    {
-        stat = get_graphics_transform(graphics, WineCoordinateSpaceGdiDevice,
-            CoordinateSpaceWorld, &world_to_device);
-
-        if (stat == Ok)
-            stat = GdipTransformRegion(temp_region, &world_to_device);
-
-        if (stat == Ok)
-            stat = GdipCombineRegionRect(temp_region, &graphics_bounds, CombineModeIntersect);
-
-        if (stat == Ok)
-            stat = GdipGetRegionHRgn(temp_region, NULL, &hregion);
-
-        GdipDeleteRegion(temp_region);
-    }
+        stat = get_clipped_region_hrgn(graphics, region, &hregion);
 
     if (stat == Ok && GetRgnBox(hregion, &bound_rect) == NULLREGION)
     {

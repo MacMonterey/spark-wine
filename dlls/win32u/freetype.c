@@ -47,25 +47,14 @@
 #define GetCurrentThread __carbon_GetCurrentThread
 #define GetCurrentProcess __carbon_GetCurrentProcess
 #define GetProcessInformation __carbon_GetProcessInformation
-#define AnimatePalette __carbon_AnimatePalette
 #define DeleteMenu __carbon_DeleteMenu
 #define DrawMenu __carbon_DrawMenu
 #define DrawMenuBar __carbon_DrawMenuBar
 #define EnableMenuItem __carbon_EnableMenuItem
-#define EqualRgn __carbon_EqualRgn
-#define FillRgn __carbon_FillRgn
-#define FrameRgn __carbon_FrameRgn
 #define GetMenu __carbon_GetMenu
-#define GetPixel __carbon_GetPixel
-#define InvertRgn __carbon_InvertRgn
 #define IsWindowVisible __carbon_IsWindowVisible
-#define LineTo __carbon_LineTo
 #define MoveWindow __carbon_MoveWindow
-#define OffsetRgn __carbon_OffsetRgn
-#define PaintRgn __carbon_PaintRgn
 #define Polygon __carbon_Polygon
-#define ResizePalette __carbon_ResizePalette
-#define SetRectRgn __carbon_SetRectRgn
 #define ShowWindow __carbon_ShowWindow
 #include <Carbon/Carbon.h>
 #undef LoadResource
@@ -74,26 +63,15 @@
 #undef _CDECL
 #undef GetCurrentProcess
 #undef GetProcessInformation
-#undef AnimatePalette
 #undef CheckMenuItem
 #undef DeleteMenu
 #undef DrawMenu
 #undef DrawMenuBar
 #undef EnableMenuItem
-#undef EqualRgn
-#undef FillRgn
-#undef FrameRgn
 #undef GetMenu
-#undef GetPixel
-#undef InvertRgn
 #undef IsWindowVisible
-#undef LineTo
 #undef MoveWindow
-#undef OffsetRgn
-#undef PaintRgn
 #undef Polygon
-#undef ResizePalette
-#undef SetRectRgn
 #undef ShowWindow
 #endif /* __APPLE__ */
 
@@ -1325,28 +1303,13 @@ static int add_unix_face( const char *unix_name, const WCHAR *file, void *data_p
                         unix_face->font_version, flags, unix_face->scalable ? NULL : &unix_face->size );
 
     TRACE("fsCsb = %08x %08x/%08x %08x %08x %08x\n",
-          (int)unix_face->fs.fsCsb[0], (int)unix_face->fs.fsCsb[1],
-          (int)unix_face->fs.fsUsb[0], (int)unix_face->fs.fsUsb[1],
-          (int)unix_face->fs.fsUsb[2], (int)unix_face->fs.fsUsb[3]);
+          unix_face->fs.fsCsb[0], unix_face->fs.fsCsb[1],
+          unix_face->fs.fsUsb[0], unix_face->fs.fsUsb[1],
+          unix_face->fs.fsUsb[2], unix_face->fs.fsUsb[3]);
 
     if (num_faces) *num_faces = unix_face->num_faces;
     unix_face_destroy( unix_face );
     return ret;
-}
-
-static WCHAR *get_dos_file_name( LPCSTR str )
-{
-    WCHAR *buffer;
-    ULONG len = strlen(str) + 1;
-
-    len += 8;  /* \??\unix prefix */
-    if (!(buffer = malloc( len * sizeof(WCHAR) ))) return NULL;
-    if (wine_unix_to_nt_file_name( str, buffer, &len ))
-    {
-        free( buffer );
-        return NULL;
-    }
-    return buffer;
 }
 
 static char *get_unix_file_name( LPCWSTR path )
@@ -1406,7 +1369,8 @@ static INT AddFontToList(const WCHAR *dos_name, const char *unix_name, void *fon
     }
 #endif /* __APPLE__ */
 
-    if (!dos_name && unix_name) dos_name = filename = get_dos_file_name( unix_name );
+    if (!dos_name && unix_name && !ntdll_get_dos_file_name( unix_name, &filename, FILE_OPEN ))
+        dos_name = filename;
 
     do
         ret += add_unix_face( unix_name, dos_name, font_data_ptr, font_data_size, face_index, flags, &num_faces );
@@ -1572,7 +1536,7 @@ static void fontconfig_add_font( FcPattern *pattern, UINT flags )
     if (pFcPatternGetInteger( pattern, FC_INDEX, 0, &face_index ) != FcResultMatch)
         face_index = 0;
 
-    dos_name = get_dos_file_name( unix_name );
+    ntdll_get_dos_file_name( unix_name, &dos_name, FILE_OPEN );
     add_unix_face( unix_name, dos_name, NULL, 0, face_index, flags, NULL );
     free( dos_name );
 }
@@ -2446,7 +2410,7 @@ static BOOL freetype_load_font( struct gdi_font *font )
         /* load the VDMX table if we have one */
         font->ppem = load_VDMX( font, font->lf.lfHeight );
         if (font->ppem == 0) font->ppem = calc_ppem_for_height( ft_face, font->lf.lfHeight );
-        TRACE( "height %d => ppem %d\n", (int)font->lf.lfHeight, font->ppem );
+        TRACE( "height %d => ppem %d\n", font->lf.lfHeight, font->ppem );
         height = font->ppem;
         font->ttc_item_offset = get_ttc_offset( ft_face, font->face_index );
         font->otm.otmEMSquare = ft_face->units_per_EM;
@@ -2492,7 +2456,7 @@ static UINT freetype_get_aa_flags( struct gdi_font *font, UINT aa_flags, BOOL an
             if (get_gasp_flags( font, &gasp_flags ) && !(gasp_flags & GASP_DOGRAY))
             {
                 TRACE( "font %s %d aa disabled by GASP\n",
-                       debugstr_w(font->lf.lfFaceName), (int)font->lf.lfHeight );
+                       debugstr_w(font->lf.lfFaceName), font->lf.lfHeight );
                 aa_flags = GGO_BITMAP;
             }
         }

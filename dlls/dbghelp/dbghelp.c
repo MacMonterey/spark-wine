@@ -717,12 +717,15 @@ BOOL WINAPI SymSetScopeFromAddr(HANDLE hProcess, ULONG64 addr)
 BOOL WINAPI SymSetScopeFromIndex(HANDLE hProcess, ULONG64 addr, DWORD index)
 {
     struct module_pair pair;
+    symref_t symref;
     struct symt* sym;
 
     TRACE("(%p %#I64x %lu)\n", hProcess, addr, index);
 
     if (!module_init_pair(&pair, hProcess, addr)) return FALSE;
-    sym = symt_index2ptr(pair.effective, index);
+    symref = symt_index_to_symref(pair.effective, index);
+    if (!symt_is_symref_ptr(symref)) return FALSE;
+    sym = (struct symt*)symref;
     if (!symt_check_tag(sym, SymTagFunction)) return FALSE;
 
     pair.pcs->localscope_pc = ((struct symt_function*)sym)->ranges[0].low; /* FIXME of FuncDebugStart when it exists? */
@@ -761,6 +764,7 @@ BOOL WINAPI SymSetScopeFromInlineContext(HANDLE hProcess, ULONG64 addr, DWORD in
     }
 }
 
+#ifndef _WIN64
 /******************************************************************
  *		reg_cb64to32 (internal)
  *
@@ -806,6 +810,7 @@ static BOOL CALLBACK reg_cb64to32(HANDLE hProcess, ULONG action, ULONG64 data, U
     }
     return pcs->reg_cb32(hProcess, action, data32, (PVOID)(DWORD_PTR)user);
 }
+#endif
 
 /******************************************************************
  *		pcs_callback (internal)
@@ -874,17 +879,19 @@ static BOOL sym_register_cb(HANDLE hProcess,
     return TRUE;
 }
 
+#ifndef _WIN64
 /***********************************************************************
  *		SymRegisterCallback (DBGHELP.@)
  */
-BOOL WINAPI SymRegisterCallback(HANDLE hProcess, 
+BOOL WINAPI SymRegisterCallback(HANDLE hProcess,
                                 PSYMBOL_REGISTERED_CALLBACK CallbackFunction,
                                 PVOID UserContext)
 {
-    TRACE("(%p, %p, %p)\n", 
+    TRACE("(%p, %p, %p)\n",
           hProcess, CallbackFunction, UserContext);
     return sym_register_cb(hProcess, reg_cb64to32, CallbackFunction, (DWORD_PTR)UserContext, FALSE);
 }
+#endif
 
 /***********************************************************************
  *		SymRegisterCallback64 (DBGHELP.@)

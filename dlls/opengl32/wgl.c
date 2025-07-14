@@ -29,6 +29,7 @@
 #include "winbase.h"
 #include "winreg.h"
 #include "ntuser.h"
+#include "ntgdi.h"
 #include "malloc.h"
 
 #include "unixlib.h"
@@ -124,6 +125,7 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
     PIXELFORMATDESCRIPTOR format, best;
     int i, count, best_format;
     int bestDBuffer = -1, bestStereo = -1;
+    DWORD is_memdc;
 
     TRACE( "%p %p: size %u version %u flags %lu type %u color %u %u,%u,%u,%u "
            "accum %u depth %u stencil %u aux %u\n",
@@ -133,6 +135,8 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
 
     count = wglDescribePixelFormat( hdc, 0, 0, NULL );
     if (!count) return 0;
+
+    if (!NtGdiGetDCDword( hdc, NtGdiIsMemDC, &is_memdc )) is_memdc = 0;
 
     best_format = 0;
     best.dwFlags = 0;
@@ -171,6 +175,11 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
         if ((ppfd->dwFlags & PFD_SUPPORT_OPENGL) && !(format.dwFlags & PFD_SUPPORT_OPENGL))
         {
             TRACE( "PFD_SUPPORT_OPENGL required but not found for iPixelFormat=%d\n", i );
+            continue;
+        }
+        if (is_memdc && ppfd->cColorBits == 16 && ppfd->cAlphaBits != 1)
+        {
+            TRACE( "Ignoring iPixelFormat=%d RGB565 format on memory DC\n", i );
             continue;
         }
 
@@ -314,6 +323,7 @@ static struct wgl_pixel_format *get_pixel_formats( HDC hdc, UINT *num_formats,
     struct get_pixel_formats_params args = { .teb = NtCurrentTeb(), .hdc = hdc };
     PVOID *glReserved = NtCurrentTeb()->glReserved1;
     NTSTATUS status;
+    DWORD is_memdc;
 
     if (glReserved[WINE_GL_RESERVED_FORMATS_HDC] == hdc)
     {
@@ -328,6 +338,9 @@ static struct wgl_pixel_format *get_pixel_formats( HDC hdc, UINT *num_formats,
     if (!(args.formats = calloc( args.num_formats, sizeof(*args.formats) ))) goto error;
     args.max_formats = args.num_formats;
     if ((status = UNIX_CALL( get_pixel_formats, &args ))) goto error;
+
+    if (NtGdiGetDCDword( hdc, NtGdiIsMemDC, &is_memdc ) && is_memdc)
+        args.num_onscreen_formats = args.num_formats;
 
     *num_formats = args.num_formats;
     *num_onscreen_formats = args.num_onscreen_formats;
@@ -511,7 +524,6 @@ static enum attrib_match wgl_attrib_match_criteria( int attrib )
     case WGL_NEED_PALETTE_ARB:
     case WGL_NEED_SYSTEM_PALETTE_ARB:
     case WGL_SWAP_LAYER_BUFFERS_ARB:
-    case WGL_SWAP_METHOD_ARB:
     case WGL_SHARE_DEPTH_ARB:
     case WGL_SHARE_STENCIL_ARB:
     case WGL_SHARE_ACCUM_ARB:
@@ -557,6 +569,7 @@ static enum attrib_match wgl_attrib_match_criteria( int attrib )
     case WGL_TRANSPARENT_BLUE_VALUE_ARB:
     case WGL_TRANSPARENT_ALPHA_VALUE_ARB:
     case WGL_TRANSPARENT_INDEX_VALUE_ARB:
+    case WGL_SWAP_METHOD_ARB:
         return ATTRIB_MATCH_IGNORE;
     default:
         return ATTRIB_MATCH_INVALID;
@@ -572,14 +585,15 @@ static void filter_format_array( const struct wgl_pixel_format **array,
 
     assert(match != ATTRIB_MATCH_INVALID);
 
-    if (match == ATTRIB_MATCH_IGNORE) return;
+    if (match == ATTRIB_MATCH_IGNORE && attrib != WGL_SWAP_METHOD_ARB) return;
 
     for (i = 0; i < num_formats; ++i)
     {
         if (!array[i]) continue;
         if (!wgl_pixel_format_get_attrib( array[i], attrib, &fmt_value ) ||
             (match == ATTRIB_MATCH_EXACT && fmt_value != value) ||
-            (match == ATTRIB_MATCH_MINIMUM && fmt_value < value))
+            (match == ATTRIB_MATCH_MINIMUM && fmt_value < value) ||
+            (attrib == WGL_SWAP_METHOD_ARB && ((fmt_value == WGL_SWAP_COPY_ARB) ^ (value == WGL_SWAP_COPY_ARB))))
         {
             array[i] = NULL;
         }
@@ -703,9 +717,12 @@ BOOL WINAPI wglChoosePixelFormatARB( HDC hdc, const int *attribs_int, const FLOA
     UINT i, num_wgl_formats, num_wgl_onscreen_formats;
     const struct wgl_pixel_format **format_array;
     struct compare_formats_ctx ctx = { 0 };
+    DWORD is_memdc;
 
     TRACE( "hdc %p, attribs_int %p, attribs_float %p, max_formats %u, formats %p, num_formats %p\n",
            hdc, attribs_int, attribs_float, max_formats, formats, num_formats );
+
+    if (!NtGdiGetDCDword( hdc, NtGdiIsMemDC, &is_memdc )) is_memdc = 0;
 
     wgl_formats = get_pixel_formats( hdc, &num_wgl_formats, &num_wgl_onscreen_formats );
 
@@ -746,7 +763,12 @@ BOOL WINAPI wglChoosePixelFormatARB( HDC hdc, const int *attribs_int, const FLOA
     /* Initialize the format_array with (pointers to) all wgl formats */
     format_array = malloc( num_wgl_formats * sizeof(*format_array) );
     if (!format_array) return FALSE;
-    for (i = 0; i < num_wgl_formats; ++i) format_array[i] = &wgl_formats[i];
+    for (i = 0; i < num_wgl_formats; ++i)
+    {
+        struct wgl_pixel_format *format = wgl_formats + i;
+        if (is_memdc && format->pfd.cColorBits == 16 && format->pfd.cAlphaBits != 1) format_array[i] = NULL;
+        else format_array[i] = &wgl_formats[i];
+    }
 
     /* Remove formats that are not acceptable */
     for (i = 0; i < ctx.num_attribs; ++i)
