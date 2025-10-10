@@ -160,6 +160,17 @@ static const char *sed_cmd;
 static const char *wayland_scanner;
 static const char *sarif_converter;
 static const char *compiler_rt;
+static const char *buildimage;
+static const char *runtest;
+static const char *install_sh;
+static const char *makedep;
+static const char *make_xftmpl;
+static const char *sfnt2fon;
+static const char *winebuild;
+static const char *winegcc;
+static const char *widl;
+static const char *wrc;
+static const char *wmc;
 static int so_dll_supported;
 static int unix_lib_supported;
 /* per-architecture global variables */
@@ -239,6 +250,7 @@ static struct makefile **submakes;
 
 static const char separator[] = "### Dependencies";
 static const char *output_makefile_name = "Makefile";
+static const char *input_makefile_name;
 static const char *input_file_name;
 static const char *output_file_name;
 static const char *temp_file_name;
@@ -714,7 +726,7 @@ static char *root_src_dir_path( const char *path )
 /*******************************************************************
  *         tools_dir_path
  */
-static char *tools_dir_path( const struct makefile *make, const char *path )
+static char *tools_dir_path( const char *path )
 {
     if (tools_dir) return strmake( "%s/tools/%s", tools_dir, path );
     return strmake( "tools/%s", path );
@@ -724,9 +736,18 @@ static char *tools_dir_path( const struct makefile *make, const char *path )
 /*******************************************************************
  *         tools_path
  */
-static char *tools_path( const struct makefile *make, const char *name )
+static char *tools_path( const char *name )
 {
-    return strmake( "%s/%s%s", tools_dir_path( make, name ), name, tools_ext );
+    return strmake( "%s/%s%s", tools_dir_path( name ), name, tools_ext );
+}
+
+
+/*******************************************************************
+ *         tools_base_path
+ */
+static char *tools_base_path( const char *name )
+{
+    return strmake( "%s%s", tools_dir_path( name ), tools_ext );
 }
 
 
@@ -1697,6 +1718,8 @@ static FILE *open_input_makefile( const struct makefile *make )
 
     if (make->obj_dir)
         input_file_name = root_src_dir_path( obj_dir_path( make, "Makefile.in" ));
+    else if (input_makefile_name)
+        input_file_name = input_makefile_name;
     else
         input_file_name = output_makefile_name;  /* always use output name for main Makefile */
 
@@ -2478,12 +2501,12 @@ static const char *cmd_prefix( const char *cmd )
  */
 static void output_winegcc_command( struct makefile *make, unsigned int arch )
 {
-    output( "\t%s%s -o $@", cmd_prefix( "CCLD" ), tools_path( make, "winegcc" ));
+    output( "\t%s%s -o $@", cmd_prefix( "CCLD" ), winegcc );
     output_filename( "--wine-objdir ." );
     if (tools_dir)
     {
         output_filename( "--winebuild" );
-        output_filename( tools_path( make, "winebuild" ));
+        output_filename( winebuild );
     }
     output_filenames( target_flags[arch] );
     if (native_archs[arch] && !make->disabled[native_archs[arch]])
@@ -2511,7 +2534,7 @@ static void output_symlink_rule( const char *src_name, const char *link_name, in
     }
 
     output( "\t%s", create_dir ? "" : cmd_prefix( "LN" ));
-    if (create_dir && dir && *dir) output( "%s -d %s && ", root_src_dir_path( "tools/install-sh" ), dir );
+    if (create_dir && dir && *dir) output( "%s -d %s && ", install_sh, dir );
     output( "rm -f %s && ", link_name );
 
     /* dest path with a directory needs special handling if ln -s isn't supported */
@@ -2554,7 +2577,6 @@ static void output_srcdir_symlink( struct makefile *make, const char *obj )
 static void output_install_commands( struct makefile *make, struct strarray files )
 {
     unsigned int i, arch;
-    char *install_sh = root_src_dir_path( "tools/install-sh" );
 
     for (i = 0; i < files.count; i += 2)
     {
@@ -2569,7 +2591,7 @@ static void output_install_commands( struct makefile *make, struct strarray file
             arch = type - '0';
             output( "\tSTRIPPROG=%s %s -m 644 $(INSTALL_PROGRAM_FLAGS) %s %s\n",
                     strip_progs[arch], install_sh, obj_dir_path( make, file ), dest );
-            output( "\t%s --builtin %s\n", tools_path( make, "winebuild" ), dest );
+            output( "\t%s --builtin %s\n", winebuild, dest );
             break;
         case 'd':  /* data file */
             output( "\t%s -m 644 $(INSTALL_DATA_FLAGS) %s %s\n",
@@ -2592,8 +2614,12 @@ static void output_install_commands( struct makefile *make, struct strarray file
             output( "\t%s $(INSTALL_SCRIPT_FLAGS) %s %s\n",
                     install_sh, src_dir_path( make, file ), dest );
             break;
+        case 't':  /* tools file */
+            output( "\tSTRIPPROG=\"$(STRIP)\" %s $(INSTALL_PROGRAM_FLAGS) %s %s\n",
+                    install_sh, tools_path( file ), dest );
+            break;
         case 'y':  /* symlink */
-            output_symlink_rule( files.str[i], dest, 1 );
+            output_symlink_rule( file, dest, 1 );
             break;
         default:
             assert(0);
@@ -2628,6 +2654,9 @@ static void output_install_rules( struct makefile *make, enum install_rules rule
         case 'p':  /* program file */
         case 's':  /* script */
             strarray_add_uniq( &targets, obj_dir_path( make, file ));
+            break;
+        case 't':  /* tools file */
+            strarray_add_uniq( &targets, tools_path( file ));
             break;
         }
     }
@@ -2810,11 +2839,11 @@ static void output_source_rc( struct makefile *make, struct incl_file *source, c
         output( "%s.pot ", obj_dir_path( make, obj ) );
     }
     output( "%s: %s", obj_dir_path( make, res_file ), source->filename );
-    output_filename( tools_path( make, "wrc" ));
+    output_filename( wrc );
     if (make->src_dir) output_filename( "nls/locale.nls" );
     output_filenames( source->dependencies );
     output( "\n" );
-    output( "\t%s%s -u -o $@", cmd_prefix( "WRC" ), tools_path( make, "wrc" ) );
+    output( "\t%s%s -u -o $@", cmd_prefix( "WRC" ), wrc );
     if (make->is_win16) output_filename( "-m16" );
     output_filename( "--nostdinc" );
     if (po_dir) output_filename( strmake( "--po-dir=%s", po_dir ));
@@ -2844,11 +2873,11 @@ static void output_source_mc( struct makefile *make, struct incl_file *source, c
         if (!make->disabled[arch]) strarray_add( &make->res_files[arch], res_file );
     strarray_add( &make->pot_files, strmake( "%s.pot", obj ));
     output( "%s.pot %s.res: %s", obj_path, obj_path, source->filename );
-    output_filename( tools_path( make, "wmc" ));
+    output_filename( wmc );
     output_filenames( source->dependencies );
     if (make->src_dir) output_filename( "nls/locale.nls" );
     output( "\n" );
-    output( "\t%s%s -u -o $@ %s", cmd_prefix( "WMC" ), tools_path( make, "wmc" ), source->filename );
+    output( "\t%s%s -u -o $@ %s", cmd_prefix( "WMC" ), wmc, source->filename );
     if (linguas.count)
     {
         output_filename( "--po-dir=po" );
@@ -2924,7 +2953,7 @@ static void output_source_idl( struct makefile *make, struct incl_file *source, 
         if (!arch_deps.count) continue;
         output_filenames_obj_dir( make, arch_deps );
         output( ":\n" );
-        output( "\t%s%s -o $@", cmd_prefix( "WIDL" ), tools_path( make, "widl" ) );
+        output( "\t%s%s -o $@", cmd_prefix( "WIDL" ), widl );
         output_filenames( target_flags[arch] );
         output_filename( "--nostdinc" );
         output_filename( "-Ldlls/\\*" );
@@ -2941,7 +2970,7 @@ static void output_source_idl( struct makefile *make, struct incl_file *source, 
     {
         output_filenames_obj_dir( make, deps );
         output( ":" );
-        output_filename( tools_path( make, "widl" ));
+        output_filename( widl );
         output_filename( source->filename );
         output_filenames( source->dependencies );
         output( "\n" );
@@ -2972,10 +3001,8 @@ static void output_source_idl( struct makefile *make, struct incl_file *source, 
  */
 static void output_source_x( struct makefile *make, struct incl_file *source, const char *obj )
 {
-    output( "%s.h: %s%s %s\n", obj_dir_path( make, obj ),
-            tools_dir_path( make, "make_xftmpl" ), tools_ext, source->filename );
-    output( "\t%s%s%s -H -o $@ %s\n", cmd_prefix( "GEN" ),
-            tools_dir_path( make, "make_xftmpl" ), tools_ext, source->filename );
+    output( "%s.h: %s %s\n", obj_dir_path( make, obj ), make_xftmpl, source->filename );
+    output( "\t%s%s -H -o $@ %s\n", cmd_prefix( "GEN" ), make_xftmpl, source->filename );
     if (source->file->flags & FLAG_INSTALL)
     {
         add_install_rule( make, source->name, 0, source->name,
@@ -3019,10 +3046,8 @@ static void output_source_sfd( struct makefile *make, struct incl_file *source, 
             char *args = strtok( NULL, "" );
 
             strarray_add( &make->all_targets[0], xstrdup( font ));
-            output( "%s: %s %s\n", obj_dir_path( make, font ),
-                    tools_path( make, "sfnt2fon" ), ttf_file );
-            output( "\t%s%s -q -o $@ %s %s\n", cmd_prefix( "GEN" ),
-                    tools_path( make, "sfnt2fon" ), ttf_file, args );
+            output( "%s: %s %s\n", obj_dir_path( make, font ), sfnt2fon, ttf_file );
+            output( "\t%s%s -q -o $@ %s %s\n", cmd_prefix( "GEN" ), sfnt2fon, ttf_file, args );
             add_install_rule( make, source->name, 0, xstrdup(font), strmake( "d$(datadir)/wine/fonts/%s", font ));
         }
     }
@@ -3046,8 +3071,7 @@ static void output_source_svg( struct makefile *make, struct incl_file *source, 
         {
             output( "%s.%s: %s\n", src_dir_path( make, obj ), images[i], source->filename );
             output( "\t%sCONVERT=\"%s\" ICOTOOL=\"%s\" RSVG=\"%s\" %s %s $@\n",
-                    cmd_prefix( "GEN" ), convert, icotool, rsvg,
-                    root_src_dir_path( "tools/buildimage" ), source->filename );
+                    cmd_prefix( "GEN" ), convert, icotool, rsvg, buildimage, source->filename );
             strarray_add( &make->maintainerclean_files, strmake( "%s.%s", obj, images[i] ));
         }
     }
@@ -3177,10 +3201,10 @@ static void output_source_testdll( struct makefile *make, struct incl_file *sour
         strarray_add( &make->res_files[arch], output_rsrc );
         output( "%s:", obj_dir_path( make, output_rsrc ));
         output_filename( output_file );
-        output_filename( tools_path( make, "wrc" ));
+        output_filename( wrc );
         output( "\n" );
-        output( "\t%secho \"%s%s TESTDLL \\\"%s\\\"\" | %s -u -o $@\n", cmd_prefix( "WRC" ), obj, ext, output_file,
-                tools_path( make, "wrc" ));
+        output( "\t%secho \"%s%s TESTDLL \\\"%s\\\"\" | %s -u -o $@\n",
+                cmd_prefix( "WRC" ), obj, ext, output_file, wrc );
 
         output( "%s:", output_file );
         if (spec_file) output_filename( spec_file->filename );
@@ -3188,8 +3212,8 @@ static void output_source_testdll( struct makefile *make, struct incl_file *sour
         if (hybrid_obj_name) output_filename( hybrid_obj_name );
         if (res_name) output_filename( res_name );
         output_filenames( dep_libs );
-        output_filename( tools_path( make, "winebuild" ));
-        output_filename( tools_path( make, "winegcc" ));
+        output_filename( winebuild );
+        output_filename( winegcc );
         output( "\n" );
         output_winegcc_command( make, link_arch );
         output_filename( "-s" );
@@ -3322,8 +3346,7 @@ static void output_source_one_arch( struct makefile *make, struct incl_file *sou
         strarray_add( &make->ok_files[arch], ok_file );
         output( "%s:\n", obj_dir_path( make, ok_file ));
         output( "\t%s%s $(RUNTESTFLAGS) -T . -M %s -p %s %s && touch $@\n",
-                cmd_prefix( "TEST" ),
-                root_src_dir_path( "tools/runtest" ), make->testdll,
+                cmd_prefix( "TEST" ), runtest, make->testdll,
                 obj_dir_path( make, arch_module_name( test_exe, arch )), obj );
     }
 
@@ -3455,8 +3478,8 @@ static void output_fake_module( struct makefile *make, const char *spec_file )
     output( "%s:", obj_dir_path( make, name ));
     if (spec_file) output_filename( spec_file );
     output_filenames_obj_dir( make, make->res_files[arch] );
-    output_filename( tools_path( make, "winebuild" ));
-    output_filename( tools_path( make, "winegcc" ));
+    output_filename( winebuild );
+    output_filename( winegcc );
     output( "\n" );
     output_winegcc_command( make, arch );
     output_filename( "-Wb,--fake-module" );
@@ -3539,8 +3562,8 @@ static void output_module( struct makefile *make, unsigned int arch )
     if (link_arch != arch) output_filenames_obj_dir( make, make->object_files[link_arch] );
     output_filenames_obj_dir( make, make->res_files[arch] );
     output_filenames( dep_libs );
-    output_filename( tools_path( make, "winebuild" ));
-    output_filename( tools_path( make, "winegcc" ));
+    output_filename( winebuild );
+    output_filename( winegcc );
     output( "\n" );
     output_winegcc_command( make, link_arch );
     if (arch) output_filename( "-Wl,--wine-builtin" );
@@ -3578,11 +3601,11 @@ static void output_import_lib( struct makefile *make, unsigned int arch )
         strarray_add( &make->clean_files, delay_name );
         output( "%s ", obj_dir_path( make, delay_name ));
     }
-    output( "%s: %s %s", obj_dir_path( make, name ), tools_path( make, "winebuild" ), spec_file );
+    output( "%s: %s %s", obj_dir_path( make, name ), winebuild, spec_file );
     output_filenames_obj_dir( make, make->implib_files[arch] );
     if (hybrid_arch) output_filenames_obj_dir( make, make->implib_files[hybrid_arch] );
     output( "\n" );
-    output( "\t%s%s -w --implib -o $@", cmd_prefix( "BUILD" ), tools_path( make, "winebuild" ) );
+    output( "\t%s%s -w --implib -o $@", cmd_prefix( "BUILD" ), winebuild );
     if (!delay_load_flags[arch]) output_filename( "--without-dlltool" );
     output_filenames( target_flags[hybrid_arch ? hybrid_arch : arch] );
     if (make->is_win16) output_filename( "-m16" );
@@ -3638,12 +3661,12 @@ static void output_static_lib( struct makefile *make, unsigned int arch )
     if (arch && !is_multiarch( arch )) return;
 
     strarray_add( &make->clean_files, name );
-    output( "%s: %s", obj_dir_path( make, name ), tools_path( make, "winebuild" ));
+    output( "%s: %s", obj_dir_path( make, name ), winebuild );
     output_filenames_obj_dir( make, make->object_files[arch] );
     if (hybrid_arch) output_filenames_obj_dir( make, make->object_files[hybrid_arch] );
     if (!arch) output_filenames_obj_dir( make, make->unixobj_files );
     output( "\n" );
-    output( "\t%s%s -w --staticlib -o $@", cmd_prefix( "BUILD" ), tools_path( make, "winebuild" ));
+    output( "\t%s%s -w --staticlib -o $@", cmd_prefix( "BUILD" ), winebuild );
     output_filenames( target_flags[hybrid_arch ? hybrid_arch : arch] );
     output_filenames_obj_dir( make, make->object_files[arch] );
     if (hybrid_arch) output_filenames_obj_dir( make, make->object_files[hybrid_arch] );
@@ -3701,14 +3724,14 @@ static void output_test_module( struct makefile *make, unsigned int arch )
     if (link_arch != arch) output_filenames_obj_dir( make, make->object_files[link_arch] );
     output_filenames_obj_dir( make, make->res_files[arch] );
     output_filenames( dep_libs );
-    output_filename( tools_path( make, "winebuild" ));
-    output_filename( tools_path( make, "winegcc" ));
+    output_filename( winebuild );
+    output_filename( winegcc );
     output( "\n" );
 
     output( "programs/winetest/%s%s_test.res: %s\n", arch_dirs[arch], basemodule,
             obj_dir_path( make, stripped ));
     output( "\t%secho \"%s_test.exe TESTRES \\\"%s\\\"\" | %s -u -o $@\n", cmd_prefix( "WRC" ),
-            basemodule, obj_dir_path( make, stripped ), tools_path( make, "wrc" ));
+            basemodule, obj_dir_path( make, stripped ), wrc );
 
     if (make->disabled[arch] || (parent && parent->disabled[arch]))
     {
@@ -3977,8 +4000,8 @@ static void output_sources( struct makefile *make )
     if (make->dlldata_files.count)
     {
         output( "%s: %s %s\n", obj_dir_path( make, "dlldata.c" ),
-                tools_path( make, "widl" ), src_dir_path( make, "Makefile.in" ));
-        output( "\t%s%s --dlldata-only -o $@", cmd_prefix( "WIDL" ), tools_path( make, "widl" ));
+                widl, src_dir_path( make, "Makefile.in" ));
+        output( "\t%s%s --dlldata-only -o $@", cmd_prefix( "WIDL" ), widl );
         output_filenames( make->dlldata_files );
         output( "\n" );
     }
@@ -4001,7 +4024,8 @@ static void output_sources( struct makefile *make )
         if (make->is_exe && !make->is_win16 && unix_lib_supported && strendswith( make->module, ".exe" ))
         {
             char *binary = replace_extension( make->module, ".exe", "" );
-            add_install_rule( make, binary, 0, "wine", strmake( "y$(bindir)/%s", binary ));
+            add_install_rule( make, binary, 0, "wine",
+                              strmake( "%c$(bindir)/%s", strcmp( ln_s, "ln -s" ) ? 't' : 'y', binary ));
         }
     }
     else if (make->testdll)
@@ -4354,7 +4378,6 @@ static void output_top_makefile( struct makefile *make )
     FILE *src_file;
     unsigned int i;
     int found = 0;
-    const char *makedep;
 
     output_file_name = obj_dir_path( make, output_makefile_name );
     output_file = create_temp_file( output_file_name );
@@ -4376,9 +4399,9 @@ static void output_top_makefile( struct makefile *make )
     /* add special targets for makefile and dependencies */
 
     output( ".INIT: Makefile\n" );
+    output( ".PRECIOUS: Makefile\n" );
     output( ".MAKEFILEDEPS:\n" );
     output( ".SUFFIXES:\n" );
-    makedep = strmake( "%s%s",tools_dir_path( make, "makedep" ), tools_ext );
     output( "Makefile: config.status %s\n", makedep );
     output( "\t@./config.status Makefile\n" );
     output( "config.status: %s\n", root_src_dir_path( "configure" ));
@@ -4398,7 +4421,7 @@ static void output_top_makefile( struct makefile *make )
     if (!strarray_exists( disabled_dirs[0], "tools/wine" ))
     {
         const char *loader = "tools/wine/wine";
-        if (!strarray_exists( subdirs, "tools/wine" )) loader = tools_path( make, "wine" );
+        if (!strarray_exists( subdirs, "tools/wine" )) loader = tools_path( "wine" );
         output( "wine: %s\n", loader );
         output( "\t%srm -f $@ && %s %s $@\n", cmd_prefix( "LN" ), ln_s, loader );
         strarray_add( &make->all_targets[0], "wine" );
@@ -4599,6 +4622,9 @@ static int parse_option( const char *opt )
     case 'f':
         if (opt[2]) output_makefile_name = opt + 2;
         break;
+    case 'i':
+        if (opt[2]) input_makefile_name = opt + 2;
+        break;
     case 'C':
         compile_commands_mode = 1;
         break;
@@ -4696,6 +4722,18 @@ int main( int argc, char *argv[] )
     if (!exe_ext) exe_ext = "";
     if (!dll_ext[0]) dll_ext[0] = "";
     if (!tools_ext) tools_ext = "";
+
+    buildimage  = root_src_dir_path( "tools/buildimage" );
+    runtest     = root_src_dir_path( "tools/runtest" );
+    install_sh  = root_src_dir_path( "tools/install-sh" );
+    makedep     = tools_base_path( "makedep" );
+    make_xftmpl = tools_base_path( "make_xftmpl" );
+    sfnt2fon    = tools_path( "sfnt2fon" );
+    winebuild   = tools_path( "winebuild" );
+    winegcc     = tools_path( "winegcc" );
+    widl        = tools_path( "widl" );
+    wrc         = tools_path( "wrc" );
+    wmc         = tools_path( "wmc" );
 
     unix_lib_supported = !!strcmp( exe_ext, ".exe" );
     so_dll_supported = !!dll_ext[0][0];  /* non-empty dll ext means supported */

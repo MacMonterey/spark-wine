@@ -2805,7 +2805,7 @@ LRESULT default_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, 
             HELPINFO hi;
 
             hi.cbSize = sizeof(HELPINFO);
-            get_cursor_pos( &hi.MousePos );
+            NtUserGetCursorPos( &hi.MousePos );
             if (is_menu_active())
             {
                 MENUINFO info = { .cbSize = sizeof(info), .fMask = MIM_HELPID };
@@ -2850,7 +2850,7 @@ LRESULT default_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, 
                 {
                     for (child = list; *child; child++)
                     {
-                        if (!is_window_visible( *child ))
+                        if (!(get_window_long( *child, GWL_STYLE ) & WS_VISIBLE))
                             continue;
 
                         dpi = NtUserGetDpiForWindow( *child );

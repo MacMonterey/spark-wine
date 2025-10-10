@@ -98,6 +98,11 @@ BOOL SYSCALL_API NtGdiBitBlt( HDC hdc_dst, INT x_dst, INT y_dst, INT width, INT 
     SYSCALL_FUNC( NtGdiBitBlt );
 }
 
+BOOL SYSCALL_API NtGdiCancelDC( HDC hdc )
+{
+    SYSCALL_FUNC( NtGdiCancelDC );
+}
+
 BOOL SYSCALL_API NtGdiCloseFigure( HDC hdc )
 {
     SYSCALL_FUNC( NtGdiCloseFigure );
@@ -204,6 +209,11 @@ HRGN SYSCALL_API NtGdiCreateRoundRectRgn( INT left, INT top, INT right, INT bott
 HBRUSH SYSCALL_API NtGdiCreateSolidBrush( COLORREF color, HBRUSH brush )
 {
     SYSCALL_FUNC( NtGdiCreateSolidBrush );
+}
+
+NTSTATUS SYSCALL_API NtGdiDdDDICheckOcclusion( const D3DKMT_CHECKOCCLUSION *desc )
+{
+    SYSCALL_FUNC( NtGdiDdDDICheckOcclusion );
 }
 
 NTSTATUS SYSCALL_API NtGdiDdDDICheckVidPnExclusiveOwnership( const D3DKMT_CHECKVIDPNEXCLUSIVEOWNERSHIP *desc )
@@ -329,6 +339,11 @@ NTSTATUS SYSCALL_API NtGdiDdDDIOpenKeyedMutex2( D3DKMT_OPENKEYEDMUTEX2 *desc )
 NTSTATUS SYSCALL_API NtGdiDdDDIOpenKeyedMutexFromNtHandle( D3DKMT_OPENKEYEDMUTEXFROMNTHANDLE *desc )
 {
     SYSCALL_FUNC( NtGdiDdDDIOpenKeyedMutexFromNtHandle );
+}
+
+NTSTATUS SYSCALL_API NtGdiDdDDIOpenNtHandleFromName( D3DKMT_OPENNTHANDLEFROMNAME *desc )
+{
+    SYSCALL_FUNC( NtGdiDdDDIOpenNtHandleFromName );
 }
 
 NTSTATUS SYSCALL_API NtGdiDdDDIOpenResource( D3DKMT_OPENRESOURCE *desc )
@@ -655,6 +670,11 @@ DWORD SYSCALL_API NtGdiGetGlyphOutline( HDC hdc, UINT ch, UINT format, GLYPHMETR
 DWORD SYSCALL_API NtGdiGetKerningPairs( HDC hdc, DWORD count, KERNINGPAIR *kern_pair )
 {
     SYSCALL_FUNC( NtGdiGetKerningPairs );
+}
+
+BOOL SYSCALL_API NtGdiGetMiterLimit( HDC hdc, FLOAT *limit )
+{
+    SYSCALL_FUNC( NtGdiGetMiterLimit );
 }
 
 COLORREF SYSCALL_API NtGdiGetNearestColor( HDC hdc, COLORREF color )
@@ -1001,6 +1021,11 @@ BOOL SYSCALL_API NtGdiSetMagicColors( HDC hdc, DWORD magic, ULONG index )
 INT SYSCALL_API NtGdiSetMetaRgn( HDC hdc )
 {
     SYSCALL_FUNC( NtGdiSetMetaRgn );
+}
+
+BOOL SYSCALL_API NtGdiSetMiterLimit( HDC hdc, DWORD limit, FLOAT *old_limit )
+{
+    SYSCALL_FUNC( NtGdiSetMiterLimit );
 }
 
 COLORREF SYSCALL_API NtGdiSetPixel( HDC hdc, INT x, INT y, COLORREF color )
@@ -1557,6 +1582,11 @@ HCURSOR SYSCALL_API NtUserGetCursorFrameInfo( HCURSOR cursor, DWORD istep, DWORD
 BOOL SYSCALL_API NtUserGetCursorInfo( CURSORINFO *info )
 {
     SYSCALL_FUNC( NtUserGetCursorInfo );
+}
+
+BOOL SYSCALL_API NtUserGetCursorPos( POINT *pt )
+{
+    SYSCALL_FUNC( NtUserGetCursorPos );
 }
 
 HDC SYSCALL_API NtUserGetDC( HWND hwnd )
@@ -2470,10 +2500,8 @@ HWND SYSCALL_API NtUserWindowFromPoint( LONG x, LONG y )
     SYSCALL_FUNC( NtUserWindowFromPoint );
 }
 
-BOOL SYSCALL_API __wine_get_icm_profile( HDC hdc, BOOL allow_default, DWORD *size, WCHAR *filename )
-{
-    SYSCALL_FUNC( __wine_get_icm_profile );
-}
+#define SYSCALL_STUB(name) NTSTATUS SYSCALL_API name(void) { SYSCALL_FUNC( name ); }
+ALL_SYSCALL_STUBS
 
 #else /*  __arm64ec__ */
 
@@ -2488,20 +2516,6 @@ ALL_SYSCALLS
 
 #endif /*  __arm64ec__ */
 
-
-void __cdecl __wine_spec_unimplemented_stub( const char *module, const char *function )
-{
-    EXCEPTION_RECORD record;
-
-    record.ExceptionCode    = EXCEPTION_WINE_STUB;
-    record.ExceptionFlags   = EXCEPTION_NONCONTINUABLE;
-    record.ExceptionRecord  = NULL;
-    record.ExceptionAddress = __wine_spec_unimplemented_stub;
-    record.NumberParameters = 2;
-    record.ExceptionInformation[0] = (ULONG_PTR)module;
-    record.ExceptionInformation[1] = (ULONG_PTR)function;
-    for (;;) RtlRaiseException( &record );
-}
 
 void *dummy = NtQueryVirtualMemory;  /* forced import to avoid link error with winecrt0 */
 

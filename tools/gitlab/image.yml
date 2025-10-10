@@ -6,20 +6,19 @@
     - if: $CI_PIPELINE_SOURCE == 'push' && $CI_PROJECT_PATH == "wine/wine" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       changes:
         - tools/gitlab/image.yml
-        - tools/gitlab/image-amd64.docker
-        - tools/gitlab/image-arm64.docker
+        - tools/gitlab/image.docker
   image:
     name: gcr.io/kaniko-project/executor:debug
     entrypoint: [""]
   variables:
-    IMAGE_SOURCE: "$CI_DEPENDENCY_PROXY_DIRECT_GROUP_IMAGE_PREFIX/debian:bookworm"
-    IMAGE_LOCAL: "$CI_REGISTRY_IMAGE:debian-bookworm-$ARCH"
-    DOCKER_FILE: "$CI_PROJECT_DIR/tools/gitlab/image-$ARCH.docker"
+    IMAGE_SOURCE: "$CI_DEPENDENCY_PROXY_DIRECT_GROUP_IMAGE_PREFIX/debian:trixie"
+    IMAGE_LOCAL: "$CI_REGISTRY_IMAGE:debian-trixie-$ARCH"
+    DOCKER_FILE: "$CI_PROJECT_DIR/tools/gitlab/image.docker"
   script:
     - mkdir -p /kaniko/.docker
     - echo "{\"auths\":{\"$CI_REGISTRY\":{\"auth\":\"$(printf "%s:%s" "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')\"},\"$CI_DEPENDENCY_PROXY_SERVER\":{\"auth\":\"$(printf "%s:%s" "$CI_DEPENDENCY_PROXY_USER" "$CI_DEPENDENCY_PROXY_PASSWORD" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
     - sed -i "1iFROM $IMAGE_SOURCE" "$DOCKER_FILE"
-    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$DOCKER_FILE" --destination "$IMAGE_LOCAL"
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$DOCKER_FILE" --destination "$IMAGE_LOCAL" --build-arg="ARCH=$ARCH"
 
 build-image-amd64:
   extends: .build-image
@@ -42,4 +41,4 @@ build-image:
   script:
     - curl -s -L https://github.com/estesp/manifest-tool/releases/download/v2.2.0/binaries-manifest-tool-2.2.0.tar.gz | tar xz manifest-tool-linux-amd64
     - ./manifest-tool-linux-amd64 --username "${CI_REGISTRY_USER}" --password "${CI_REGISTRY_PASSWORD}" push from-args
-      --platforms linux/amd64,linux/arm64 --template ${CI_REGISTRY_IMAGE}:debian-bookworm-ARCH --target ${CI_REGISTRY_IMAGE}:debian-bookworm
+      --platforms linux/amd64,linux/arm64 --template ${CI_REGISTRY_IMAGE}:debian-trixie-ARCH --target ${CI_REGISTRY_IMAGE}:debian-trixie

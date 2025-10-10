@@ -397,7 +397,7 @@ W32KAPI DWORD    WINAPI NtGdiGetGlyphOutline( HDC hdc, UINT ch, UINT format, GLY
                                               DWORD size, void *buffer, const MAT2 *mat2,
                                               BOOL ignore_rotation );
 W32KAPI DWORD    WINAPI NtGdiGetKerningPairs( HDC hdc, DWORD count, KERNINGPAIR *kern_pair );
-W32KAPI BOOL     WINAPI NtGdiGetMiterLimit( HDC hdc, DWORD *limit );
+W32KAPI BOOL     WINAPI NtGdiGetMiterLimit( HDC hdc, FLOAT *limit );
 W32KAPI COLORREF WINAPI NtGdiGetNearestColor( HDC hdc, COLORREF color );
 W32KAPI UINT     WINAPI NtGdiGetNearestPaletteIndex( HPALETTE hpalette, COLORREF color );
 W32KAPI UINT     WINAPI NtGdiGetOutlineTextMetricsInternalW( HDC hdc, UINT cbData,
@@ -484,7 +484,7 @@ W32KAPI BOOL     WINAPI NtGdiSetDeviceGammaRamp( HDC hdc, void *ptr );
 W32KAPI DWORD    WINAPI NtGdiSetLayout( HDC hdc, LONG wox, DWORD layout );
 W32KAPI BOOL     WINAPI NtGdiSetMagicColors( HDC hdc, DWORD magic, ULONG index );
 W32KAPI INT      WINAPI NtGdiSetMetaRgn( HDC hdc );
-W32KAPI BOOL     WINAPI NtGdiSetMiterLimit( HDC hdc, DWORD limit, DWORD *prev_limit );
+W32KAPI BOOL     WINAPI NtGdiSetMiterLimit( HDC hdc, DWORD limit, FLOAT *prev_limit );
 W32KAPI COLORREF WINAPI NtGdiSetPixel( HDC hdc, INT x, INT y, COLORREF color );
 W32KAPI BOOL     WINAPI NtGdiSetPixelFormat( HDC hdc, INT format );
 W32KAPI BOOL     WINAPI NtGdiSetRectRgn( HRGN hrgn, INT left, INT top, INT right, INT bottom );
@@ -514,6 +514,7 @@ W32KAPI BOOL     WINAPI NtGdiUnrealizeObject( HGDIOBJ obj );
 W32KAPI BOOL     WINAPI NtGdiUpdateColors( HDC hdc );
 W32KAPI BOOL     WINAPI NtGdiWidenPath( HDC hdc );
 
+W32KAPI NTSTATUS WINAPI NtGdiDdDDICheckOcclusion( const D3DKMT_CHECKOCCLUSION *desc );
 W32KAPI NTSTATUS WINAPI NtGdiDdDDICheckVidPnExclusiveOwnership( const D3DKMT_CHECKVIDPNEXCLUSIVEOWNERSHIP *desc );
 W32KAPI NTSTATUS WINAPI NtGdiDdDDICloseAdapter( const D3DKMT_CLOSEADAPTER *desc );
 W32KAPI NTSTATUS WINAPI NtGdiDdDDICreateAllocation( D3DKMT_CREATEALLOCATION *params );
@@ -539,6 +540,7 @@ W32KAPI NTSTATUS WINAPI NtGdiDdDDIOpenAdapterFromLuid( D3DKMT_OPENADAPTERFROMLUI
 W32KAPI NTSTATUS WINAPI NtGdiDdDDIOpenKeyedMutex( D3DKMT_OPENKEYEDMUTEX *params );
 W32KAPI NTSTATUS WINAPI NtGdiDdDDIOpenKeyedMutex2( D3DKMT_OPENKEYEDMUTEX2 *params );
 W32KAPI NTSTATUS WINAPI NtGdiDdDDIOpenKeyedMutexFromNtHandle( D3DKMT_OPENKEYEDMUTEXFROMNTHANDLE *params );
+W32KAPI NTSTATUS WINAPI NtGdiDdDDIOpenNtHandleFromName( D3DKMT_OPENNTHANDLEFROMNAME *params );
 W32KAPI NTSTATUS WINAPI NtGdiDdDDIOpenResource( D3DKMT_OPENRESOURCE *params );
 W32KAPI NTSTATUS WINAPI NtGdiDdDDIOpenResource2( D3DKMT_OPENRESOURCE *params );
 W32KAPI NTSTATUS WINAPI NtGdiDdDDIOpenResourceFromNtHandle( D3DKMT_OPENRESOURCEFROMNTHANDLE *params );
@@ -558,6 +560,5 @@ W32KAPI NTSTATUS WINAPI NtGdiDdDDIShareObjects( UINT count, const D3DKMT_HANDLE 
 /* Wine extensions */
 W32KAPI const struct vulkan_funcs * __wine_get_vulkan_driver(UINT version);
 W32KAPI const struct opengl_funcs *__wine_get_wgl_driver( HDC hdc, UINT version, const struct opengl_funcs *null_funcs );
-W32KAPI BOOL WINAPI __wine_get_icm_profile( HDC hdc, BOOL allow_default, DWORD *size, WCHAR *filename );
 
 #endif /* _NTGDI_ */

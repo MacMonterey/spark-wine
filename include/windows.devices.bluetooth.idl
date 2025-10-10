@@ -20,7 +20,6 @@
 #pragma winrt ns_prefix
 #endif
 
-#ifndef DO_NO_IMPORTS
 import "inspectable.idl";
 import "asyncinfo.idl";
 import "eventtoken.idl";
@@ -32,7 +31,6 @@ import "windows.devices.enumeration.idl";
 import "windows.devices.radios.idl";
 import "windows.networking.idl";
 import "windows.storage.streams.idl";
-#endif
 
 namespace Windows.Devices.Bluetooth {
     typedef enum BluetoothCacheMode BluetoothCacheMode;
@@ -41,6 +39,7 @@ namespace Windows.Devices.Bluetooth {
     typedef enum BluetoothMinorClass BluetoothMinorClass;
     typedef enum BluetoothServiceCapabilities BluetoothServiceCapabilities;
     typedef enum BluetoothError BluetoothError;
+    typedef enum BluetoothAddressType BluetoothAddressType;
 
     interface IBluetoothAdapter;
     interface IBluetoothAdapter2;
@@ -65,12 +64,14 @@ namespace Windows.Devices.Bluetooth {
     interface IBluetoothLEDevice6;
     interface IBluetoothLEDeviceStatics;
     interface IBluetoothLEDeviceStatics2;
+    interface IBluetoothSignalStrengthFilter;
 
     runtimeclass BluetoothAdapter;
     runtimeclass BluetoothClassOfDevice;
     runtimeclass BluetoothDevice;
     runtimeclass BluetoothDeviceId;
     runtimeclass BluetoothLEDevice;
+    runtimeclass BluetoothSignalStrengthFilter;
 
     namespace Rfcomm {
         runtimeclass RfcommDeviceService;
@@ -246,6 +247,17 @@ namespace Windows.Devices.Bluetooth {
     };
 
     [
+        contract(Windows.Foundation.UniversalApiContract, 2.0)
+    ]
+    enum BluetoothAddressType
+    {
+        Public = 0,
+        Random = 1,
+        [contract(Windows.Foundation.UniversalApiContract, 4.0)]
+        Unspecified = 2,
+    };
+
+    [
         contract(Windows.Foundation.UniversalApiContract, 4.0),
         exclusiveto(Windows.Devices.Bluetooth.BluetoothAdapter),
         uuid(7974f04c-5f7a-4a34-9225-a855f84b1a8b)
@@ -283,8 +295,8 @@ namespace Windows.Devices.Bluetooth {
     runtimeclass BluetoothAdapter
     {
         [default] interface Windows.Devices.Bluetooth.IBluetoothAdapter;
-        [contract(Windows.Foundation.UniversalApiContract, 6.0)] interface Windows.Devices.Bluetooth.IBluetoothAdapter2;
-        [contract(Windows.Foundation.UniversalApiContract, 10.0)] interface Windows.Devices.Bluetooth.IBluetoothAdapter3;
+        /* [contract(Windows.Foundation.UniversalApiContract, 6.0)] interface Windows.Devices.Bluetooth.IBluetoothAdapter2; */
+        /* [contract(Windows.Foundation.UniversalApiContract, 10.0)] interface Windows.Devices.Bluetooth.IBluetoothAdapter3; */
     }
 
     [
@@ -370,16 +382,16 @@ namespace Windows.Devices.Bluetooth {
         contract(Windows.Foundation.UniversalApiContract, 1.0),
         marshaling_behavior(agile),
         static(Windows.Devices.Bluetooth.IBluetoothDeviceStatics, Windows.Foundation.UniversalApiContract, 1.0),
-        static(Windows.Devices.Bluetooth.IBluetoothDeviceStatics2, Windows.Foundation.UniversalApiContract, 2.0),
+        /* static(Windows.Devices.Bluetooth.IBluetoothDeviceStatics2, Windows.Foundation.UniversalApiContract, 2.0), */
         threading(both)
     ]
     runtimeclass BluetoothDevice
     {
         [default] interface Windows.Devices.Bluetooth.IBluetoothDevice;
-        [contract(Windows.Foundation.UniversalApiContract, 2.0)] interface Windows.Devices.Bluetooth.IBluetoothDevice2;
-        [contract(Windows.Foundation.UniversalApiContract, 3.0)] interface Windows.Devices.Bluetooth.IBluetoothDevice3;
-        [contract(Windows.Foundation.UniversalApiContract, 5.0)] interface Windows.Devices.Bluetooth.IBluetoothDevice4;
-        [contract(Windows.Foundation.UniversalApiContract, 6.0)] interface Windows.Devices.Bluetooth.IBluetoothDevice5;
+        /* [contract(Windows.Foundation.UniversalApiContract, 2.0)] interface Windows.Devices.Bluetooth.IBluetoothDevice2; */
+        /* [contract(Windows.Foundation.UniversalApiContract, 3.0)] interface Windows.Devices.Bluetooth.IBluetoothDevice3; */
+        /* [contract(Windows.Foundation.UniversalApiContract, 5.0)] interface Windows.Devices.Bluetooth.IBluetoothDevice4; */
+        /* [contract(Windows.Foundation.UniversalApiContract, 6.0)] interface Windows.Devices.Bluetooth.IBluetoothDevice5; */
         interface Windows.Foundation.IClosable;
     }
 
@@ -460,17 +472,45 @@ namespace Windows.Devices.Bluetooth {
         contract(Windows.Foundation.UniversalApiContract, 1.0),
         marshaling_behavior(agile),
         static(Windows.Devices.Bluetooth.IBluetoothLEDeviceStatics, Windows.Foundation.UniversalApiContract, 1.0),
-        static(Windows.Devices.Bluetooth.IBluetoothLEDeviceStatics2, Windows.Foundation.UniversalApiContract, 2.0),
+        /* static(Windows.Devices.Bluetooth.IBluetoothLEDeviceStatics2, Windows.Foundation.UniversalApiContract, 2.0), */
         threading(both)
     ]
     runtimeclass BluetoothLEDevice
     {
         [default] interface Windows.Devices.Bluetooth.IBluetoothLEDevice;
-        [contract(Windows.Foundation.UniversalApiContract, 2.0)] interface Windows.Devices.Bluetooth.IBluetoothLEDevice2;
-        [contract(Windows.Foundation.UniversalApiContract, 4.0)] interface Windows.Devices.Bluetooth.IBluetoothLEDevice3;
-        [contract(Windows.Foundation.UniversalApiContract, 5.0)] interface Windows.Devices.Bluetooth.IBluetoothLEDevice4;
-        [contract(Windows.Foundation.UniversalApiContract, 6.0)] interface Windows.Devices.Bluetooth.IBluetoothLEDevice5;
-        [contract(Windows.Foundation.UniversalApiContract, 13.0)] interface Windows.Devices.Bluetooth.IBluetoothLEDevice6;
+        /* [contract(Windows.Foundation.UniversalApiContract, 2.0)] interface Windows.Devices.Bluetooth.IBluetoothLEDevice2; */
+        /* [contract(Windows.Foundation.UniversalApiContract, 4.0)] interface Windows.Devices.Bluetooth.IBluetoothLEDevice3; */
+        /* [contract(Windows.Foundation.UniversalApiContract, 5.0)] interface Windows.Devices.Bluetooth.IBluetoothLEDevice4; */
+        /* [contract(Windows.Foundation.UniversalApiContract, 6.0)] interface Windows.Devices.Bluetooth.IBluetoothLEDevice5; */
+        /* [contract(Windows.Foundation.UniversalApiContract, 13.0)] interface Windows.Devices.Bluetooth.IBluetoothLEDevice6; */
         interface Windows.Foundation.IClosable;
+    }
+
+    [
+        contract(Windows.Foundation.UniversalApiContract, 1.0),
+        exclusiveto(Windows.Devices.Bluetooth.BluetoothSignalStrengthFilter),
+        uuid(df7b7391-6bb5-4cfe-90b1-5d7324edcf7f)
+    ]
+    interface IBluetoothSignalStrengthFilter : IInspectable
+    {
+        [propget] HRESULT InRangeThresholdInDBm([out, retval] Windows.Foundation.IReference<INT16> **value);
+        [propput] HRESULT InRangeThresholdInDBm([in] Windows.Foundation.IReference<INT16> *value);
+        [propget] HRESULT OutOfRangeThresholdInDBm([out, retval] Windows.Foundation.IReference<INT16> **value);
+        [propput] HRESULT OutOfRangeThresholdInDBm([in] Windows.Foundation.IReference<INT16> *value);
+        [propget] HRESULT OutOfRangeTimeout([out, retval] Windows.Foundation.IReference<Windows.Foundation.TimeSpan> **value);
+        [propput] HRESULT OutOfRangeTimeout([in] Windows.Foundation.IReference<Windows.Foundation.TimeSpan> *value);
+        [propget] HRESULT SamplingInterval([out, retval] Windows.Foundation.IReference<Windows.Foundation.TimeSpan> **value);
+        [propput] HRESULT SamplingInterval([in] Windows.Foundation.IReference<Windows.Foundation.TimeSpan> *value);
+    }
+
+    [
+        contract(Windows.Foundation.UniversalApiContract, 1.0),
+        activatable(Windows.Foundation.UniversalApiContract, 1.0),
+        marshaling_behavior(agile),
+        threading(both)
+    ]
+    runtimeclass BluetoothSignalStrengthFilter
+    {
+        [default] interface Windows.Devices.Bluetooth.IBluetoothSignalStrengthFilter;
     }
 }

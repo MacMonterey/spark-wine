@@ -677,6 +677,7 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
     process->running_threads = 0;
     process->priority        = PROCESS_PRIOCLASS_NORMAL;
     process->base_priority   = 8;
+    process->disable_boost   = 0;
     process->suspend         = 0;
     process->is_system       = 0;
     process->debug_children  = 1;
@@ -1053,7 +1054,7 @@ void suspend_process( struct process *process )
         LIST_FOR_EACH_SAFE( ptr, next, &process->thread_list )
         {
             struct thread *thread = LIST_ENTRY( ptr, struct thread, proc_entry );
-            if (!thread->suspend) stop_thread( thread );
+            if (!thread->bypass_proc_suspend && !thread->suspend) stop_thread( thread );
         }
     }
 }
@@ -1069,7 +1070,7 @@ void resume_process( struct process *process )
         LIST_FOR_EACH_SAFE( ptr, next, &process->thread_list )
         {
             struct thread *thread = LIST_ENTRY( ptr, struct thread, proc_entry );
-            if (!thread->suspend) wake_thread( thread );
+            if (!thread->bypass_proc_suspend && !thread->suspend) wake_thread( thread );
         }
     }
 }
@@ -1139,8 +1140,7 @@ int set_process_debug_flag( struct process *process, int flag )
     char data = (flag != 0);
     client_ptr_t peb32 = 0;
 
-    if (!is_machine_64bit( process->machine ) && is_machine_64bit( native_machine ))
-        peb32 = process->peb + 0x1000;
+    if (is_wow64_process( process )) peb32 = process->peb + 0x1000;
 
     /* BeingDebugged flag is the byte at offset 2 in the PEB */
     if (peb32 && !write_process_memory( process, peb32 + 2, 1, &data )) return 0;
@@ -1540,6 +1540,7 @@ DECL_HANDLER(get_process_info)
         reply->exit_code        = process->exit_code;
         reply->priority         = process->priority;
         reply->base_priority    = process->base_priority;
+        reply->disable_boost    = process->disable_boost;
         reply->affinity         = process->affinity;
         reply->peb              = process->peb;
         reply->start_time       = process->start_time;
@@ -1712,6 +1713,18 @@ static void set_process_priority( struct process *process, int priority )
     set_process_base_priority( process, base_priority );
 }
 
+static void set_process_disable_boost( struct process *process, int disable_boost )
+{
+    struct thread *thread;
+
+    process->disable_boost = disable_boost;
+
+    LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
+    {
+        thread->disable_boost = disable_boost;
+    }
+}
+
 static void set_process_affinity( struct process *process, affinity_t affinity )
 {
     struct thread *thread;
@@ -1739,6 +1752,7 @@ DECL_HANDLER(set_process_info)
     {
         if (req->mask & SET_PROCESS_INFO_PRIORITY) set_process_priority( process, req->priority );
         if (req->mask & SET_PROCESS_INFO_BASE_PRIORITY) set_process_base_priority( process, req->base_priority );
+        if (req->mask & SET_PROCESS_INFO_DISABLE_BOOST) set_process_disable_boost( process, req->disable_boost );
         if (req->mask & SET_PROCESS_INFO_AFFINITY) set_process_affinity( process, req->affinity );
         if (req->mask & SET_PROCESS_INFO_TOKEN)
         {
@@ -2005,7 +2019,7 @@ DECL_HANDLER(suspend_process)
         LIST_FOR_EACH_SAFE( ptr, next, &process->thread_list )
         {
             struct thread *thread = LIST_ENTRY( ptr, struct thread, proc_entry );
-            suspend_thread( thread );
+            if (!thread->bypass_proc_suspend) suspend_thread( thread );
         }
 
         release_object( process );
@@ -2024,7 +2038,7 @@ DECL_HANDLER(resume_process)
         LIST_FOR_EACH_SAFE( ptr, next, &process->thread_list )
         {
             struct thread *thread = LIST_ENTRY( ptr, struct thread, proc_entry );
-            resume_thread( thread );
+            if (!thread->bypass_proc_suspend) resume_thread( thread );
         }
 
         release_object( process );

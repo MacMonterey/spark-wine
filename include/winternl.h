@@ -610,7 +610,27 @@ typedef struct _TEB
     PVOID                        MergedPrefLanguages;               /* fc0/17e0 */
     ULONG                        MuiImpersonation;                  /* fc4/17e8 */
     USHORT                       CrossTebFlags;                     /* fc8/17ec */
-    USHORT                       SameTebFlags;                      /* fca/17ee */
+    union {
+        USHORT SameTebFlags;                                        /* fca/17ee */
+        struct {
+            USHORT SafeThunkCall : 1;
+            USHORT InDebugPrint : 1;
+            USHORT HasFiberData : 1;
+            USHORT SkipThreadAttach : 1;
+            USHORT WerInShipAssertCode : 1;
+            USHORT RanProcessInit : 1;
+            USHORT ClonedThread : 1;
+            USHORT SuppressDebugMsg : 1;
+            USHORT DisableUserStackWalk : 1;
+            USHORT RtlExceptionAttached : 1;
+            USHORT InitialThread : 1;
+            USHORT SessionAware : 1;
+            USHORT LoadOwner : 1;
+            USHORT LoaderWorker : 1;
+            USHORT SkipLoaderInit : 1;
+            USHORT SkipFileAPIBrokering : 1;
+        };
+    };
     PVOID                        TxnScopeEnterCallback;             /* fcc/17f0 */
     PVOID                        TxnScopeExitCallback;              /* fd0/17f8 */
     PVOID                        TxnScopeContext;                   /* fd4/1800 */
@@ -1143,7 +1163,27 @@ typedef struct _TEB32
     ULONG                        MergedPrefLanguages;               /* 0fc0 */
     ULONG                        MuiImpersonation;                  /* 0fc4 */
     USHORT                       CrossTebFlags;                     /* 0fc8 */
-    USHORT                       SameTebFlags;                      /* 0fca */
+    union {
+        USHORT SameTebFlags;                                        /* 0fca */
+        struct {
+            USHORT SafeThunkCall : 1;
+            USHORT InDebugPrint : 1;
+            USHORT HasFiberData : 1;
+            USHORT SkipThreadAttach : 1;
+            USHORT WerInShipAssertCode : 1;
+            USHORT RanProcessInit : 1;
+            USHORT ClonedThread : 1;
+            USHORT SuppressDebugMsg : 1;
+            USHORT DisableUserStackWalk : 1;
+            USHORT RtlExceptionAttached : 1;
+            USHORT InitialThread : 1;
+            USHORT SessionAware : 1;
+            USHORT LoadOwner : 1;
+            USHORT LoaderWorker : 1;
+            USHORT SkipLoaderInit : 1;
+            USHORT SkipFileAPIBrokering : 1;
+        };
+    };
     ULONG                        TxnScopeEnterCallback;             /* 0fcc */
     ULONG                        TxnScopeExitCallback;              /* 0fd0 */
     ULONG                        TxnScopeContext;                   /* 0fd4 */
@@ -1249,7 +1289,27 @@ typedef struct _TEB64
     ULONG64                      MergedPrefLanguages;               /* 17e0 */
     ULONG                        MuiImpersonation;                  /* 17e8 */
     USHORT                       CrossTebFlags;                     /* 17ec */
-    USHORT                       SameTebFlags;                      /* 17ee */
+    union {
+        USHORT SameTebFlags;                                        /* 17ee */
+        struct {
+            USHORT SafeThunkCall : 1;
+            USHORT InDebugPrint : 1;
+            USHORT HasFiberData : 1;
+            USHORT SkipThreadAttach : 1;
+            USHORT WerInShipAssertCode : 1;
+            USHORT RanProcessInit : 1;
+            USHORT ClonedThread : 1;
+            USHORT SuppressDebugMsg : 1;
+            USHORT DisableUserStackWalk : 1;
+            USHORT RtlExceptionAttached : 1;
+            USHORT InitialThread : 1;
+            USHORT SessionAware : 1;
+            USHORT LoadOwner : 1;
+            USHORT LoaderWorker : 1;
+            USHORT SkipLoaderInit : 1;
+            USHORT SkipFileAPIBrokering : 1;
+        };
+    };
     ULONG64                      TxnScopeEnterCallback;             /* 17f0 */
     ULONG64                      TxnScopeExitCallback;              /* 17f8 */
     ULONG64                      TxnScopeContext;                   /* 1800 */
@@ -1362,7 +1422,10 @@ typedef enum _FILE_INFORMATION_CLASS {
     FileStorageReserveIdInformation,
     FileCaseSensitiveInformationForceAccessCheck,
     FileKnownFolderInformation,
-    FileMaximumInformation
+    FileMaximumInformation,
+#ifdef __WINESRC__
+    WineFileUnixNameInformation = 1000
+#endif
 } FILE_INFORMATION_CLASS, *PFILE_INFORMATION_CLASS;
 
 typedef struct _FILE_DIRECTORY_INFORMATION {
@@ -1732,6 +1795,15 @@ typedef struct _FILE_IO_COMPLETION_NOTIFICATION_INFORMATION {
 #define FILE_SKIP_COMPLETION_PORT_ON_SUCCESS 0x1
 #define FILE_SKIP_SET_EVENT_ON_HANDLE        0x2
 #define FILE_SKIP_SET_USER_EVENT_ON_FAST_IO  0x4
+
+#ifdef __WINESRC__
+/* data for WineFileUnixNameInformation */
+typedef struct
+{
+    ULONG Length;
+    char  Name[];
+} WINE_FILE_UNIX_NAME_INFORMATION;
+#endif
 
 typedef struct _PROCESS_INSTRUMENTATION_CALLBACK_INFORMATION
 {
@@ -3936,8 +4008,9 @@ typedef struct _RTL_PROCESS_MODULE_INFORMATION_EX
 #define THREAD_CREATE_FLAGS_CREATE_SUSPENDED        0x00000001
 #define THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH      0x00000002
 #define THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER      0x00000004
-#define THREAD_CREATE_FLAGS_HAS_SECURITY_DESCRIPTOR 0x00000010
-#define THREAD_CREATE_FLAGS_ACCESS_CHECK_IN_TARGET  0x00000020
+#define THREAD_CREATE_FLAGS_LOADER_WORKER           0x00000010
+#define THREAD_CREATE_FLAGS_SKIP_LOADER_INIT        0x00000020
+#define THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE   0x00000040
 #define THREAD_CREATE_FLAGS_INITIAL_THREAD          0x00000080
 
 #ifdef __WINESRC__
@@ -4426,7 +4499,8 @@ NTSYSAPI NTSTATUS  WINAPI LdrUnlockLoaderLock(ULONG,ULONG_PTR);
 NTSYSAPI NTSTATUS  WINAPI LdrUnregisterDllNotification(void*);
 NTSYSAPI NTSTATUS  WINAPI NtAcceptConnectPort(PHANDLE,ULONG,PLPC_MESSAGE,BOOLEAN,PLPC_SECTION_WRITE,PLPC_SECTION_READ);
 NTSYSAPI NTSTATUS  WINAPI NtAccessCheck(PSECURITY_DESCRIPTOR,HANDLE,ACCESS_MASK,PGENERIC_MAPPING,PPRIVILEGE_SET,PULONG,PULONG,NTSTATUS*);
-NTSYSAPI NTSTATUS  WINAPI NtAccessCheckAndAuditAlarm(PUNICODE_STRING,HANDLE,PUNICODE_STRING,PUNICODE_STRING,PSECURITY_DESCRIPTOR,ACCESS_MASK,PGENERIC_MAPPING,BOOLEAN,PACCESS_MASK,PBOOLEAN,PBOOLEAN);
+NTSYSAPI NTSTATUS  WINAPI NtAccessCheckAndAuditAlarm(UNICODE_STRING*,HANDLE,UNICODE_STRING*,UNICODE_STRING*,PSECURITY_DESCRIPTOR,ACCESS_MASK,GENERIC_MAPPING*,BOOLEAN,ACCESS_MASK*,NTSTATUS*,BOOLEAN*);
+NTSYSAPI NTSTATUS  WINAPI NtAccessCheckByTypeAndAuditAlarm(UNICODE_STRING*,HANDLE,UNICODE_STRING*,UNICODE_STRING*,PSECURITY_DESCRIPTOR,PSID,ACCESS_MASK,AUDIT_EVENT_TYPE,ULONG,OBJECT_TYPE_LIST*,ULONG,GENERIC_MAPPING*,BOOLEAN,ACCESS_MASK*,NTSTATUS*,BOOLEAN*);
 NTSYSAPI NTSTATUS  WINAPI NtAddAtom(const WCHAR*,ULONG,RTL_ATOM*);
 NTSYSAPI NTSTATUS  WINAPI NtAdjustGroupsToken(HANDLE,BOOLEAN,PTOKEN_GROUPS,ULONG,PTOKEN_GROUPS,PULONG);
 NTSYSAPI NTSTATUS  WINAPI NtAdjustPrivilegesToken(HANDLE,BOOLEAN,PTOKEN_PRIVILEGES,DWORD,PTOKEN_PRIVILEGES,PDWORD);
@@ -4518,7 +4592,7 @@ NTSYSAPI NTSTATUS  WINAPI NtGetPlugPlayEvent(ULONG,ULONG,PVOID,ULONG);
 NTSYSAPI ULONG     WINAPI NtGetTickCount(VOID);
 NTSYSAPI NTSTATUS  WINAPI NtGetWriteWatch(HANDLE,ULONG,PVOID,SIZE_T,PVOID*,ULONG_PTR*,ULONG*);
 NTSYSAPI NTSTATUS  WINAPI NtImpersonateAnonymousToken(HANDLE);
-NTSYSAPI NTSTATUS  WINAPI NtImpersonateClientOfPort(HANDLE,PPORT_MESSAGE);
+NTSYSAPI NTSTATUS  WINAPI NtImpersonateClientOfPort(HANDLE,PLPC_MESSAGE);
 NTSYSAPI NTSTATUS  WINAPI NtImpersonateThread(HANDLE,HANDLE,PSECURITY_QUALITY_OF_SERVICE);
 NTSYSAPI NTSTATUS  WINAPI NtInitializeNlsFiles(void**,LCID*,LARGE_INTEGER*);
 NTSYSAPI NTSTATUS  WINAPI NtInitializeRegistry(BOOLEAN);
@@ -4569,6 +4643,7 @@ NTSYSAPI NTSTATUS  WINAPI NtProtectVirtualMemory(HANDLE,PVOID*,SIZE_T*,ULONG,ULO
 NTSYSAPI NTSTATUS  WINAPI NtPulseEvent(HANDLE,LONG*);
 NTSYSAPI NTSTATUS  WINAPI NtQueueApcThread(HANDLE,PNTAPCFUNC,ULONG_PTR,ULONG_PTR,ULONG_PTR);
 NTSYSAPI NTSTATUS  WINAPI NtQueueApcThreadEx(HANDLE,HANDLE,PNTAPCFUNC,ULONG_PTR,ULONG_PTR,ULONG_PTR);
+NTSYSAPI NTSTATUS  WINAPI NtQueueApcThreadEx2(HANDLE,HANDLE,ULONG,PNTAPCFUNC,ULONG_PTR,ULONG_PTR,ULONG_PTR);
 NTSYSAPI NTSTATUS  WINAPI NtQueryAttributesFile(const OBJECT_ATTRIBUTES*,FILE_BASIC_INFORMATION*);
 NTSYSAPI NTSTATUS  WINAPI NtQueryDefaultLocale(BOOLEAN,LCID*);
 NTSYSAPI NTSTATUS  WINAPI NtQueryDefaultUILanguage(LANGID*);
@@ -4625,7 +4700,7 @@ NTSYSAPI NTSTATUS  WINAPI NtRenameKey(HANDLE,UNICODE_STRING*);
 NTSYSAPI NTSTATUS  WINAPI NtReplaceKey(POBJECT_ATTRIBUTES,HANDLE,POBJECT_ATTRIBUTES);
 NTSYSAPI NTSTATUS  WINAPI NtReplyPort(HANDLE,PLPC_MESSAGE);
 NTSYSAPI NTSTATUS  WINAPI NtReplyWaitReceivePort(HANDLE,PULONG,PLPC_MESSAGE,PLPC_MESSAGE);
-NTSYSAPI NTSTATUS  WINAPI NtReplyWaitReceivePortEx(HANDLE,PVOID*,PPORT_MESSAGE,PPORT_MESSAGE,PLARGE_INTEGER);
+NTSYSAPI NTSTATUS  WINAPI NtReplyWaitReceivePortEx(HANDLE,PULONG,PLPC_MESSAGE,PLPC_MESSAGE,PLARGE_INTEGER);
 NTSYSAPI NTSTATUS  WINAPI NtReplyWaitReplyPort(HANDLE,PLPC_MESSAGE);
 NTSYSAPI NTSTATUS  WINAPI NtRequestPort(HANDLE,PLPC_MESSAGE);
 NTSYSAPI NTSTATUS  WINAPI NtRequestWaitReplyPort(HANDLE,PLPC_MESSAGE,PLPC_MESSAGE);
@@ -5003,6 +5078,7 @@ NTSYSAPI NTSTATUS  WINAPI RtlQueryPackageIdentity(HANDLE,WCHAR*,SIZE_T*,WCHAR*,S
 NTSYSAPI BOOL      WINAPI RtlQueryPerformanceCounter(LARGE_INTEGER*);
 NTSYSAPI BOOL      WINAPI RtlQueryPerformanceFrequency(LARGE_INTEGER*);
 NTSYSAPI NTSTATUS  WINAPI RtlQueryProcessDebugInformation(ULONG,ULONG,PDEBUG_BUFFER);
+NTSYSAPI NTSTATUS  WINAPI RtlQueryProcessHeapInformation(PDEBUG_BUFFER);
 NTSYSAPI NTSTATUS  WINAPI RtlQueryRegistryValues(ULONG, PCWSTR, PRTL_QUERY_REGISTRY_TABLE, PVOID, PVOID);
 NTSYSAPI NTSTATUS  WINAPI RtlQueryTimeZoneInformation(RTL_TIME_ZONE_INFORMATION*);
 NTSYSAPI BOOL      WINAPI RtlQueryUnbiasedInterruptTime(ULONGLONG*);
@@ -5197,11 +5273,6 @@ NTSYSAPI LONGLONG  WINAPI RtlLargeIntegerShiftRight(LONGLONG,INT);
 NTSYSAPI LONGLONG  WINAPI RtlLargeIntegerSubtract(LONGLONG,LONGLONG);
 NTSYSAPI NTSTATUS  WINAPI RtlLargeIntegerToChar(const ULONGLONG *,ULONG,ULONG,PCHAR);
 #endif
-
-/* Wine internal functions */
-
-NTSYSAPI NTSTATUS WINAPI wine_nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char *nameA, ULONG *size,
-                                                    UINT disposition );
 
 
 /***********************************************************************

@@ -214,6 +214,7 @@ DECL_HANDLER(get_hook_info);
 DECL_HANDLER(create_class);
 DECL_HANDLER(destroy_class);
 DECL_HANDLER(set_class_info);
+DECL_HANDLER(get_class_info);
 DECL_HANDLER(open_clipboard);
 DECL_HANDLER(close_clipboard);
 DECL_HANDLER(empty_clipboard);
@@ -303,6 +304,7 @@ DECL_HANDLER(resume_process);
 DECL_HANDLER(get_next_process);
 DECL_HANDLER(get_next_thread);
 DECL_HANDLER(set_keyboard_repeat);
+DECL_HANDLER(get_inproc_sync_fd);
 
 typedef void (*req_handler)( const void *req, void *reply );
 static const req_handler req_handlers[REQ_NB_REQUESTS] =
@@ -514,6 +516,7 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_create_class,
     (req_handler)req_destroy_class,
     (req_handler)req_set_class_info,
+    (req_handler)req_get_class_info,
     (req_handler)req_open_clipboard,
     (req_handler)req_close_clipboard,
     (req_handler)req_empty_clipboard,
@@ -603,6 +606,7 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_get_next_process,
     (req_handler)req_get_next_thread,
     (req_handler)req_set_keyboard_repeat,
+    (req_handler)req_get_inproc_sync_fd,
 };
 
 C_ASSERT( sizeof(abstime_t) == 8 );
@@ -705,8 +709,9 @@ C_ASSERT( offsetof(struct init_first_thread_reply, pid) == 8 );
 C_ASSERT( offsetof(struct init_first_thread_reply, tid) == 12 );
 C_ASSERT( offsetof(struct init_first_thread_reply, server_start) == 16 );
 C_ASSERT( offsetof(struct init_first_thread_reply, session_id) == 24 );
-C_ASSERT( offsetof(struct init_first_thread_reply, info_size) == 28 );
-C_ASSERT( sizeof(struct init_first_thread_reply) == 32 );
+C_ASSERT( offsetof(struct init_first_thread_reply, inproc_device) == 28 );
+C_ASSERT( offsetof(struct init_first_thread_reply, info_size) == 32 );
+C_ASSERT( sizeof(struct init_first_thread_reply) == 40 );
 C_ASSERT( offsetof(struct init_thread_request, unix_tid) == 12 );
 C_ASSERT( offsetof(struct init_thread_request, reply_fd) == 16 );
 C_ASSERT( offsetof(struct init_thread_request, wait_fd) == 20 );
@@ -736,7 +741,8 @@ C_ASSERT( offsetof(struct get_process_info_reply, end_time) == 40 );
 C_ASSERT( offsetof(struct get_process_info_reply, session_id) == 48 );
 C_ASSERT( offsetof(struct get_process_info_reply, exit_code) == 52 );
 C_ASSERT( offsetof(struct get_process_info_reply, priority) == 56 );
-C_ASSERT( offsetof(struct get_process_info_reply, base_priority) == 60 );
+C_ASSERT( offsetof(struct get_process_info_reply, base_priority) == 58 );
+C_ASSERT( offsetof(struct get_process_info_reply, disable_boost) == 60 );
 C_ASSERT( offsetof(struct get_process_info_reply, machine) == 62 );
 C_ASSERT( sizeof(struct get_process_info_reply) == 64 );
 C_ASSERT( offsetof(struct get_process_debug_info_request, handle) == 12 );
@@ -760,12 +766,13 @@ C_ASSERT( offsetof(struct get_process_vm_counters_reply, pagefile_usage) == 40 )
 C_ASSERT( offsetof(struct get_process_vm_counters_reply, peak_pagefile_usage) == 48 );
 C_ASSERT( sizeof(struct get_process_vm_counters_reply) == 56 );
 C_ASSERT( offsetof(struct set_process_info_request, handle) == 12 );
-C_ASSERT( offsetof(struct set_process_info_request, priority) == 16 );
-C_ASSERT( offsetof(struct set_process_info_request, base_priority) == 20 );
-C_ASSERT( offsetof(struct set_process_info_request, affinity) == 24 );
-C_ASSERT( offsetof(struct set_process_info_request, token) == 32 );
-C_ASSERT( offsetof(struct set_process_info_request, mask) == 36 );
-C_ASSERT( sizeof(struct set_process_info_request) == 40 );
+C_ASSERT( offsetof(struct set_process_info_request, affinity) == 16 );
+C_ASSERT( offsetof(struct set_process_info_request, priority) == 24 );
+C_ASSERT( offsetof(struct set_process_info_request, base_priority) == 28 );
+C_ASSERT( offsetof(struct set_process_info_request, disable_boost) == 32 );
+C_ASSERT( offsetof(struct set_process_info_request, token) == 36 );
+C_ASSERT( offsetof(struct set_process_info_request, mask) == 40 );
+C_ASSERT( sizeof(struct set_process_info_request) == 48 );
 C_ASSERT( offsetof(struct get_thread_info_request, handle) == 12 );
 C_ASSERT( offsetof(struct get_thread_info_request, access) == 16 );
 C_ASSERT( sizeof(struct get_thread_info_request) == 24 );
@@ -794,8 +801,9 @@ C_ASSERT( offsetof(struct set_thread_info_request, base_priority) == 20 );
 C_ASSERT( offsetof(struct set_thread_info_request, affinity) == 24 );
 C_ASSERT( offsetof(struct set_thread_info_request, entry_point) == 32 );
 C_ASSERT( offsetof(struct set_thread_info_request, token) == 40 );
-C_ASSERT( offsetof(struct set_thread_info_request, mask) == 44 );
-C_ASSERT( sizeof(struct set_thread_info_request) == 48 );
+C_ASSERT( offsetof(struct set_thread_info_request, disable_boost) == 44 );
+C_ASSERT( offsetof(struct set_thread_info_request, mask) == 48 );
+C_ASSERT( sizeof(struct set_thread_info_request) == 56 );
 C_ASSERT( offsetof(struct suspend_thread_request, handle) == 12 );
 C_ASSERT( sizeof(struct suspend_thread_request) == 16 );
 C_ASSERT( offsetof(struct suspend_thread_reply, count) == 8 );
@@ -805,7 +813,8 @@ C_ASSERT( sizeof(struct resume_thread_request) == 16 );
 C_ASSERT( offsetof(struct resume_thread_reply, count) == 8 );
 C_ASSERT( sizeof(struct resume_thread_reply) == 16 );
 C_ASSERT( offsetof(struct queue_apc_request, handle) == 12 );
-C_ASSERT( sizeof(struct queue_apc_request) == 16 );
+C_ASSERT( offsetof(struct queue_apc_request, reserve_handle) == 16 );
+C_ASSERT( sizeof(struct queue_apc_request) == 24 );
 C_ASSERT( offsetof(struct queue_apc_reply, handle) == 8 );
 C_ASSERT( offsetof(struct queue_apc_reply, self) == 12 );
 C_ASSERT( sizeof(struct queue_apc_reply) == 16 );
@@ -1825,23 +1834,18 @@ C_ASSERT( sizeof(struct destroy_class_request) == 24 );
 C_ASSERT( offsetof(struct destroy_class_reply, client_ptr) == 8 );
 C_ASSERT( sizeof(struct destroy_class_reply) == 16 );
 C_ASSERT( offsetof(struct set_class_info_request, window) == 12 );
-C_ASSERT( offsetof(struct set_class_info_request, flags) == 16 );
-C_ASSERT( offsetof(struct set_class_info_request, atom) == 20 );
-C_ASSERT( offsetof(struct set_class_info_request, style) == 24 );
-C_ASSERT( offsetof(struct set_class_info_request, win_extra) == 28 );
-C_ASSERT( offsetof(struct set_class_info_request, instance) == 32 );
-C_ASSERT( offsetof(struct set_class_info_request, extra_offset) == 40 );
-C_ASSERT( offsetof(struct set_class_info_request, extra_size) == 44 );
-C_ASSERT( offsetof(struct set_class_info_request, extra_value) == 48 );
-C_ASSERT( sizeof(struct set_class_info_request) == 56 );
-C_ASSERT( offsetof(struct set_class_info_reply, old_atom) == 8 );
-C_ASSERT( offsetof(struct set_class_info_reply, base_atom) == 12 );
-C_ASSERT( offsetof(struct set_class_info_reply, old_instance) == 16 );
-C_ASSERT( offsetof(struct set_class_info_reply, old_extra_value) == 24 );
-C_ASSERT( offsetof(struct set_class_info_reply, old_style) == 32 );
-C_ASSERT( offsetof(struct set_class_info_reply, old_extra) == 36 );
-C_ASSERT( offsetof(struct set_class_info_reply, old_win_extra) == 40 );
-C_ASSERT( sizeof(struct set_class_info_reply) == 48 );
+C_ASSERT( offsetof(struct set_class_info_request, offset) == 16 );
+C_ASSERT( offsetof(struct set_class_info_request, size) == 20 );
+C_ASSERT( offsetof(struct set_class_info_request, new_info) == 24 );
+C_ASSERT( sizeof(struct set_class_info_request) == 32 );
+C_ASSERT( offsetof(struct set_class_info_reply, old_info) == 8 );
+C_ASSERT( sizeof(struct set_class_info_reply) == 16 );
+C_ASSERT( offsetof(struct get_class_info_request, window) == 12 );
+C_ASSERT( offsetof(struct get_class_info_request, offset) == 16 );
+C_ASSERT( offsetof(struct get_class_info_request, size) == 20 );
+C_ASSERT( sizeof(struct get_class_info_request) == 24 );
+C_ASSERT( offsetof(struct get_class_info_reply, info) == 8 );
+C_ASSERT( sizeof(struct get_class_info_reply) == 16 );
 C_ASSERT( offsetof(struct open_clipboard_request, window) == 12 );
 C_ASSERT( sizeof(struct open_clipboard_request) == 16 );
 C_ASSERT( offsetof(struct open_clipboard_reply, owner) == 8 );
@@ -2290,3 +2294,8 @@ C_ASSERT( offsetof(struct set_keyboard_repeat_request, period) == 20 );
 C_ASSERT( sizeof(struct set_keyboard_repeat_request) == 24 );
 C_ASSERT( offsetof(struct set_keyboard_repeat_reply, enable) == 8 );
 C_ASSERT( sizeof(struct set_keyboard_repeat_reply) == 16 );
+C_ASSERT( offsetof(struct get_inproc_sync_fd_request, handle) == 12 );
+C_ASSERT( sizeof(struct get_inproc_sync_fd_request) == 16 );
+C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, type) == 8 );
+C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, access) == 12 );
+C_ASSERT( sizeof(struct get_inproc_sync_fd_reply) == 16 );

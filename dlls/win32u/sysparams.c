@@ -1093,7 +1093,7 @@ static const char* driver_vendor_to_version( UINT16 vendor )
     switch (vendor)
     {
     case 0x8086: /* Intel */    return "32.0.101.6314";
-    case 0x1002: /* AMD */      return "31.0.21921.1000";
+    case 0x1002: /* AMD */      return "32.0.21025.1024";
     case 0x10de: /* Nvidia */   return "32.0.15.6094";
     default:                    return "31.0.10.1000";
     }
@@ -7129,9 +7129,6 @@ ULONG_PTR WINAPI NtUserCallOneParam( ULONG_PTR arg, ULONG code )
     case NtUserCallOneParam_EnableThunkLock:
         thunk_lock_callback = arg;
         return 0;
-
-    case NtUserCallOneParam_GetCursorPos:
-        return get_cursor_pos( (POINT *)arg );
 
     case NtUserCallOneParam_GetIconParam:
         return get_icon_param( UlongToHandle(arg) );

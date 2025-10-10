@@ -89,6 +89,7 @@ struct thread_apc
     struct list         entry;    /* queue linked list */
     struct thread      *caller;   /* thread that queued this apc */
     struct object      *owner;    /* object that queued this apc */
+    struct reserve     *reserve;  /* reserve object associated with apc object */
     int                 executed; /* has it been executed by the client? */
     union apc_call      call;     /* call arguments */
     union apc_result    result;   /* call results once executed */
@@ -416,8 +417,10 @@ static inline void init_thread_structure( struct thread *thread )
     thread->exit_code       = 0;
     thread->priority        = 0;
     thread->base_priority   = 0;
+    thread->disable_boost   = 0;
     thread->suspend         = 0;
     thread->dbg_hidden      = 0;
+    thread->bypass_proc_suspend = 0;
     thread->desktop_users   = 0;
     thread->token           = NULL;
     thread->desc            = NULL;
@@ -434,6 +437,12 @@ static inline void init_thread_structure( struct thread *thread )
 
     for (i = 0; i < MAX_INFLIGHT_FDS; i++)
         thread->inflight[i].server = thread->inflight[i].client = -1;
+}
+
+static inline int is_thread_suspended( struct thread *thread )
+{
+    if (thread->suspend) return 1;
+    return !thread->bypass_proc_suspend && thread->process->suspend;
 }
 
 /* check if address looks valid for a client-side data structure (TEB etc.) */
@@ -529,6 +538,7 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
     thread->process = (struct process *)grab_object( process );
     thread->desktop = 0;
     thread->affinity = process->affinity;
+    thread->disable_boost = process->disable_boost;
     if (!current) current = thread;
 
     list_add_tail( &thread_list, &thread->entry );
@@ -701,6 +711,7 @@ static void thread_apc_destroy( struct object *obj )
         release_object( apc->owner );
     }
     if (apc->sync) release_object( apc->sync );
+    reserve_obj_unbind( apc->reserve );
 }
 
 /* queue an async procedure call */
@@ -715,6 +726,7 @@ static struct thread_apc *create_apc( struct object *owner, const union apc_call
         else apc->call.type = APC_NONE;
         apc->caller      = NULL;
         apc->owner       = owner;
+        apc->reserve     = NULL;
         apc->executed    = 0;
         apc->result.type = APC_NONE;
         if (owner) grab_object( owner );
@@ -888,6 +900,8 @@ static void set_thread_info( struct thread *thread,
         thread->entry_point = req->entry_point;
     if (req->mask & SET_THREAD_INFO_DBG_HIDDEN)
         thread->dbg_hidden = 1;
+    if (req->mask & SET_THREAD_INFO_DISABLE_BOOST)
+        thread->disable_boost = req->disable_boost;
     if (req->mask & SET_THREAD_INFO_DESCRIPTION)
     {
         WCHAR *desc;
@@ -927,7 +941,8 @@ int suspend_thread( struct thread *thread )
     int old_count = thread->suspend;
     if (thread->suspend < MAXIMUM_SUSPEND_COUNT)
     {
-        if (!(thread->process->suspend + thread->suspend++)) stop_thread( thread );
+        if (!is_thread_suspended( thread )) stop_thread( thread );
+        thread->suspend++;
     }
     else set_error( STATUS_SUSPEND_COUNT_EXCEEDED );
     return old_count;
@@ -940,7 +955,7 @@ int resume_thread( struct thread *thread )
     if (thread->suspend > 0)
     {
         if (!(--thread->suspend)) resume_delayed_debug_events( thread );
-        if (!(thread->suspend + thread->process->suspend)) wake_thread( thread );
+        if (!is_thread_suspended( thread )) wake_thread( thread );
     }
     return old_count;
 }
@@ -1121,7 +1136,7 @@ static int check_wait( struct thread *thread )
         return STATUS_KERNEL_APC;
 
     /* Suspended threads may not acquire locks, but they can run system APCs */
-    if (thread->process->suspend + thread->suspend > 0) return -1;
+    if (is_thread_suspended( thread )) return -1;
 
     if (wait->select == SELECT_WAIT_ALL)
     {
@@ -1208,7 +1223,7 @@ int wake_thread_queue_entry( struct wait_queue_entry *entry )
     client_ptr_t cookie;
 
     if (thread->wait != wait) return 0;  /* not the current wait */
-    if (thread->process->suspend + thread->suspend > 0) return 0;  /* cannot acquire locks */
+    if (is_thread_suspended( thread )) return 0;  /* cannot acquire locks */
 
     assert( wait->select != SELECT_WAIT_ALL );
 
@@ -1231,7 +1246,7 @@ static void thread_timeout( void *ptr )
 
     wait->user = NULL;
     if (thread->wait != wait) return; /* not the top-level wait, ignore it */
-    if (thread->suspend + thread->process->suspend > 0) return;  /* suspended, ignore it */
+    if (is_thread_suspended( thread )) return;  /* suspended, ignore it */
 
     if (debug_level) fprintf( stderr, "%04x: *wakeup* signaled=TIMEOUT\n", thread->id );
     end_wait( thread, STATUS_TIMEOUT );
@@ -1369,8 +1384,7 @@ static inline struct list *get_apc_queue( struct thread *thread, enum apc_type t
 /* check if thread is currently waiting for a (system) apc */
 static inline int is_in_apc_wait( struct thread *thread )
 {
-    return (thread->process->suspend || thread->suspend ||
-            (thread->wait && (thread->wait->flags & SELECT_INTERRUPTIBLE)));
+    return (is_thread_suspended( thread ) || (thread->wait && (thread->wait->flags & SELECT_INTERRUPTIBLE)));
 }
 
 /* queue an existing APC to a given thread */
@@ -1646,6 +1660,7 @@ DECL_HANDLER(new_thread)
         thread->system_regs = current->system_regs;
         if (req->flags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED) thread->suspend++;
         thread->dbg_hidden = !!(req->flags & THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER);
+        thread->bypass_proc_suspend = !!(req->flags & THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE);
         reply->tid = get_thread_id( thread );
         if ((reply->handle = alloc_handle_no_access_check( current->process, thread,
                                                            req->access, objattr->attributes )))
@@ -1694,6 +1709,7 @@ static int init_thread( struct thread *thread, int reply_fd, int wait_fd )
 DECL_HANDLER(init_first_thread)
 {
     struct process *process = current->process;
+    int fd;
 
     if (!init_thread( current, req->reply_fd, req->wait_fd )) return;
 
@@ -1716,6 +1732,12 @@ DECL_HANDLER(init_first_thread)
     reply->server_start = server_start_time;
     set_reply_data( supported_machines,
                     min( supported_machines_count * sizeof(unsigned short), get_reply_max_size() ));
+
+    if ((fd = get_inproc_device_fd()) >= 0)
+    {
+        reply->inproc_device = get_process_id( process ) | 1;
+        send_client_fd( process, fd, reply->inproc_device );
+    }
 }
 
 /* initialize a new thread */
@@ -1739,7 +1761,7 @@ DECL_HANDLER(init_thread)
     set_thread_base_priority( current, current->base_priority );
     set_thread_affinity( current, current->affinity );
 
-    reply->suspend = (current->suspend || current->process->suspend || current->context != NULL);
+    reply->suspend = (is_thread_suspended( current ) || current->context != NULL);
 }
 
 /* terminate a thread */
@@ -1797,6 +1819,8 @@ DECL_HANDLER(get_thread_info)
             reply->flags |= GET_THREAD_INFO_FLAG_TERMINATED;
         if (thread->process->running_threads == 1)
             reply->flags |= GET_THREAD_INFO_FLAG_LAST;
+        if (thread->disable_boost)
+            reply->flags |= GET_THREAD_INFO_FLAG_DISABLE_BOOST;
 
         if (thread->desc && get_reply_max_size())
         {
@@ -2016,7 +2040,20 @@ DECL_HANDLER(queue_apc)
     {
     case APC_NONE:
     case APC_USER:
+        if (req->reserve_handle &&
+            !(apc->reserve = reserve_obj_associate_apc( current->process, req->reserve_handle, &apc->obj )))
+        {
+            release_object( apc );
+            return;
+        }
         thread = get_thread_from_handle( req->handle, THREAD_SET_CONTEXT );
+        if (thread && call && call->user.flags & SERVER_USER_APC_SPECIAL && is_wow64_process( thread->process ))
+        {
+            release_object( apc );
+            release_object( thread );
+            set_error( STATUS_NOT_SUPPORTED );
+            return;
+        }
         break;
     case APC_VIRTUAL_ALLOC:
     case APC_VIRTUAL_ALLOC_EX:

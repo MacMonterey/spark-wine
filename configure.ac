@@ -682,6 +682,7 @@ AC_CHECK_HEADERS(\
 	linux/input.h \
 	linux/ioctl.h \
 	linux/major.h \
+	linux/ntsync.h \
 	linux/param.h \
 	linux/serial.h \
 	linux/types.h \
@@ -924,7 +925,7 @@ case $host_os in
     LDDLLFLAGS="-fPIC"
     enable_winemac_drv=${enable_winemac_drv:-yes}
     dnl declare needed frameworks
-    AC_SUBST(CARBON_LIBS,"-framework Carbon")
+    AC_SUBST(CORETEXT_LIBS,"-framework CoreText")
     AC_SUBST(COREFOUNDATION_LIBS,"-framework CoreFoundation")
     AC_SUBST(DISKARBITRATION_LIBS,"-framework DiskArbitration -framework CoreFoundation")
     AC_SUBST(IOKIT_LIBS,"-framework IOKit -framework CoreFoundation")
@@ -1977,7 +1978,7 @@ then
                CFLAGS=$saved_CFLAGS
            fi])])
   case "$wine_cv_64bit_compare_swap" in
-      unknown) AC_MSG_ERROR([gcc doesn't support 64-bit compare-and-swap on this platform]) ;;
+      unknown) AC_MSG_ERROR([64-bit compare-and-swap is not supported on this platform]) ;;
       "none needed") ;;
       *) EXTRACFLAGS="$EXTRACFLAGS $wine_cv_64bit_compare_swap" ;;
   esac
@@ -2529,6 +2530,8 @@ WINE_CONFIG_MAKEFILE(dlls/cryptowinrt/tests)
 WINE_CONFIG_MAKEFILE(dlls/cryptsp)
 WINE_CONFIG_MAKEFILE(dlls/cryptui)
 WINE_CONFIG_MAKEFILE(dlls/cryptui/tests)
+WINE_CONFIG_MAKEFILE(dlls/cryptxml)
+WINE_CONFIG_MAKEFILE(dlls/cryptxml/tests)
 WINE_CONFIG_MAKEFILE(dlls/ctapi32)
 WINE_CONFIG_MAKEFILE(dlls/ctl3d.dll16)
 WINE_CONFIG_MAKEFILE(dlls/ctl3d32)
@@ -2573,6 +2576,7 @@ WINE_CONFIG_MAKEFILE(dlls/d3dim700)
 WINE_CONFIG_MAKEFILE(dlls/d3drm)
 WINE_CONFIG_MAKEFILE(dlls/d3drm/tests)
 WINE_CONFIG_MAKEFILE(dlls/d3dx10_33)
+WINE_CONFIG_MAKEFILE(dlls/d3dx10_33/tests)
 WINE_CONFIG_MAKEFILE(dlls/d3dx10_34)
 WINE_CONFIG_MAKEFILE(dlls/d3dx10_34/tests)
 WINE_CONFIG_MAKEFILE(dlls/d3dx10_35)
@@ -2726,6 +2730,7 @@ WINE_CONFIG_MAKEFILE(dlls/fontsub)
 WINE_CONFIG_MAKEFILE(dlls/fusion)
 WINE_CONFIG_MAKEFILE(dlls/fusion/tests)
 WINE_CONFIG_MAKEFILE(dlls/fwpuclnt)
+WINE_CONFIG_MAKEFILE(dlls/gameinput)
 WINE_CONFIG_MAKEFILE(dlls/gameux)
 WINE_CONFIG_MAKEFILE(dlls/gameux/tests)
 WINE_CONFIG_MAKEFILE(dlls/gamingtcui)
@@ -3218,6 +3223,8 @@ WINE_CONFIG_MAKEFILE(dlls/uxtheme)
 WINE_CONFIG_MAKEFILE(dlls/uxtheme/tests)
 WINE_CONFIG_MAKEFILE(dlls/vbscript)
 WINE_CONFIG_MAKEFILE(dlls/vbscript/tests)
+WINE_CONFIG_MAKEFILE(dlls/vccorlib140)
+WINE_CONFIG_MAKEFILE(dlls/vccorlib140/tests)
 WINE_CONFIG_MAKEFILE(dlls/vcomp)
 WINE_CONFIG_MAKEFILE(dlls/vcomp/tests)
 WINE_CONFIG_MAKEFILE(dlls/vcomp100)
@@ -3267,6 +3274,7 @@ WINE_CONFIG_MAKEFILE(dlls/win32u)
 WINE_CONFIG_MAKEFILE(dlls/win32u/tests)
 WINE_CONFIG_MAKEFILE(dlls/win87em.dll16)
 WINE_CONFIG_MAKEFILE(dlls/winaspi.dll16)
+WINE_CONFIG_MAKEFILE(dlls/winbio)
 WINE_CONFIG_MAKEFILE(dlls/windebug.dll16)
 WINE_CONFIG_MAKEFILE(dlls/windows.applicationmodel)
 WINE_CONFIG_MAKEFILE(dlls/windows.applicationmodel/tests)
@@ -3286,6 +3294,10 @@ WINE_CONFIG_MAKEFILE(dlls/windows.media.devices)
 WINE_CONFIG_MAKEFILE(dlls/windows.media.devices/tests)
 WINE_CONFIG_MAKEFILE(dlls/windows.media.mediacontrol)
 WINE_CONFIG_MAKEFILE(dlls/windows.media.mediacontrol/tests)
+WINE_CONFIG_MAKEFILE(dlls/windows.media.playback.backgroundmediaplayer)
+WINE_CONFIG_MAKEFILE(dlls/windows.media.playback.backgroundmediaplayer/tests)
+WINE_CONFIG_MAKEFILE(dlls/windows.media.playback.mediaplayer)
+WINE_CONFIG_MAKEFILE(dlls/windows.media.playback.mediaplayer/tests)
 WINE_CONFIG_MAKEFILE(dlls/windows.media.speech)
 WINE_CONFIG_MAKEFILE(dlls/windows.media.speech/tests)
 WINE_CONFIG_MAKEFILE(dlls/windows.media)
@@ -3656,7 +3668,7 @@ fi
 AC_CONFIG_COMMANDS([Makefile], [wine_fn_output_makefile Makefile],
 [wine_fn_output_makefile ()
 {
-    cat <<\_WINE_EOF >\$tmp/makefile && mv -f \$tmp/makefile \$[]1 && "$wine_makedep"$makedep_flags && return
+    cat <<\_WINE_EOF >\$tmp/makefile && "$wine_makedep"$makedep_flags -i\$tmp/makefile && return
 # This Makefile understands the following targets:
 #
 # all (default):   build wine

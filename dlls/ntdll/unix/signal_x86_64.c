@@ -376,11 +376,16 @@ C_ASSERT( sizeof(struct exc_stack_layout) == 0x5c0 );
 struct apc_stack_layout
 {
     CONTEXT              context;        /* 000 */
-    struct machine_frame machine_frame;  /* 4d0 */
-    ULONG64              align;          /* 4f8 */
+    CONTEXT_EX           context_ex;     /* 4d0 */
+    KCONTINUE_ARGUMENT   continue_arg;   /* 4f0 */
+    ULONG64              align1;         /* 508 */
+    APC_CALLBACK_DATA    callback_data;  /* 510 */
+    struct machine_frame machine_frame;  /* 530 */
+    ULONG64              align2;         /* 558 */
 };
-C_ASSERT( offsetof(struct apc_stack_layout, machine_frame) == 0x4d0 );
-C_ASSERT( sizeof(struct apc_stack_layout) == 0x500 );
+C_ASSERT( offsetof(struct apc_stack_layout, continue_arg) == 0x4f0 );
+C_ASSERT( offsetof(struct apc_stack_layout, machine_frame) == 0x530 );
+C_ASSERT( sizeof(struct apc_stack_layout) == 0x560 );
 
 /* stack layout when calling KiUserCallbackDispatcher */
 struct callback_stack_layout
@@ -444,6 +449,7 @@ struct amd64_thread_data
     DWORD_PTR             frame_size;    /* 0328 syscall frame size including xstate */
     void                **instrumentation_callback; /* 0330 */
     DWORD                 fs;            /* 0338 WOW TEB selector */
+    DWORD                 mxcsr;         /* 033c Unix-side mxcsr register */
 };
 
 C_ASSERT( sizeof(struct amd64_thread_data) <= sizeof(((struct ntdll_thread_data *)0)->cpu_data) );
@@ -451,6 +457,7 @@ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, pth
 C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, frame_size ) == 0x328 );
 C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, instrumentation_callback ) == 0x330 );
 C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, fs ) == 0x338 );
+C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, mxcsr ) == 0x33c );
 
 static inline struct amd64_thread_data *amd64_thread_data(void)
 {
@@ -841,6 +848,15 @@ static inline ucontext_t *init_handler( void *sigcontext )
 #elif defined __APPLE__
     struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&get_current_teb()->GdiTebBatch;
     _thread_set_tsd_base( (uint64_t)((struct amd64_thread_data *)thread_data->cpu_data)->pthread_teb );
+
+    /* When in a syscall, CS will be the kernel's selector (0x07, SYSCALL_CS in xnu source)
+     * instead of the user selector (cs64_sel: 0x2b, USER64_CS).
+     * Fix up sigcontext so later code can compare it to cs64_sel.
+     *
+     * Only applies on Intel, not under Rosetta.
+     */
+    if (CS_sig((ucontext_t *)sigcontext) == 0x07 /* SYSCALL_CS */)
+        CS_sig((ucontext_t *)sigcontext) = cs64_sel;
 #endif
     return sigcontext;
 }
@@ -1532,12 +1548,14 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
 /***********************************************************************
  *           call_user_apc_dispatcher
  */
-NTSTATUS call_user_apc_dispatcher( CONTEXT *context, ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3,
+NTSTATUS call_user_apc_dispatcher( CONTEXT *context, unsigned int flags, ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3,
                                    PNTAPCFUNC func, NTSTATUS status )
 {
     struct syscall_frame *frame = get_syscall_frame();
     ULONG64 rsp = context ? context->Rsp : frame->rsp;
     struct apc_stack_layout *stack;
+
+    if (flags & ~SERVER_USER_APC_CALLBACK_DATA_CONTEXT) FIXME( "flags %#x are not supported.\n", flags );
 
     rsp &= ~15;
     stack = (struct apc_stack_layout *)rsp - 1;
@@ -1552,8 +1570,19 @@ NTSTATUS call_user_apc_dispatcher( CONTEXT *context, ULONG_PTR arg1, ULONG_PTR a
         NtGetContextThread( GetCurrentThread(), &stack->context );
         stack->context.Rax = status;
     }
+    memset( &stack->continue_arg, 0, sizeof(stack->continue_arg) );
+    stack->continue_arg.ContinueType = KCONTINUE_RESUME;
+    stack->continue_arg.ContinueFlags = KCONTINUE_FLAG_TEST_ALERT | KCONTINUE_FLAG_DELIVER_APC;
     stack->context.P1Home    = arg1;
-    stack->context.P2Home    = arg2;
+    if (flags & SERVER_USER_APC_CALLBACK_DATA_CONTEXT)
+    {
+        stack->callback_data.ContextRecord = &stack->context;
+        stack->callback_data.Parameter = arg2;
+        stack->callback_data.Reserved0 = 0;
+        stack->callback_data.Reserved1 = 0;
+        stack->context.P2Home = (ULONG_PTR)&stack->callback_data;
+    }
+    else stack->context.P2Home = arg2;
     stack->context.P3Home    = arg3;
     stack->context.P4Home    = (ULONG64)func;
     stack->machine_frame.rip = stack->context.Rip;
@@ -1642,8 +1671,8 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "andq $~63,%rsp\n\t"
                    "leaq 0x10(%rbp),%rax\n\t"
                    "movq %rax,0xa8(%rsp)\n\t"  /* frame->syscall_cfa */
-                   "movq 0x378(%r13),%r10\n\t" /* thread_data->syscall_frame */
-                   "movq %r10,0xa0(%rsp)\n\t"  /* frame->prev_frame */
+                   "movq 0x378(%r13),%r14\n\t" /* thread_data->syscall_frame */
+                   "movq %r14,0xa0(%rsp)\n\t"  /* frame->prev_frame */
                    "movq %rsp,0x378(%r13)\n\t" /* thread_data->syscall_frame */
                    "testl $1,0x380(%r13)\n\t"  /* thread_data->syscall_trace */
                    "jz 1f\n\t"
@@ -1658,6 +1687,8 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "movq %r15,%rcx\n"          /* func */
                    /* switch to user stack */
                    "1:\tmovq %rdi,%rsp\n\t"    /* user_rsp */
+                   "movq 0x98(%r14),%rbp\n\t"  /* prev_frame->rbp */
+                   "ldmxcsr 0xd8(%r14)\n\t"    /* prev_frame->xsave.MxCsr */
 #ifdef __linux__
                    "movw 0x338(%r13),%ax\n"    /* amd64_thread_data()->fs */
                    "testw %ax,%ax\n\t"
@@ -1676,8 +1707,14 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "movq (%r10),%r10\n\t"
                    "test %r10,%r10\n\t"
                    "jz 1f\n\t"
-                   "xchgq %rcx,%r10\n\t"
-                   "1\t:jmpq *%rcx" )          /* func */
+                   "xchgq %rcx,%r10\n"
+                   "1:\n\t"
+                   "xor %rbx,%rbx\n\t"
+                   "xor %r12,%r12\n\t"
+                   "xor %r13,%r13\n\t"
+                   "xor %r14,%r14\n\t"
+                   "xor %r15,%r15\n\t"
+                   "jmpq *%rcx" )          /* func */
 
 
 /***********************************************************************
@@ -2007,6 +2044,94 @@ static BOOL handle_syscall_trap( ucontext_t *sigcontext, siginfo_t *siginfo )
 }
 
 
+/***********************************************************************
+ *           check_invalid_gsbase
+ *
+ * Check for fault caused by invalid %gs value (some copy protection schemes mess with it).
+ */
+static inline BOOL check_invalid_gsbase( ucontext_t *ucontext )
+{
+    BYTE instr[16];
+    unsigned int i, len, prefix_count = 0;
+    TEB *teb = NtCurrentTeb();
+    ULONG_PTR cur_gsbase = 0;
+
+    if (CS_sig(ucontext) != cs64_sel) return FALSE;
+
+#ifdef __linux__
+    if (user_shared_data->ProcessorFeatures[PF_RDWRFSGSBASE_AVAILABLE])
+        __asm__("rdgsbase %0" : "=r" (cur_gsbase));
+    else
+        arch_prctl( ARCH_GET_GS, &cur_gsbase );
+#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
+    amd64_get_gsbase( (void**)&cur_gsbase );
+#elif defined(__NetBSD__)
+    sysarch( X86_64_GET_GSBASE, &cur_gsbase );
+#elif defined(__APPLE__)
+    /* init_handler() has already reset GSBASE, we can't determine what it was before the signal */
+#endif
+
+    if (cur_gsbase == (ULONG_PTR)teb) return FALSE;
+
+    len = virtual_uninterrupted_read_memory( (BYTE *)RIP_sig(ucontext), instr, sizeof(instr) );
+    if (!len) return FALSE;
+
+    for (i = 0; i < len; i++)
+    {
+        switch (instr[i])
+        {
+        /* instruction prefixes */
+        case 0x2e:  /* %cs: */
+        case 0x36:  /* %ss: */
+        case 0x3e:  /* %ds: */
+        case 0x26:  /* %es: */
+        case 0x40:  /* rex */
+        case 0x41:  /* rex */
+        case 0x42:  /* rex */
+        case 0x43:  /* rex */
+        case 0x44:  /* rex */
+        case 0x45:  /* rex */
+        case 0x46:  /* rex */
+        case 0x47:  /* rex */
+        case 0x48:  /* rex */
+        case 0x49:  /* rex */
+        case 0x4a:  /* rex */
+        case 0x4b:  /* rex */
+        case 0x4c:  /* rex */
+        case 0x4d:  /* rex */
+        case 0x4e:  /* rex */
+        case 0x4f:  /* rex */
+        case 0x64:  /* %fs: */
+        case 0x66:  /* opcode size */
+        case 0x67:  /* addr size */
+        case 0xf0:  /* lock */
+        case 0xf2:  /* repne */
+        case 0xf3:  /* repe */
+            if (++prefix_count >= 15) return FALSE;
+            continue;
+        case 0x65:  /* %gs: */
+            break;
+        default:
+            return FALSE;
+        }
+        break;
+    }
+
+    TRACE( "gsbase %016lx teb %p at instr %p, fixing up\n", cur_gsbase, teb, instr );
+
+#ifdef __linux__
+    arch_prctl( ARCH_SET_GS, teb );
+#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
+    amd64_set_gsbase( teb );
+#elif defined(__NetBSD__)
+    sysarch( X86_64_SET_GSBASE, &teb );
+#elif defined(__APPLE__)
+    /* leave_handler() will set GSBASE to the TEB */
+#endif
+    return TRUE;
+}
+
+
 /**********************************************************************
  *		segv_handler
  *
@@ -2051,7 +2176,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         rec.NumberParameters = 2;
         rec.ExceptionInformation[0] = (ERROR_sig(ucontext) >> 1) & 0x09;
         rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
-        if (!virtual_handle_fault( &rec, (void *)RSP_sig(ucontext) ))
+        if (!virtual_handle_fault( &rec, (void *)RSP_sig(ucontext) ) || check_invalid_gsbase( ucontext ))
         {
             leave_handler( ucontext );
             return;
@@ -2324,73 +2449,20 @@ static void sigsys_handler( int signal, siginfo_t *siginfo, void *sigcontext )
  *           LDT support
  */
 
-#define LDT_SIZE 8192
-
-#define LDT_FLAGS_DATA      0x13  /* Data segment */
-#define LDT_FLAGS_CODE      0x1b  /* Code segment */
-#define LDT_FLAGS_32BIT     0x40  /* Segment is 32-bit (code or stack) */
-#define LDT_FLAGS_ALLOCATED 0x80  /* Segment is allocated */
+struct ldt_copy __wine_ldt_copy;
 
 static ULONG first_ldt_entry = 32;
-
-struct ldt_copy
-{
-    void         *base[LDT_SIZE];
-    unsigned int  limit[LDT_SIZE];
-    unsigned char flags[LDT_SIZE];
-} __wine_ldt_copy;
-
 static pthread_mutex_t ldt_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static inline void *ldt_get_base( LDT_ENTRY ent )
-{
-    return (void *)(ent.BaseLow |
-                    (ULONG_PTR)ent.HighWord.Bits.BaseMid << 16 |
-                    (ULONG_PTR)ent.HighWord.Bits.BaseHi << 24);
-}
-
-static inline unsigned int ldt_get_limit( LDT_ENTRY ent )
-{
-    unsigned int limit = ent.LimitLow | (ent.HighWord.Bits.LimitHi << 16);
-    if (ent.HighWord.Bits.Granularity) limit = (limit << 12) | 0xfff;
-    return limit;
-}
-
-static LDT_ENTRY ldt_make_entry( void *base, unsigned int limit, unsigned char flags )
-{
-    LDT_ENTRY entry;
-
-    entry.BaseLow                   = (WORD)(ULONG_PTR)base;
-    entry.HighWord.Bits.BaseMid     = (BYTE)((ULONG_PTR)base >> 16);
-    entry.HighWord.Bits.BaseHi      = (BYTE)((ULONG_PTR)base >> 24);
-    if ((entry.HighWord.Bits.Granularity = (limit >= 0x100000))) limit >>= 12;
-    entry.LimitLow                  = (WORD)limit;
-    entry.HighWord.Bits.LimitHi     = limit >> 16;
-    entry.HighWord.Bits.Dpl         = 3;
-    entry.HighWord.Bits.Pres        = 1;
-    entry.HighWord.Bits.Type        = flags;
-    entry.HighWord.Bits.Sys         = 0;
-    entry.HighWord.Bits.Reserved_0  = 0;
-    entry.HighWord.Bits.Default_Big = (flags & LDT_FLAGS_32BIT) != 0;
-    return entry;
-}
 
 static void ldt_set_entry( WORD sel, LDT_ENTRY entry )
 {
-    int index = sel >> 3;
-
 #if defined(__APPLE__)
-    if (i386_set_ldt(index, (union ldt_entry *)&entry, 1) < 0) perror("i386_set_ldt");
+    if (i386_set_ldt(sel >> 3, (union ldt_entry *)&entry, 1) < 0) perror("i386_set_ldt");
 #else
     fprintf( stderr, "No LDT support on this platform\n" );
     exit(1);
 #endif
-
-    __wine_ldt_copy.base[index]  = ldt_get_base( entry );
-    __wine_ldt_copy.limit[index] = ldt_get_limit( entry );
-    __wine_ldt_copy.flags[index] = (entry.HighWord.Bits.Type |
-                                    (entry.HighWord.Bits.Default_Big ? LDT_FLAGS_32BIT : 0) |
-                                    LDT_FLAGS_ALLOCATED);
+    update_ldt_copy( sel, entry );
 }
 
 
@@ -2437,7 +2509,7 @@ NTSTATUS signal_alloc_thread( TEB *teb )
         {
             sigset_t sigset;
             int idx;
-            LDT_ENTRY entry = ldt_make_entry( wow_teb, page_size - 1, LDT_FLAGS_DATA | LDT_FLAGS_32BIT );
+            LDT_ENTRY entry = ldt_make_fs32_entry( wow_teb );
 
             server_enter_uninterrupted_section( &ldt_mutex, &sigset );
             for (idx = first_ldt_entry; idx < LDT_SIZE; idx++)
@@ -2530,8 +2602,8 @@ void signal_init_process(void)
         LDT_ENTRY cs32_entry, fs32_entry;
         int idx;
 
-        cs32_entry = ldt_make_entry( NULL, -1, LDT_FLAGS_CODE | LDT_FLAGS_32BIT );
-        fs32_entry = ldt_make_entry( wow_teb, page_size - 1, LDT_FLAGS_DATA | LDT_FLAGS_32BIT );
+        cs32_entry = ldt_make_cs32_entry();
+        fs32_entry = ldt_make_fs32_entry( wow_teb );
 
         for (idx = first_ldt_entry; idx < LDT_SIZE; idx++)
         {
@@ -2703,6 +2775,7 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
                    "1:\tmovq $0,0xa0(%r8)\n\t"     /* frame->prev_frame */
                    "movq %r9,0xa8(%r8)\n\t"        /* frame->syscall_cfa */
                    "movl $0,0xb4(%r8)\n\t"         /* frame->restore_flags */
+                   "stmxcsr 0x33c(%rcx)\n\t"       /* amd64_thread_data()->mxcsr */
                    /* switch to kernel stack */
                    "movq %r8,%rsp\n\t"
                    "movq %rcx,%r13\n\t"            /* teb */
@@ -2770,6 +2843,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    /* The xsavec instruction is not supported by
                     * binutils < 2.25. */
                    ".byte 0x48, 0x0f, 0xc7, 0xa1, 0xc0, 0x00, 0x00, 0x00\n\t" /* xsavec64 0xc0(%rcx) */
+                   "stmxcsr 0xd8(%rcx)\n\t"        /* frame->xsave.MxCsr */
                    "jmp 3f\n"
                    "1:\txsave64 0xc0(%rcx)\n\t"
                    "jmp 3f\n"
@@ -2822,6 +2896,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "syscall\n\t"
                    "leaq -0x98(%rbp),%rcx\n"
 #endif
+                   "ldmxcsr 0x33c(%r13)\n\t"       /* amd64_thread_data()->mxcsr */
                    "movl 0xb0(%rcx),%eax\n\t"      /* frame->syscall_id */
                    "movq 0x18(%rcx),%r11\n\t"      /* 2nd argument */
                    "movl %eax,%ebx\n\t"
@@ -2879,6 +2954,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "movl 0xb4(%rcx),%edx\n\t"      /* frame->restore_flags */
                    "testl $0x48,%edx\n\t"          /* CONTEXT_FLOATING_POINT | CONTEXT_XSTATE */
                    "jnz 2f\n\t"
+                   "ldmxcsr 0xd8(%rcx)\n\t"        /* frame->xsave.MxCsr */
                    "movaps 0x1c0(%rcx),%xmm6\n\t"
                    "movaps 0x1d0(%rcx),%xmm7\n\t"
                    "movaps 0x1e0(%rcx),%xmm8\n\t"
@@ -3063,6 +3139,7 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "movq %rbp,0x98(%rcx)\n\t"
                    __ASM_CFI_REG_IS_AT2(rbp, rcx, 0x98, 0x01)
                    "movq %gs:0x30,%r13\n\t"
+                   "stmxcsr 0xd8(%rcx)\n\t"        /* frame->xsave.MxCsr */
                    "movdqa %xmm6,0x1c0(%rcx)\n\t"
                    "movdqa %xmm7,0x1d0(%rcx)\n\t"
                    "movdqa %xmm8,0x1e0(%rcx)\n\t"
@@ -3105,9 +3182,11 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "movl $0x3000003,%eax\n\t"      /* _thread_set_tsd_base */
                    "syscall\n\t"
 #endif
+                   "ldmxcsr 0x33c(%r13)\n\t"       /* amd64_thread_data()->mxcsr */
                    "movq %r8,%rdi\n\t"             /* args */
                    "callq *(%r10,%rdx,8)\n\t"
                    "movq %rsp,%rcx\n\t"
+                   "ldmxcsr 0xd8(%rcx)\n\t"        /* frame->xsave.MxCsr */
                    "movdqa 0x1c0(%rcx),%xmm6\n\t"
                    "movdqa 0x1d0(%rcx),%xmm7\n\t"
                    "movdqa 0x1e0(%rcx),%xmm8\n\t"

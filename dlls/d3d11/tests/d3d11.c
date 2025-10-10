@@ -5465,6 +5465,16 @@ static void test_create_sampler_state(void)
     refcount = ID3D11SamplerState_Release(sampler_state1);
     ok(!refcount, "Got unexpected refcount %lu.\n", refcount);
 
+    desc.Filter = D3D11_FILTER_ANISOTROPIC;
+    desc.MaxAnisotropy = 0;
+    hr = ID3D11Device_CreateSamplerState(device, &desc, &sampler_state1);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ID3D11SamplerState_GetDesc(sampler_state1, &desc);
+    ok(desc.Filter == D3D11_FILTER_ANISOTROPIC, "Got filter %#x.\n", desc.Filter);
+    ok(!desc.MaxAnisotropy, "Got max anisotropy %u.\n", desc.MaxAnisotropy);
+    refcount = ID3D11SamplerState_Release(sampler_state1);
+    ok(!refcount, "Got refcount %lu.\n", refcount);
+
     for (i = 0; i < ARRAY_SIZE(desc_conversion_tests); ++i)
     {
         const struct test *current = &desc_conversion_tests[i];
@@ -14825,6 +14835,7 @@ static void test_copy_subresource_region(void)
 
     ID3D11DeviceContext_ClearRenderTargetView(context, test_context.backbuffer_rtv, red);
 
+    set_box(&box, 0, 0, 0, 1, 1, 1);
     ID3D11DeviceContext_CopySubresourceRegion(context, (ID3D11Resource *)dst_texture, 0,
             1, 1, 0, NULL, 0, &box);
     ID3D11DeviceContext_CopySubresourceRegion(context, NULL, 0,
@@ -21001,6 +21012,10 @@ static void test_index_buffer_offset(void)
     }
     release_resource_readback(&rb);
 
+    /* Without index buffer */
+    ID3D11DeviceContext_IASetIndexBuffer(context, NULL, DXGI_FORMAT_R32_UINT, 0);
+    ID3D11DeviceContext_DrawIndexed(context, 4, 0, 0);
+
     /* indirect draws */
     args_buffer = create_buffer_misc(device, 0, D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS,
             sizeof(argument_data), argument_data);
@@ -21028,6 +21043,10 @@ static void test_index_buffer_offset(void)
                 data->x, data->y, data->z, data->w, i);
     }
     release_resource_readback(&rb);
+
+    /* Without index buffer */
+    ID3D11DeviceContext_IASetIndexBuffer(context, NULL, DXGI_FORMAT_R32_UINT, 0);
+    ID3D11DeviceContext_DrawIndexedInstancedIndirect(context, args_buffer, 0);
 
     ID3D11Buffer_Release(so_buffer);
     ID3D11Buffer_Release(args_buffer);

@@ -248,6 +248,7 @@ DC *alloc_dc_ptr( DWORD magic )
  */
 static void free_dc_state( DC *dc )
 {
+    if (dc->opengl_drawable) opengl_drawable_release( dc->opengl_drawable );
     if (dc->hClipRgn) NtGdiDeleteObjectApp( dc->hClipRgn );
     if (dc->hMetaRgn) NtGdiDeleteObjectApp( dc->hMetaRgn );
     if (dc->hVisRgn) NtGdiDeleteObjectApp( dc->hVisRgn );
@@ -458,7 +459,6 @@ void DC_UpdateXforms( DC *dc )
  */
 static BOOL reset_dc_state( HDC hdc )
 {
-    struct opengl_drawable *drawable;
     DC *dc, *dcs, *next;
 
     if (!(dc = get_dc_ptr( hdc ))) return FALSE;
@@ -487,12 +487,8 @@ static BOOL reset_dc_state( HDC hdc )
     }
     dc->saved_dc = NULL;
     dc->attr->save_level = 0;
-
-    drawable = dc->opengl_drawable;
-    dc->opengl_drawable = NULL;
     release_dc_ptr( dc );
 
-    if (drawable) opengl_drawable_release( drawable );
     return TRUE;
 }
 
@@ -1095,6 +1091,35 @@ BOOL WINAPI NtGdiSetBrushOrg( HDC hdc, INT x, INT y, POINT *oldorg )
 }
 
 
+/***********************************************************************
+ *           NtGdiGetMiterLimit  (win32u.@)
+ */
+BOOL WINAPI NtGdiGetMiterLimit( HDC hdc, FLOAT *limit )
+{
+    DC *dc;
+
+    if (!(dc = get_dc_ptr( hdc ))) return FALSE;
+    if (limit) *limit = dc->attr->miter_limit;
+    release_dc_ptr( dc );
+    return TRUE;
+}
+
+
+/*******************************************************************
+ *           NtGdiSetMiterLimit  (win32u.@)
+ */
+BOOL WINAPI NtGdiSetMiterLimit( HDC hdc, DWORD limit, FLOAT *old_limit )
+{
+    DC *dc;
+
+    if (!(dc = get_dc_ptr( hdc ))) return FALSE;
+    if (old_limit) *old_limit = dc->attr->miter_limit;
+    dc->attr->miter_limit = *(FLOAT *)&limit;
+    release_dc_ptr( dc );
+    return TRUE;
+}
+
+
 BOOL offset_viewport_org( HDC hdc, INT x, INT y, POINT *point )
 {
     DC *dc;
@@ -1473,21 +1498,4 @@ DWORD WINAPI NtGdiSetLayout( HDC hdc, LONG wox, DWORD layout )
     TRACE("hdc : %p, old layout : %08x, new layout : %08x\n", hdc, old_layout, layout);
 
     return old_layout;
-}
-
-/**********************************************************************
- *           __wine_get_icm_profile     (win32u.@)
- */
-BOOL WINAPI __wine_get_icm_profile( HDC hdc, BOOL allow_default, DWORD *size, WCHAR *filename )
-{
-    PHYSDEV physdev;
-    DC *dc;
-    BOOL ret;
-
-    if (!(dc = get_dc_ptr(hdc))) return FALSE;
-
-    physdev = GET_DC_PHYSDEV( dc, pGetICMProfile );
-    ret = physdev->funcs->pGetICMProfile( physdev, allow_default, size, filename );
-    release_dc_ptr(dc);
-    return ret;
 }
